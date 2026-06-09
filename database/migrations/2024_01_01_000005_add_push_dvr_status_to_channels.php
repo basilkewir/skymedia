@@ -9,8 +9,12 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('channels', function (Blueprint $table) {
-            $table->string('push_status')->default('idle')->after('stream_status');
-            $table->string('dvr_status')->default('idle')->after('push_status');
+            if (!Schema::hasColumn('channels', 'push_status')) {
+                $table->string('push_status')->default('idle')->after('stream_status');
+            }
+            if (!Schema::hasColumn('channels', 'dvr_status')) {
+                $table->string('dvr_status')->default('idle')->after('push_status');
+            }
         });
     }
 
