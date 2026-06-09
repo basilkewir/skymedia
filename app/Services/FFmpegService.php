@@ -128,8 +128,11 @@ class FFmpegService
     {
         if ($pid <= 0) return;
 
+        $sigterm = defined('SIGTERM') ? SIGTERM : 15;
+        $sigkill = defined('SIGKILL') ? SIGKILL : 9;
+
         if (function_exists('posix_kill')) {
-            posix_kill($pid, SIGTERM);
+            posix_kill($pid, $sigterm);
         } else {
             exec("kill {$pid} 2>/dev/null");
         }
@@ -142,7 +145,7 @@ class FFmpegService
 
         if ($this->isRunning($pid)) {
             if (function_exists('posix_kill')) {
-                posix_kill($pid, SIGKILL);
+                posix_kill($pid, $sigkill);
             } else {
                 exec("kill -9 {$pid} 2>/dev/null");
             }
