@@ -30,6 +30,11 @@ echo -e "${CYAN}║   SkyMedia — App Bootstrap       ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════╝${NC}"
 echo ""
 
+step "Fix ownership"
+chown -R root:root "${APP_DIR}"
+chmod -R 755 "${APP_DIR}"
+ok "Ownership fixed"
+
 step "PHP dependencies"
 if [[ -z "${COMPOSER}" ]]; then
     curl -sS https://getcomposer.org/installer | "${PHP}" -- --install-dir=/usr/local/bin --filename=composer --quiet
