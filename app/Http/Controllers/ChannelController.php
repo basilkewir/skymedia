@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Models\Channel;
 use App\Services\DVRService;
 use App\Services\FFmpegService;
+use App\Services\IngestService;
+use App\Services\PushService;
 use App\Services\StreamManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -18,6 +20,8 @@ class ChannelController extends Controller
     public function __construct(
         protected FFmpegService $ffmpeg,
         protected StreamManager $manager,
+        protected IngestService $ingest,
+        protected PushService   $push,
         protected DVRService    $dvr,
     ) {}
 
@@ -46,7 +50,7 @@ class ChannelController extends Controller
             'source_url'       => 'required|string|max:1000',
             'push_protocol'    => 'required|in:rtmp,srt',
             'push_url'         => 'required|string|max:500',
-            'push_stream_key'  => 'required|string|max:255',
+            'push_stream_key'  => 'nullable|string|max:255',
             'dvr_duration'     => 'required|integer|min:60|max:86400',
             'segment_duration' => 'required|integer|min:2|max:30',
             'check_interval'   => 'required|integer|min:1|max:60',
@@ -68,12 +72,19 @@ class ChannelController extends Controller
 
     public function show(Channel $channel): Response
     {
-        $channel->load(['dvrSegments' => fn($q) => $q->orderBy('sequence', 'desc')->limit(100)]);
-        $channel->loadCount('streamLogs');
+        $channel->load(['dvrSegments' => fn($q) => $q->orderBy('sequence', 'desc')->limit(50)]);
+        $channel->loadCount(['streamLogs']);
         $channel->dvr_total_duration = $this->dvr->totalDuration($channel);
         $channel->dvr_total_size     = $this->dvr->totalSize($channel);
+        $channel->ingest_running     = $this->ingest->isRunning($channel);
+        $channel->push_running       = $this->push->isLiveRunning($channel) || $this->push->isDvrRunning($channel);
 
-        return Inertia::render('Channels/Show', ['channel' => $channel]);
+        $recentLogs = $channel->streamLogs()->with('channel:id,name')->latest()->limit(20)->get();
+
+        return Inertia::render('Channels/Show', [
+            'channel'    => $channel,
+            'recentLogs' => $recentLogs,
+        ]);
     }
 
     public function edit(Channel $channel): Response
@@ -89,7 +100,7 @@ class ChannelController extends Controller
             'source_url'       => 'required|string|max:1000',
             'push_protocol'    => 'required|in:rtmp,srt',
             'push_url'         => 'required|string|max:500',
-            'push_stream_key'  => 'required|string|max:255',
+            'push_stream_key'  => 'nullable|string|max:255',
             'dvr_duration'     => 'required|integer|min:60|max:86400',
             'segment_duration' => 'required|integer|min:2|max:30',
             'check_interval'   => 'required|integer|min:1|max:60',
@@ -104,38 +115,11 @@ class ChannelController extends Controller
 
     public function destroy(Channel $channel): RedirectResponse
     {
-        $this->manager->stopChannel($channel);
+        $this->ingest->stop($channel);
+        $this->push->stopAll($channel);
         $channel->delete();
 
         return redirect()->route('channels.index')->with('success', 'Channel deleted');
-    }
-
-    public function toggle(Channel $channel): RedirectResponse
-    {
-        if ($channel->is_active) {
-            $this->manager->stopChannel($channel);
-            $msg = "{$channel->name} stopped";
-        } else {
-            $this->manager->startChannel($channel);
-            $msg = "{$channel->name} started";
-        }
-
-        return back()->with('success', $msg);
-    }
-
-    public function restart(Channel $channel): RedirectResponse
-    {
-        $this->manager->stopChannel($channel);
-        $channel->update(['is_active' => true]);
-        $this->manager->startChannel($channel);
-
-        return back()->with('success', 'Channel restarted');
-    }
-
-    public function purgeDvr(Channel $channel): RedirectResponse
-    {
-        $this->dvr->purgeAll($channel);
-        return back()->with('success', 'DVR data cleared');
     }
 
     public function probe(Channel $channel): JsonResponse
