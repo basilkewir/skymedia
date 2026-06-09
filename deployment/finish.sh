@@ -163,7 +163,7 @@ supervisorctl start skymedia-scheduler 2>/dev/null || supervisorctl restart skym
 supervisorctl start skymedia-queue     2>/dev/null || supervisorctl restart skymedia-queue     2>/dev/null || true
 ok "Supervisor services running"
 
-NGINX_PORT=$(nginx -T 2>/dev/null | grep -m1 'listen' | grep -oP '\d+' | head -1 || echo "80")
+NGINX_PORT=8888
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
