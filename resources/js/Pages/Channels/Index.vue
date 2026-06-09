@@ -22,10 +22,10 @@
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Channel</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Source</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Push Target</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Status</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">DVR Window</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Ingest</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">DVR</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Push</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Segments</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Active</th>
                             <th class="px-6 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Actions</th>
                         </tr>
                     </thead>
@@ -50,32 +50,32 @@
                                 <span class="truncate max-w-[140px] inline-block align-bottom" :title="ch.push_url">{{ ch.push_url }}</span>
                             </td>
                             <td class="px-6 py-4"><StatusBadge :status="ch.stream_status" /></td>
-                            <td class="px-6 py-4 text-sm text-slate-400">{{ formatDuration(ch.dvr_duration) }}</td>
+                            <td class="px-6 py-4"><StatusBadge :status="ch.dvr_status" /></td>
+                            <td class="px-6 py-4"><StatusBadge :status="ch.push_status" /></td>
                             <td class="px-6 py-4 text-sm text-slate-400">{{ ch.dvr_segments_count }}</td>
                             <td class="px-6 py-4">
-                                <span class="text-xs font-medium" :class="ch.is_active ? 'text-green-400' : 'text-slate-500'">
-                                    {{ ch.is_active ? 'Yes' : 'No' }}
-                                </span>
-                            </td>
-                            <td class="px-6 py-4">
                                 <div class="flex items-center justify-end gap-3">
+                                    <Link :href="route('channels.show', ch.id)"
+                                          class="text-xs text-slate-400 hover:text-white transition-colors">Manage</Link>
                                     <Link :href="route('channels.edit', ch.id)"
                                           class="text-xs text-slate-400 hover:text-white transition-colors">Edit</Link>
-                                    <Link :href="route('channels.toggle', ch.id)" method="post" as="button"
-                                          class="text-xs font-medium transition-colors"
-                                          :class="ch.is_active ? 'text-red-400 hover:text-red-300' : 'text-green-400 hover:text-green-300'">
-                                        {{ ch.is_active ? 'Stop' : 'Start' }}
+                                    <Link v-if="!ch.is_active" :href="route('ingest.start', ch.id)" method="post" as="button"
+                                          class="text-xs font-medium text-green-400 hover:text-green-300 transition-colors">
+                                        ▶ Start
                                     </Link>
-                                    <Link :href="route('channels.destroy', ch.id)" method="delete" as="button"
-                                          class="text-xs text-slate-600 hover:text-red-400 transition-colors"
-                                          @click.prevent="confirmDelete(ch)">
+                                    <Link v-else :href="route('ingest.stop', ch.id)" method="post" as="button"
+                                          class="text-xs font-medium text-red-400 hover:text-red-300 transition-colors">
+                                        ■ Stop
+                                    </Link>
+                                    <button @click="confirmDelete(ch)"
+                                          class="text-xs text-slate-600 hover:text-red-400 transition-colors">
                                         Delete
-                                    </Link>
+                                    </button>
                                 </div>
                             </td>
                         </tr>
                         <tr v-if="channels.data.length === 0">
-                            <td colspan="8" class="px-6 py-16 text-center text-slate-500 text-sm">
+                            <td colspan="7" class="px-6 py-16 text-center text-slate-500 text-sm">
                                 No channels configured.
                                 <Link :href="route('channels.create')" class="text-indigo-400 hover:underline ml-1">Add one</Link>
                             </td>
