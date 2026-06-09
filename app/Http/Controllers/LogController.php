@@ -23,6 +23,9 @@ class LogController extends Controller
         if ($request->filled('event')) {
             $query->where('event', 'like', '%' . $request->event . '%');
         }
+        if ($request->filled('category')) {
+            $query->whereJsonContains('metadata->category', $request->category);
+        }
 
         $logs     = $query->paginate(100)->withQueryString();
         $channels = Channel::select('id', 'name')->orderBy('name')->get();
@@ -30,7 +33,7 @@ class LogController extends Controller
         return Inertia::render('Logs/Index', [
             'logs'     => $logs,
             'channels' => $channels,
-            'filters'  => $request->only(['channel_id', 'level', 'event']),
+            'filters'  => $request->only(['channel_id', 'level', 'event', 'category']),
         ]);
     }
 }

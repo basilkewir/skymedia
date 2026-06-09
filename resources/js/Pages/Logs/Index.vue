@@ -16,7 +16,16 @@
                         </select>
                     </div>
                     <div class="flex-1 min-w-[120px]">
-                        <label class="block text-xs font-medium text-slate-500 mb-1">Level</label>
+                        <label class="block text-xs font-medium text-slate-500 mb-1">Category</label>
+                        <select v-model="f.category" class="form-input">
+                            <option value="">All</option>
+                            <option value="source">Source</option>
+                            <option value="dvr">DVR</option>
+                            <option value="push">Push</option>
+                            <option value="system">System</option>
+                        </select>
+                    </div>
+                    <div class="flex-1 min-w-[120px]">
                         <select v-model="f.level" class="form-input">
                             <option value="">All Levels</option>
                             <option value="info">Info</option>
@@ -54,6 +63,7 @@
                             <tr class="border-b border-slate-800">
                                 <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider w-36">Time</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Channel</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider w-20">Category</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider w-24">Level</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Event</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Message</th>
@@ -74,6 +84,17 @@
                                 <td class="px-6 py-3">
                                     <span class="px-2 py-0.5 rounded text-xs font-semibold"
                                           :class="{
+                                              'bg-green-500/10 text-green-400':   log.metadata?.category === 'source',
+                                              'bg-yellow-500/10 text-yellow-400': log.metadata?.category === 'dvr',
+                                              'bg-indigo-500/10 text-indigo-400': log.metadata?.category === 'push',
+                                              'bg-slate-500/10 text-slate-400':   !log.metadata?.category || log.metadata?.category === 'system',
+                                          }">
+                                        {{ log.metadata?.category ?? 'system' }}
+                                    </span>
+                                </td>
+                                <td class="px-6 py-3">
+                                    <span class="px-2 py-0.5 rounded text-xs font-semibold"
+                                          :class="{
                                               'bg-blue-500/10 text-blue-400':   log.level === 'info',
                                               'bg-yellow-500/10 text-yellow-400': log.level === 'warning',
                                               'bg-red-500/10 text-red-400':     log.level === 'error',
@@ -86,7 +107,7 @@
                                 <td class="px-6 py-3 text-xs text-slate-300">{{ log.message }}</td>
                             </tr>
                             <tr v-if="logs.data.length === 0">
-                                <td colspan="5" class="px-6 py-12 text-center text-slate-500 text-sm">No log entries match your filters</td>
+                                <td colspan="6" class="px-6 py-12 text-center text-slate-500 text-sm">No log entries match your filters</td>
                             </tr>
                         </tbody>
                     </table>
@@ -114,6 +135,7 @@ const f = reactive({
     channel_id: props.filters?.channel_id ?? '',
     level:      props.filters?.level ?? '',
     event:      props.filters?.event ?? '',
+    category:   props.filters?.category ?? '',
 })
 
 function applyFilters() {

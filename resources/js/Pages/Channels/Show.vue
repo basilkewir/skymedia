@@ -15,7 +15,18 @@
                     <div>
                         <div class="flex items-center gap-3">
                             <h1 class="text-xl font-bold text-white">{{ channel.name }}</h1>
-                            <StatusBadge :status="liveStatus" />
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs text-slate-500">Source</span>
+                                <StatusBadge :status="channel.stream_status" />
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs text-slate-500">DVR</span>
+                                <StatusBadge :status="channel.dvr_status" />
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs text-slate-500">Push</span>
+                                <StatusBadge :status="channel.push_status" />
+                            </div>
                         </div>
                         <p class="text-xs text-slate-500 font-mono mt-1">{{ channel.slug }}</p>
                         <p v-if="channel.notes" class="text-sm text-slate-400 mt-2">{{ channel.notes }}</p>

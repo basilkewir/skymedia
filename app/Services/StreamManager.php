@@ -27,8 +27,8 @@ class StreamManager
         // Kill any stale processes
         $this->killLive($channel);
 
-        $this->log($channel, 'info', 'stream_starting', 'Starting live ingest');
-        $channel->update(['stream_status' => 'starting']);
+        $this->log($channel, 'info', 'stream_starting', 'Starting live ingest', 'source');
+        $channel->update(['stream_status' => 'starting', 'push_status' => 'connecting', 'dvr_status' => 'starting']);
 
         try {
             $dvrDir = $channel->dvr_directory;
@@ -43,20 +43,24 @@ class StreamManager
             if ($pid <= 0) throw new \RuntimeException('ffmpeg process did not start');
 
             $channel->update([
-                'pid'          => $pid,
-                'stream_status'=> 'live',
-                'source_live'  => true,
-                'last_live_at' => now(),
-                'last_check_at'=> now(),
+                'pid'           => $pid,
+                'stream_status' => 'live',
+                'push_status'   => 'pushing',
+                'dvr_status'    => 'recording',
+                'source_live'   => true,
+                'last_live_at'  => now(),
+                'last_check_at' => now(),
             ]);
 
-            $this->log($channel, 'info', 'stream_started', "Live ingest PID {$pid}");
+            $this->log($channel, 'info', 'stream_started',  "Source ingest started (PID {$pid})", 'source');
+            $this->log($channel, 'info', 'dvr_recording',   'DVR recording started', 'dvr');
+            $this->log($channel, 'info', 'push_started',    "Pushing to {$channel->push_protocol}://{$channel->push_url}", 'push');
             event(new StreamStatusChanged($channel, 'live'));
             return true;
 
         } catch (\Throwable $e) {
-            $channel->update(['stream_status' => 'error']);
-            $this->log($channel, 'error', 'stream_start_failed', $e->getMessage());
+            $channel->update(['stream_status' => 'error', 'push_status' => 'error', 'dvr_status' => 'error']);
+            $this->log($channel, 'error', 'stream_start_failed', $e->getMessage(), 'source');
             Log::error("[Channel {$channel->id}] start failed: {$e->getMessage()}");
             return false;
         }
@@ -68,14 +72,18 @@ class StreamManager
         $this->killDvr($channel);
 
         $channel->update([
-            'pid'          => null,
-            'dvr_pid'      => null,
-            'stream_status'=> 'stopped',
-            'is_active'    => false,
-            'source_live'  => false,
+            'pid'           => null,
+            'dvr_pid'       => null,
+            'stream_status' => 'stopped',
+            'push_status'   => 'idle',
+            'dvr_status'    => 'idle',
+            'is_active'     => false,
+            'source_live'   => false,
         ]);
 
-        $this->log($channel, 'info', 'stream_stopped', 'Channel stopped by admin');
+        $this->log($channel, 'info', 'stream_stopped',  'Source ingest stopped', 'source');
+        $this->log($channel, 'info', 'push_stopped',    'Push output stopped', 'push');
+        $this->log($channel, 'info', 'dvr_stopped',     'DVR recording stopped', 'dvr');
         event(new StreamStatusChanged($channel, 'stopped'));
         return true;
     }
@@ -117,29 +125,35 @@ class StreamManager
 
     protected function onSourceLost(Channel $channel): void
     {
-        $this->log($channel, 'warning', 'source_lost', 'Source stream went offline — switching to DVR');
+        $this->log($channel, 'warning', 'source_lost',   'Source stream went offline', 'source');
+        $this->log($channel, 'warning', 'dvr_switching', 'DVR recording paused — switching to DVR playback', 'dvr');
 
         $this->killLive($channel);
-        $channel->update(['source_live' => false, 'pid' => null]);
+        $channel->update(['source_live' => false, 'pid' => null, 'stream_status' => 'offline', 'dvr_status' => 'idle']);
 
         if ($this->dvr->hasSegments($channel)) {
+            $this->log($channel, 'info', 'push_dvr_fallback', 'Push switching to DVR playback source', 'push');
             $this->startDvrPlayback($channel);
         } else {
-            $this->log($channel, 'error', 'no_dvr', 'No DVR segments available — waiting for source');
-            $channel->update(['stream_status' => 'error']);
+            $this->log($channel, 'error', 'no_dvr',       'No DVR segments available — push on hold', 'dvr');
+            $this->log($channel, 'error', 'push_stalled', 'Push stalled — no source or DVR available', 'push');
+            $channel->update(['stream_status' => 'error', 'push_status' => 'error', 'dvr_status' => 'error']);
             event(new StreamStatusChanged($channel, 'error'));
         }
     }
 
     protected function onSourceRecovered(Channel $channel): void
     {
-        $this->log($channel, 'info', 'source_recovered', 'Source stream back online — switching to live');
+        $this->log($channel, 'info', 'source_recovered',   'Source stream back online', 'source');
+        $this->log($channel, 'info', 'push_live_resume',   'Push switching back to live source', 'push');
+        $this->log($channel, 'info', 'dvr_resume',         'DVR recording resuming', 'dvr');
 
         $this->killDvr($channel);
         $channel->update([
-            'source_live' => true,
-            'dvr_pid'     => null,
-            'last_live_at'=> now(),
+            'source_live'  => true,
+            'dvr_pid'      => null,
+            'dvr_status'   => 'starting',
+            'last_live_at' => now(),
         ]);
 
         $this->startChannel($channel);
@@ -158,7 +172,8 @@ class StreamManager
             }
         } else {
             // ffmpeg died unexpectedly — restart
-            $this->log($channel, 'warning', 'process_died', 'Live ffmpeg died — restarting');
+            $this->log($channel, 'warning', 'process_died',   'Source ingest process died — restarting', 'source');
+            $this->log($channel, 'warning', 'push_reconnect', 'Push reconnecting after process restart', 'push');
             $this->startChannel($channel);
         }
     }
@@ -205,16 +220,19 @@ class StreamManager
             if ($pid <= 0) throw new \RuntimeException('DVR ffmpeg process did not start');
 
             $channel->update([
-                'dvr_pid'      => $pid,
-                'stream_status'=> 'dvr_playback',
+                'dvr_pid'       => $pid,
+                'stream_status' => 'dvr_playback',
+                'dvr_status'    => 'playing',
+                'push_status'   => 'pushing',
             ]);
 
-            $this->log($channel, 'info', 'dvr_playback_started', "DVR playback PID {$pid}");
+            $this->log($channel, 'info', 'dvr_playback_started', "DVR playback started (PID {$pid})", 'dvr');
+            $this->log($channel, 'info', 'push_dvr_active',      'Push now streaming from DVR', 'push');
             event(new StreamStatusChanged($channel, 'dvr_playback'));
 
         } catch (\Throwable $e) {
-            $channel->update(['stream_status' => 'error']);
-            $this->log($channel, 'error', 'dvr_playback_failed', $e->getMessage());
+            $channel->update(['stream_status' => 'error', 'dvr_status' => 'error', 'push_status' => 'error']);
+            $this->log($channel, 'error', 'dvr_playback_failed', $e->getMessage(), 'dvr');
         }
     }
 
@@ -246,7 +264,7 @@ class StreamManager
     // Logging helper
     // ---------------------------------------------------------------
 
-    protected function log(Channel $channel, string $level, string $event, string $message, ?array $meta = null): void
+    protected function log(Channel $channel, string $level, string $event, string $message, string $category = 'system', ?array $meta = null): void
     {
         try {
             StreamLog::create([
@@ -254,7 +272,7 @@ class StreamManager
                 'level'      => $level,
                 'event'      => $event,
                 'message'    => $message,
-                'metadata'   => $meta,
+                'metadata'   => array_merge(['category' => $category], $meta ?? []),
             ]);
         } catch (\Throwable $e) {
             Log::error("StreamLog write failed: {$e->getMessage()}");

@@ -14,7 +14,7 @@ class Channel extends Model
         'name', 'slug', 'source_type', 'source_url',
         'push_protocol', 'push_url', 'push_stream_key',
         'dvr_duration', 'segment_duration', 'dvr_path',
-        'is_active', 'stream_status', 'source_live',
+        'is_active', 'stream_status', 'push_status', 'dvr_status', 'source_live',
         'pid', 'dvr_pid', 'last_live_at', 'last_check_at',
         'check_interval', 'max_retries', 'notes',
     ];
