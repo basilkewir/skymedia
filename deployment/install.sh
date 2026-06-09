@@ -264,10 +264,17 @@ ok "Directories ready"
 step "10 / 10  App clone / config / services"
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Clone repo if URL given and directory is empty
-if [[ -n "${REPO_URL}" && ! -f "${APP_DIR}/artisan" ]]; then
-    git clone "${REPO_URL}" "${APP_DIR}"
-    ok "Repository cloned to ${APP_DIR}"
+# Clone repo if URL given — re-clone if directory exists but has no artisan
+if [[ -n "${REPO_URL}" ]]; then
+    if [[ -f "${APP_DIR}/artisan" ]]; then
+        ok "Application already present in ${APP_DIR} — pulling latest code"
+        git -C "${APP_DIR}" pull origin main --quiet || true
+    else
+        info "Cloning ${REPO_URL} → ${APP_DIR}"
+        rm -rf "${APP_DIR}"
+        git clone "${REPO_URL}" "${APP_DIR}"
+        ok "Repository cloned to ${APP_DIR}"
+    fi
 elif [[ -f "${APP_DIR}/artisan" ]]; then
     ok "Application already present in ${APP_DIR}"
 else

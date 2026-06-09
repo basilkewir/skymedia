@@ -120,6 +120,10 @@ ok "SkyMedia daemons stopped"
 # ─────────────────────────────────────────────────────────────────────────────
 step "4 / 8  PHP dependencies"
 # ─────────────────────────────────────────────────────────────────────────────
+if ! command -v composer &>/dev/null; then
+    curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --quiet
+    ok "Composer installed"
+fi
 composer install --no-dev --optimize-autoloader --no-interaction --quiet
 ok "Composer packages updated"
 
