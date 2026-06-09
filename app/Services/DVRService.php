@@ -141,11 +141,6 @@ class DVRService
             ->sum('filesize');
     }
 
-    public function totalSize(Channel $channel): int
-    {
-        return (int) DvrSegment::where('channel_id', $channel->id)->sum('filesize');
-    }
-
     public function segmentCount(Channel $channel): int
     {
         return DvrSegment::where('channel_id', $channel->id)->count();
