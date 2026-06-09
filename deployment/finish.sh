@@ -44,10 +44,16 @@ fi
 
 step ".env file"
 if [[ ! -f "${APP_DIR}/.env" ]]; then
+    # Auto-detect server IP
+    SERVER_IP=$(hostname -I | awk '{print $1}')
     cp "${APP_DIR}/.env.example" "${APP_DIR}/.env"
-    warn ".env created from .env.example — edit /var/www/skymedia/.env to set DB_PASSWORD, APP_URL etc."
+    sed -i "s|APP_URL=.*|APP_URL=http://${SERVER_IP}|" "${APP_DIR}/.env"
+    ok ".env created — APP_URL set to http://${SERVER_IP}"
 else
-    ok ".env already exists — preserved"
+    # Update APP_URL with current IP even if .env exists
+    SERVER_IP=$(hostname -I | awk '{print $1}')
+    sed -i "s|APP_URL=.*|APP_URL=http://${SERVER_IP}|" "${APP_DIR}/.env"
+    ok ".env already exists — APP_URL updated to http://${SERVER_IP}"
 fi
 
 step "Fix ownership"

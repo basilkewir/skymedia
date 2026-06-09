@@ -111,7 +111,10 @@ fi
 
 # .env is NEVER touched — verify it still exists
 [[ -f "${APP_DIR}/.env" ]] || fail ".env is missing after git pull — restore it from backup"
-ok ".env preserved"
+# Update APP_URL with current server IP
+SERVER_IP=$(hostname -I | awk '{print $1}')
+sed -i "s|APP_URL=.*|APP_URL=http://${SERVER_IP}|" "${APP_DIR}/.env"
+ok ".env preserved — APP_URL updated to http://${SERVER_IP}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 step "3 / 8  Gracefully stop stream processes"
