@@ -131,8 +131,8 @@ step "Nginx"
 cp "${APP_DIR}/deployment/nginx.conf" /etc/nginx/sites-available/skymedia
 ln -sf /etc/nginx/sites-available/skymedia /etc/nginx/sites-enabled/skymedia
 rm -f /etc/nginx/sites-enabled/default
-nginx -t && systemctl reload nginx
-ok "Nginx configured and reloaded"
+nginx -t && systemctl enable nginx --quiet && systemctl restart nginx
+ok "Nginx configured and started"
 
 step "Admin user"
 ADMIN_EMAIL="admin@skymedia.local"
