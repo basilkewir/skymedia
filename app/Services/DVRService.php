@@ -8,10 +8,8 @@ use Illuminate\Support\Facades\Log;
 
 class DVRService
 {
-    public function __construct(protected FFmpegService $ffmpeg) {}
-
     // ---------------------------------------------------------------
-    // Called periodically while stream is LIVE to sync DB from disk
+    // Sync — called periodically to register new segments from disk
     // ---------------------------------------------------------------
 
     public function syncSegments(Channel $channel): void
@@ -62,8 +60,7 @@ class DVRService
     }
 
     // ---------------------------------------------------------------
-    // Enforce rolling DVR window — delete oldest segments over limit
-    // Uses BOTH time-based and count-based enforcement
+    // Rolling window enforcement (time + count based)
     // ---------------------------------------------------------------
 
     public function enforceWindow(Channel $channel): void
@@ -93,7 +90,7 @@ class DVRService
     }
 
     // ---------------------------------------------------------------
-    // Rebuild the concat.txt for DVR playback from DB records
+    // Build concat.txt from DB records for DVR playback
     // ---------------------------------------------------------------
 
     public function buildConcatFile(Channel $channel): bool
@@ -104,7 +101,12 @@ class DVRService
             ->get();
 
         if ($segments->isEmpty()) {
-            return $this->ffmpeg->buildConcatFile($channel);
+            $files = glob($channel->dvr_directory . '/seg_*.ts');
+            if (empty($files)) return false;
+            sort($files, SORT_NATURAL);
+            $lines = array_map(fn($f) => "file '" . str_replace("'", "'\\''", $f) . "'", $files);
+            file_put_contents($channel->dvr_directory . '/concat.txt', implode("\n", $lines));
+            return true;
         }
 
         $lines = $segments->map(fn($s) => "file '" . str_replace("'", "'\\''", $s->filepath) . "'")->toArray();
@@ -113,7 +115,7 @@ class DVRService
     }
 
     // ---------------------------------------------------------------
-    // Segment availability checks
+    // Queries
     // ---------------------------------------------------------------
 
     public function hasSegments(Channel $channel): bool
@@ -143,7 +145,7 @@ class DVRService
     }
 
     // ---------------------------------------------------------------
-    // Purge all DVR data for a channel
+    // Purge
     // ---------------------------------------------------------------
 
     public function purgeAll(Channel $channel): int
@@ -166,7 +168,7 @@ class DVRService
     }
 
     // ---------------------------------------------------------------
-    // Mark segments as unavailable (when files are missing)
+    // Integrity
     // ---------------------------------------------------------------
 
     public function verifySegments(Channel $channel): void
@@ -178,10 +180,6 @@ class DVRService
             }
         }
     }
-
-    // ---------------------------------------------------------------
-    // Clean up orphaned files (segments in DB that don't exist on disk)
-    // ---------------------------------------------------------------
 
     public function cleanupOrphans(Channel $channel): int
     {

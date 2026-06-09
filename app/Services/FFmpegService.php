@@ -17,64 +17,12 @@ class FFmpegService
         $this->ffprobeBin = config('skymedia.ffprobe_binary', 'ffprobe');
     }
 
-    // ---------------------------------------------------------------
-    // Input flags per source type
-    // ---------------------------------------------------------------
-
-    protected function inputFlags(Channel $channel): array
-    {
-        $probesize  = in_array($channel->source_type, ['udp', 'mpegts']) ? '5000000' : '1000000';
-        $analyze    = in_array($channel->source_type, ['udp', 'mpegts']) ? '3000000' : '1000000';
-
-        return match ($channel->source_type) {
-            'udp', 'mpegts' => [
-                '-fflags', '+genpts+discardcorrupt',
-                '-probesize', $probesize,
-                '-analyzeduration', $analyze,
-                '-timeout', '10000000',
-                '-i', $channel->source_url,
-            ],
-            'hls' => [
-                '-re',
-                '-fflags', '+genpts',
-                '-probesize', $probesize,
-                '-analyzeduration', $analyze,
-                '-timeout', '15000000',
-                '-i', $channel->source_url,
-            ],
-            'srt' => [
-                '-fflags', '+genpts+discardcorrupt',
-                '-probesize', $probesize,
-                '-analyzeduration', $analyze,
-                '-i', "srt://{$this->parseSrtUrl($channel->source_url)}?timeout=8000000&latency=" . config('skymedia.srt_latency', 200) . '000',
-            ],
-            default => [
-                '-fflags', '+genpts+discardcorrupt',
-                '-probesize', $probesize,
-                '-analyzeduration', $analyze,
-                '-timeout', '10000000',
-                '-i', $channel->source_url,
-            ],
-        };
-    }
-
-    private function parseSrtUrl(string $url): string
-    {
-        return preg_replace('#^srt://#', '', $url);
-    }
+    // ===================================================================
+    //  COMMAND BUILDERS
+    // ===================================================================
 
     // ---------------------------------------------------------------
-    // Common audio encode flags
-    // ---------------------------------------------------------------
-
-    protected function audioFlags(): array
-    {
-        return ['-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', '128k'];
-    }
-
-    // ---------------------------------------------------------------
-    // Build DVR Recorder command
-    // Writes segments to disk with wrap-around numbering
+    // DVR recorder: source → segmented .ts files
     // ---------------------------------------------------------------
 
     public function buildDvrRecordCommand(Channel $channel): array
@@ -109,7 +57,7 @@ class FFmpegService
     }
 
     // ---------------------------------------------------------------
-    // Build Push command (source → RTMP/SRT)
+    // Live push: source → RTMP/SRT
     // ---------------------------------------------------------------
 
     public function buildPushCommand(Channel $channel): array
@@ -128,7 +76,7 @@ class FFmpegService
     }
 
     // ---------------------------------------------------------------
-    // Build DVR Playback command (concat → RTMP/SRT)
+    // DVR playback: concat.txt → RTMP/SRT (looping)
     // ---------------------------------------------------------------
 
     public function buildDvrPlaybackCommand(Channel $channel): array
@@ -148,45 +96,9 @@ class FFmpegService
         );
     }
 
-    // ---------------------------------------------------------------
-    // Build concat.txt from available segments (ordered by sequence)
-    // ---------------------------------------------------------------
-
-    public function buildConcatFile(Channel $channel): bool
-    {
-        $dvrDir = $channel->dvr_directory;
-        $files  = glob("{$dvrDir}/seg_*.ts");
-
-        if (empty($files)) {
-            return false;
-        }
-
-        sort($files, SORT_NATURAL);
-        $lines = array_map(fn($f) => "file '" . str_replace("'", "'\\''", $f) . "'", $files);
-        file_put_contents("{$dvrDir}/concat.txt", implode("\n", $lines));
-        return true;
-    }
-
-    // ---------------------------------------------------------------
-    // Push target URL helper
-    // ---------------------------------------------------------------
-
-    protected function pushUrl(Channel $channel): string
-    {
-        $target = $channel->push_target;
-
-        if ($channel->push_protocol === 'srt') {
-            $latency = config('skymedia.srt_latency', 200) * 1000;
-            $host    = $this->parseSrtUrl($target);
-            return "srt://{$host}?latency={$latency}&mode=caller";
-        }
-
-        return $target;
-    }
-
-    // ---------------------------------------------------------------
-    // Process management
-    // ---------------------------------------------------------------
+    // ===================================================================
+    //  PROCESS MANAGEMENT
+    // ===================================================================
 
     public function startProcess(array $command, string $pidFile, string $logFile): int
     {
@@ -237,40 +149,6 @@ class FFmpegService
         }
     }
 
-    public function stopProcessGroup(int $pid): void
-    {
-        if ($pid <= 0) return;
-
-        $pgid = null;
-        if (function_exists('posix_getpgid')) {
-            $pgid = posix_getpgid($pid);
-        }
-        if (!$pgid) {
-            $pgid = $pid;
-        }
-
-        $signal = SIGTERM;
-        if (function_exists('posix_kill')) {
-            posix_kill(-$pgid, $signal);
-        } else {
-            exec("kill -- -{$pgid} 2>/dev/null || kill {$pid} 2>/dev/null");
-        }
-
-        $waited = 0;
-        while ($this->isRunning($pid) && $waited < 50) {
-            usleep(100_000);
-            $waited++;
-        }
-
-        if ($this->isRunning($pid)) {
-            if (function_exists('posix_kill')) {
-                posix_kill(-$pgid, SIGKILL);
-            } else {
-                exec("kill -9 -- -{$pgid} 2>/dev/null || kill -9 {$pid} 2>/dev/null");
-            }
-        }
-    }
-
     public function isRunning(int $pid): bool
     {
         if ($pid <= 0) return false;
@@ -288,9 +166,9 @@ class FFmpegService
         return $exitCode === 0;
     }
 
-    // ---------------------------------------------------------------
-    // Stream health check via ffprobe
-    // ---------------------------------------------------------------
+    // ===================================================================
+    //  SOURCE HEALTH
+    // ===================================================================
 
     public function checkSourceHealth(Channel $channel): bool
     {
@@ -338,22 +216,6 @@ class FFmpegService
         }
     }
 
-    protected function checkHttpUrl(string $url): int
-    {
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_NOBODY       => true,
-            CURLOPT_TIMEOUT      => 5,
-            CURLOPT_CONNECTTIMEOUT => 3,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_USERAGENT    => 'SkyMedia/1.0',
-        ]);
-        curl_exec($ch);
-        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        return $code;
-    }
-
     public function probeStream(Channel $channel): array
     {
         $args = [
@@ -383,40 +245,9 @@ class FFmpegService
         return json_decode($proc->getOutput(), true) ?? [];
     }
 
-    // ---------------------------------------------------------------
-    // DVR segment management helpers
-    // ---------------------------------------------------------------
-
-    public function deleteOldestSegments(string $dvrDir, int $keepCount): void
-    {
-        $files = glob("{$dvrDir}/seg_*.ts");
-        if (empty($files) || count($files) <= $keepCount) return;
-
-        sort($files, SORT_NATURAL);
-        $excess = array_slice($files, 0, count($files) - $keepCount);
-
-        foreach ($excess as $f) {
-            @unlink($f);
-        }
-    }
-
-    public function getSegmentSequence(string $filename): ?int
-    {
-        if (preg_match('/seg_(\d+)\.ts$/', $filename, $m)) {
-            return (int) $m[1];
-        }
-        return null;
-    }
-
-    public function getSegmentCount(string $dvrDir): int
-    {
-        $files = glob("{$dvrDir}/seg_*.ts");
-        return $files ? count($files) : 0;
-    }
-
-    // ---------------------------------------------------------------
-    // PID / log file helpers
-    // ---------------------------------------------------------------
+    // ===================================================================
+    //  PID / FILE HELPERS
+    // ===================================================================
 
     public function pidFile(Channel $channel, string $type = 'live'): string
     {
@@ -449,5 +280,85 @@ class FFmpegService
         $output = '';
         exec("tail -{$lines} " . escapeshellarg($logFile) . " 2>/dev/null", $output);
         return implode("\n", $output);
+    }
+
+    // ===================================================================
+    //  INTERNAL
+    // ===================================================================
+
+    protected function inputFlags(Channel $channel): array
+    {
+        $probesize = in_array($channel->source_type, ['udp', 'mpegts']) ? '5000000' : '1000000';
+        $analyze   = in_array($channel->source_type, ['udp', 'mpegts']) ? '3000000' : '1000000';
+
+        return match ($channel->source_type) {
+            'udp', 'mpegts' => [
+                '-fflags', '+genpts+discardcorrupt',
+                '-probesize', $probesize,
+                '-analyzeduration', $analyze,
+                '-timeout', '10000000',
+                '-i', $channel->source_url,
+            ],
+            'hls' => [
+                '-re',
+                '-fflags', '+genpts',
+                '-probesize', $probesize,
+                '-analyzeduration', $analyze,
+                '-timeout', '15000000',
+                '-i', $channel->source_url,
+            ],
+            'srt' => [
+                '-fflags', '+genpts+discardcorrupt',
+                '-probesize', $probesize,
+                '-analyzeduration', $analyze,
+                '-i', "srt://{$this->parseSrtUrl($channel->source_url)}?timeout=8000000&latency=" . config('skymedia.srt_latency', 200) . '000',
+            ],
+            default => [
+                '-fflags', '+genpts+discardcorrupt',
+                '-probesize', $probesize,
+                '-analyzeduration', $analyze,
+                '-timeout', '10000000',
+                '-i', $channel->source_url,
+            ],
+        };
+    }
+
+    protected function audioFlags(): array
+    {
+        return ['-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', '128k'];
+    }
+
+    protected function pushUrl(Channel $channel): string
+    {
+        $target = $channel->push_target;
+
+        if ($channel->push_protocol === 'srt') {
+            $latency = config('skymedia.srt_latency', 200) * 1000;
+            $host    = $this->parseSrtUrl($target);
+            return "srt://{$host}?latency={$latency}&mode=caller";
+        }
+
+        return $target;
+    }
+
+    protected function parseSrtUrl(string $url): string
+    {
+        return preg_replace('#^srt://#', '', $url);
+    }
+
+    protected function checkHttpUrl(string $url): int
+    {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_NOBODY       => true,
+            CURLOPT_TIMEOUT      => 5,
+            CURLOPT_CONNECTTIMEOUT => 3,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_USERAGENT    => 'SkyMedia/1.0',
+        ]);
+        curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        return $code;
     }
 }
