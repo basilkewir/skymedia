@@ -52,7 +52,7 @@ fi
 echo ""
 echo -e "${CYAN}╔══════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║   SkyMedia — First-time Installation         ║${NC}"
-echo -e "${CYAN}║   Ubuntu 22.04 LTS                           ║${NC}"
+echo -e "${CYAN}║   Ubuntu 22.04/24.04 LTS                     ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════╝${NC}"
 echo ""
 info "Domain  : ${APP_DOMAIN}"
@@ -90,8 +90,7 @@ if ! php -v 2>/dev/null | grep -q "PHP ${PHP_VER}"; then
         php${PHP_VER}-fpm php${PHP_VER}-cli php${PHP_VER}-common \
         php${PHP_VER}-mysql php${PHP_VER}-redis php${PHP_VER}-xml \
         php${PHP_VER}-curl php${PHP_VER}-mbstring php${PHP_VER}-zip \
-        php${PHP_VER}-bcmath php${PHP_VER}-intl php${PHP_VER}-pcntl \
-        php${PHP_VER}-posix php${PHP_VER}-gd
+        php${PHP_VER}-bcmath php${PHP_VER}-intl php${PHP_VER}-gd
     ok "PHP ${PHP_VER} installed"
 else
     ok "PHP ${PHP_VER} already installed — skipping"

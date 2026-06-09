@@ -25,6 +25,10 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 
 step "PHP dependencies"
+if ! command -v composer &>/dev/null; then
+    curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --quiet
+    ok "Composer installed"
+fi
 composer install --no-dev --optimize-autoloader --no-interaction --quiet
 ok "Composer packages installed"
 
