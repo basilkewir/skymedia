@@ -13,6 +13,12 @@ set -euo pipefail
 APP_DIR="/var/www/skymedia"
 cd "${APP_DIR}"
 
+# Resolve binaries — handles sudo stripping PATH
+PHP=$(command -v php8.2 || command -v php)
+COMPOSER=$(command -v composer || find /usr/local/bin /usr/bin /home -name composer 2>/dev/null | head -1)
+NODE=$(command -v node || command -v nodejs)
+NPM=$(command -v npm)
+
 GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}[OK]${NC}    $*"; }
 info() { echo -e "${CYAN}[INFO]${NC}  $*"; }
@@ -25,22 +31,24 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 
 step "PHP dependencies"
-if ! command -v composer &>/dev/null; then
-    curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --quiet
+if [[ -z "${COMPOSER}" ]]; then
+    curl -sS https://getcomposer.org/installer | "${PHP}" -- --install-dir=/usr/local/bin --filename=composer --quiet
+    COMPOSER=/usr/local/bin/composer
     ok "Composer installed"
 fi
-composer install --no-dev --optimize-autoloader --no-interaction --quiet
+info "Using composer: ${COMPOSER}"
+info "Using PHP: ${PHP}"
+"${PHP}" "${COMPOSER}" install --no-dev --optimize-autoloader --no-interaction --quiet
 ok "Composer packages installed"
 
 step "Frontend assets"
-npm ci --silent
-npm run build
+"${NPM}" ci --silent
+"${NPM}" run build
 ok "Vite build complete"
 
 step "App key"
-# Only generate key if .env has no key set
 if grep -q '^APP_KEY=$' .env 2>/dev/null || grep -q "^APP_KEY=\"\"" .env 2>/dev/null; then
-    php artisan key:generate --force --quiet
+    "${PHP}" artisan key:generate --force --quiet
     ok "App key generated"
 else
     ok "App key already set — preserved"
@@ -48,34 +56,31 @@ fi
 
 step "Storage symlink"
 if [[ ! -L "${APP_DIR}/public/storage" ]]; then
-    php artisan storage:link --quiet
+    "${PHP}" artisan storage:link --quiet
     ok "Storage symlink created"
 else
     ok "Storage symlink already exists"
 fi
 
 step "Database migrations (--seed on first run)"
-# Check if tables exist — if not, run with seed; otherwise just migrate
-TABLES_EXIST=$(mysql -u"$(grep DB_USERNAME .env | cut -d= -f2 | tr -d ' ')" \
-    -p"$(grep DB_PASSWORD .env | cut -d= -f2 | tr -d ' ')" \
-    "$(grep DB_DATABASE .env | cut -d= -f2 | tr -d ' ')" \
+get_env() { grep "^${1}=" .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'" | tr -d ' '; }
+TABLES_EXIST=$(mysql -u"$(get_env DB_USERNAME)" -p"$(get_env DB_PASSWORD)" "$(get_env DB_DATABASE)" \
     -e "SHOW TABLES LIKE 'channels';" 2>/dev/null | grep -c "channels" || true)
 
 if [[ "${TABLES_EXIST}" -eq 0 ]]; then
     info "First run — seeding default settings..."
-    php artisan migrate --force --seed --quiet
+    "${PHP}" artisan migrate --force --seed --quiet
     ok "Database migrated and seeded"
 else
-    # Always run migrate (new columns/tables from updates), NEVER --fresh or --seed
-    php artisan migrate --force --quiet
+    "${PHP}" artisan migrate --force --quiet
     ok "Database migrations applied (existing data preserved)"
 fi
 
 step "Caches"
-php artisan config:cache  --quiet
-php artisan route:cache   --quiet
-php artisan view:cache    --quiet
-php artisan event:cache   --quiet
+"${PHP}" artisan config:cache  --quiet
+"${PHP}" artisan route:cache   --quiet
+"${PHP}" artisan view:cache    --quiet
+"${PHP}" artisan event:cache   --quiet
 ok "All caches warmed"
 
 step "Permissions"

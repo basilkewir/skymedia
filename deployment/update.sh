@@ -40,6 +40,11 @@ fi
 
 cd "${APP_DIR}"
 
+# Resolve binaries — handles sudo stripping PATH
+PHP=$(command -v php8.2 || command -v php)
+COMPOSER=$(command -v composer || find /usr/local/bin /usr/bin /home -name composer 2>/dev/null | head -1)
+NPM=$(command -v npm)
+
 GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}[OK]${NC}    $*"; }
 info() { echo -e "${CYAN}[INFO]${NC}  $*"; }
@@ -120,44 +125,43 @@ ok "SkyMedia daemons stopped"
 # ─────────────────────────────────────────────────────────────────────────────
 step "4 / 8  PHP dependencies"
 # ─────────────────────────────────────────────────────────────────────────────
-if ! command -v composer &>/dev/null; then
-    curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --quiet
+if [[ -z "${COMPOSER}" ]]; then
+    curl -sS https://getcomposer.org/installer | "${PHP}" -- --install-dir=/usr/local/bin --filename=composer --quiet
+    COMPOSER=/usr/local/bin/composer
     ok "Composer installed"
 fi
-composer install --no-dev --optimize-autoloader --no-interaction --quiet
+"${PHP}" "${COMPOSER}" install --no-dev --optimize-autoloader --no-interaction --quiet
 ok "Composer packages updated"
 
 # ─────────────────────────────────────────────────────────────────────────────
 step "5 / 8  Frontend assets"
 # ─────────────────────────────────────────────────────────────────────────────
-npm ci --silent
-npm run build
+"${NPM}" ci --silent
+"${NPM}" run build
 ok "Frontend built"
 
 # ─────────────────────────────────────────────────────────────────────────────
 step "6 / 8  Database migrations (safe — never drops data)"
 # ─────────────────────────────────────────────────────────────────────────────
 info "Running php artisan migrate --force (non-destructive only)..."
-php artisan migrate --force --quiet
+"${PHP}" artisan migrate --force --quiet
 ok "Migrations applied"
 
 # ─────────────────────────────────────────────────────────────────────────────
 step "7 / 8  Caches & permissions"
 # ─────────────────────────────────────────────────────────────────────────────
-# Clear old caches first, then rebuild
-php artisan cache:clear    --quiet
-php artisan config:cache   --quiet
-php artisan route:cache    --quiet
-php artisan view:cache     --quiet
-php artisan event:cache    --quiet
+"${PHP}" artisan cache:clear    --quiet
+"${PHP}" artisan config:cache   --quiet
+"${PHP}" artisan route:cache    --quiet
+"${PHP}" artisan view:cache     --quiet
+"${PHP}" artisan event:cache    --quiet
 ok "Caches rebuilt"
 
 chown -R www-data:www-data "${APP_DIR}/storage" "${APP_DIR}/bootstrap/cache"
 chmod -R 775 "${APP_DIR}/storage" "${APP_DIR}/bootstrap/cache"
 ok "Permissions set"
 
-# Ensure storage link exists
-[[ -L "${APP_DIR}/public/storage" ]] || php artisan storage:link --quiet
+[[ -L "${APP_DIR}/public/storage" ]] || "${PHP}" artisan storage:link --quiet
 ok "Storage link verified"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -178,7 +182,7 @@ ok "Nginx reloaded"
 
 # Re-activate all channels that were running before the update
 info "Re-activating streams..."
-php artisan streams:activate-all 2>/dev/null || warn "Could not activate streams (no active channels or error)"
+"${PHP}" artisan streams:activate-all 2>/dev/null || warn "Could not activate streams (no active channels or error)"
 
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
