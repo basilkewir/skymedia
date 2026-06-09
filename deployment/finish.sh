@@ -14,10 +14,10 @@ APP_DIR="/var/www/skymedia"
 cd "${APP_DIR}"
 
 # Resolve binaries — handles sudo stripping PATH
-PHP=$(command -v php8.2 || command -v php)
-COMPOSER=$(command -v composer || find /usr/local/bin /usr/bin /home -name composer 2>/dev/null | head -1)
-NODE=$(command -v node || command -v nodejs)
-NPM=$(command -v npm)
+PHP=$(command -v php8.2 || command -v php || true)
+COMPOSER=$(command -v composer || find /usr/local/bin /usr/bin /home -name composer 2>/dev/null | head -1 || true)
+NODE=$(command -v node || command -v nodejs || true)
+NPM=$(command -v npm || true)
 
 GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}[OK]${NC}    $*"; }
@@ -29,6 +29,26 @@ echo -e "${CYAN}╔════════════════════�
 echo -e "${CYAN}║   SkyMedia — App Bootstrap       ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════╝${NC}"
 echo ""
+
+step "Node.js & npm"
+if [[ -z "${NODE}" ]] || [[ -z "${NPM}" ]]; then
+    info "Node.js not found — installing Node.js 20..."
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null
+    apt-get install -y -q nodejs
+    NODE=$(command -v node)
+    NPM=$(command -v npm)
+    ok "Node.js $(${NODE} -v) installed"
+else
+    ok "Node.js $(${NODE} -v) / npm $(${NPM} -v)"
+fi
+
+step ".env file"
+if [[ ! -f "${APP_DIR}/.env" ]]; then
+    cp "${APP_DIR}/.env.example" "${APP_DIR}/.env"
+    warn ".env created from .env.example — edit /var/www/skymedia/.env to set DB_PASSWORD, APP_URL etc."
+else
+    ok ".env already exists — preserved"
+fi
 
 step "Fix ownership"
 chown -R root:root "${APP_DIR}"
@@ -48,7 +68,8 @@ COMPOSER_ALLOW_SUPERUSER=1 "${PHP}" "${COMPOSER}" install --no-dev --optimize-au
 ok "Composer packages installed"
 
 step "Frontend assets"
-"${NPM}" ci --silent
+info "Using node: ${NODE} ($(${NODE} -v))"
+"${NPM}" ci
 "${NPM}" run build
 ok "Vite build complete"
 
