@@ -38,7 +38,8 @@ if [[ -z "${COMPOSER}" ]]; then
 fi
 info "Using composer: ${COMPOSER}"
 info "Using PHP: ${PHP}"
-"${PHP}" "${COMPOSER}" install --no-dev --optimize-autoloader --no-interaction --quiet
+COMPOSER_ALLOW_SUPERUSER=1 "${PHP}" "${COMPOSER}" install --no-dev --optimize-autoloader --no-interaction --quiet
+"${PHP}" artisan package:discover --ansi 2>/dev/null || true
 ok "Composer packages installed"
 
 step "Frontend assets"
