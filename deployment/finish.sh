@@ -163,9 +163,10 @@ fi
 cp "${APP_DIR}/deployment/supervisord.conf" /etc/supervisor/conf.d/skymedia.conf
 supervisorctl reread  >/dev/null 2>&1 || true
 supervisorctl update  >/dev/null 2>&1 || true
-supervisorctl start skymedia-monitor   2>/dev/null || supervisorctl restart skymedia-monitor   2>/dev/null || true
-supervisorctl start skymedia-scheduler 2>/dev/null || supervisorctl restart skymedia-scheduler 2>/dev/null || true
-supervisorctl start skymedia-queue     2>/dev/null || supervisorctl restart skymedia-queue     2>/dev/null || true
+supervisorctl restart skymedia-monitor   2>/dev/null || true
+supervisorctl restart skymedia-scheduler 2>/dev/null || true
+supervisorctl restart skymedia-queue     2>/dev/null || true
+supervisorctl start   skymedia-boot      2>/dev/null || true
 ok "Supervisor services running"
 
 NGINX_PORT=8888

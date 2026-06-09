@@ -54,10 +54,12 @@ class ChannelController extends Controller
             'notes'            => 'nullable|string|max:1000',
         ]);
 
-        $data['slug']       = $data['slug'] ?? Str::slug($data['name']);
-        $data['dvr_path']   = config('skymedia.dvr_base_path', storage_path('app/dvr')) . '/' . $data['slug'];
-        $data['is_active']  = false;
+        $data['slug']          = $data['slug'] ?? Str::slug($data['name']);
+        $data['dvr_path']      = config('skymedia.dvr_base_path', storage_path('app/dvr')) . '/' . $data['slug'];
+        $data['is_active']     = false;
         $data['stream_status'] = 'idle';
+        $data['push_status']   = 'idle';
+        $data['dvr_status']    = 'idle';
 
         Channel::create($data);
 

@@ -37,11 +37,13 @@ class MonitorStreams extends Command
                         $this->lastChecked[$channel->id] = time();
                         $ch = $channel->fresh();
                         $this->line(sprintf(
-                            '[%s] %-20s  status=%-12s  source=%s',
+                            '[%s] %-20s  source=%-4s  dvr=%-10s  push=%-10s  stream=%s',
                             now()->format('H:i:s'),
                             $ch->name,
-                            $ch->stream_status,
-                            $ch->source_live ? 'LIVE' : 'DOWN'
+                            $ch->source_live ? 'LIVE' : 'DOWN',
+                            $ch->dvr_status,
+                            $ch->push_status,
+                            $ch->stream_status
                         ));
                     }
                 });
