@@ -22,7 +22,51 @@ class FFmpegService
     // ===================================================================
 
     // ---------------------------------------------------------------
-    // DVR recorder: source → segmented .ts files
+    // Combined: source → DVR segments + push output (single process)
+    // This is the primary live command — uses tee muxer so one ffmpeg
+    // decodes the source once and writes both outputs simultaneously.
+    // ---------------------------------------------------------------
+
+    public function buildLiveCommand(Channel $channel): array
+    {
+        $dvrDir         = $channel->dvr_directory;
+        if (!is_dir($dvrDir)) mkdir($dvrDir, 0755, true);
+
+        $segmentPattern = "{$dvrDir}/seg_%05d.ts";
+        $wrapCount      = (int) ceil($channel->dvr_duration / $channel->segment_duration) + 20;
+
+        // DVR tee output options
+        $dvrOpts = http_build_query([
+            'f'                    => 'segment',
+            'segment_time'         => $channel->segment_duration,
+            'segment_format'       => 'mpegts',
+            'segment_wrap'         => max($wrapCount, 100),
+            'reset_timestamps'     => 1,
+            'strftime'             => 0,
+            'individual_header_trailer' => 0,
+            'break_non_keyframes'  => 0,
+        ], '', ':');
+
+        // Push tee output options
+        $pushFmt  = $channel->push_protocol === 'srt' ? 'mpegts' : 'flv';
+        $pushExtra = $channel->push_protocol === 'rtmp' ? ':flvflags=no_duration_filesize' : '';
+        $pushOpts = "f={$pushFmt}{$pushExtra}";
+        $pushUrl  = $this->pushUrl($channel);
+
+        $teeMap = "[{$dvrOpts}]{$segmentPattern}|[{$pushOpts}]{$pushUrl}";
+
+        return array_merge(
+            [$this->ffmpegBin, '-y', '-loglevel', 'warning'],
+            $this->inputFlags($channel),
+            ['-c:v', 'copy'],
+            $this->audioFlags(),
+            ['-f', 'tee', '-map', '0:v?', '-map', '0:a?', $teeMap]
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // DVR recorder only: source → segmented .ts files (no push)
+    // Used when push is disabled or push is handled separately.
     // ---------------------------------------------------------------
 
     public function buildDvrRecordCommand(Channel $channel): array
@@ -44,20 +88,18 @@ class FFmpegService
                 '-f', 'segment',
                 '-segment_time', (string) $channel->segment_duration,
                 '-segment_format', 'mpegts',
-                '-segment_atclocktime', '0',
                 '-segment_wrap', (string) max($wrapCount, 100),
                 '-reset_timestamps', '1',
                 '-strftime', '0',
                 '-individual_header_trailer', '0',
                 '-break_non_keyframes', '0',
-                '-write_empty_segments', '0',
                 $segmentPattern,
             ]
         );
     }
 
     // ---------------------------------------------------------------
-    // Live push: source → RTMP/SRT
+    // Push only: source → RTMP/SRT directly (no DVR)
     // ---------------------------------------------------------------
 
     public function buildPushCommand(Channel $channel): array

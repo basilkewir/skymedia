@@ -34,8 +34,6 @@ class StreamManager
             'stream_status' => 'starting',
             'push_status'   => 'connecting',
             'dvr_status'    => 'starting',
-            'retry_count'   => 0,
-            'last_error'    => null,
         ]);
 
         try {
@@ -44,25 +42,10 @@ class StreamManager
 
             $ok = $this->ingest->start($channel);
             if (!$ok) {
-                throw new \RuntimeException('Ingest module failed to start');
+                throw new \RuntimeException('Ingest failed to start (check ffmpeg log)');
             }
 
-            $ok = $this->push->startLive($channel);
-            if (!$ok) {
-                $this->ingest->stop($channel);
-                throw new \RuntimeException('Push module failed to start');
-            }
-
-            $channel->update([
-                'stream_status' => 'live',
-                'push_status'   => 'pushing',
-                'dvr_status'    => 'recording',
-                'source_live'   => true,
-                'last_live_at'  => now(),
-                'last_check_at' => now(),
-            ]);
-
-            $this->log($channel, 'info', 'stream_started', "Ingest PID {$channel->pid}, Push PID {$channel->push_pid}", 'source');
+            $this->log($channel, 'info', 'stream_started', "Live+DVR+Push started via tee muxer (PID {$channel->fresh()->pid})", 'source');
             event(new StreamStatusChanged($channel, 'live'));
             return true;
 

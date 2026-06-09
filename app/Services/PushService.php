@@ -12,44 +12,31 @@ class PushService
         protected DVRService    $dvr,
     ) {}
 
-    // ── Live push (reads from DVR segments via ingest) ──────────────
+    // ── Live push is handled by IngestService's tee command ─────────
+    // These methods manage the push status without spawning a new process.
 
     public function startLive(Channel $channel): bool
     {
-        $this->stopLive($channel);
-
-        try {
-            $cmd     = $this->ffmpeg->buildPushCommand($channel);
-            $pidFile = $this->ffmpeg->pidFile($channel, 'push');
-            $logFile = $this->ffmpeg->logFile($channel, 'push');
-
-            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile);
-            if ($pid <= 0) return false;
-
-            $channel->update(['push_pid' => $pid, 'push_status' => 'pushing']);
-            return true;
-        } catch (\Throwable $e) {
-            Log::error("[Push:{$channel->id}] {$e->getMessage()}");
-            return false;
-        }
+        // Live push is embedded in the ingest tee process.
+        // Just update status — the ingest process handles output.
+        $channel->update(['push_status' => 'pushing']);
+        return true;
     }
 
     public function stopLive(Channel $channel): void
     {
-        $pidFile = $this->ffmpeg->pidFile($channel, 'push');
-        $pid     = $this->ffmpeg->readPid($pidFile);
-        if ($pid > 0) $this->ffmpeg->stopProcess($pid);
-        $this->ffmpeg->clearPid($pidFile);
         $channel->update(['push_pid' => null, 'push_status' => 'idle']);
     }
 
     public function isLiveRunning(Channel $channel): bool
     {
-        $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'push'));
+        // Live push runs inside the ingest process
+        $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'ingest'));
         return $pid > 0 && $this->ffmpeg->isRunning($pid);
     }
 
     // ── DVR playback push (loops DVR segments to output) ────────────
+    // This DOES need a separate ffmpeg process since there is no live ingest.
 
     public function startDvrPlayback(Channel $channel): bool
     {
@@ -67,6 +54,7 @@ class PushService
 
             $channel->update([
                 'dvr_pid'       => $pid,
+                'push_pid'      => $pid,
                 'stream_status' => 'dvr_playback',
                 'dvr_status'    => 'playing',
                 'push_status'   => 'pushing',
@@ -84,7 +72,7 @@ class PushService
         $pid     = $this->ffmpeg->readPid($pidFile);
         if ($pid > 0) $this->ffmpeg->stopProcess($pid);
         $this->ffmpeg->clearPid($pidFile);
-        $channel->update(['dvr_pid' => null]);
+        $channel->update(['dvr_pid' => null, 'push_pid' => null, 'push_status' => 'idle']);
     }
 
     public function isDvrRunning(Channel $channel): bool
@@ -95,7 +83,6 @@ class PushService
 
     public function dvrPlaybackNeedsRestart(Channel $channel): bool
     {
-        // Restart DVR playback every 60s to pick up new segments
         return $channel->updated_at?->diffInSeconds(now()) > 60;
     }
 
