@@ -23,16 +23,23 @@ class DVRService
         natsort($diskFiles);
         $diskFiles = array_values($diskFiles);
 
-        $knownFilenames = DvrSegment::where('channel_id', $channel->id)
-            ->pluck('filename')
-            ->flip();
+        $known = DvrSegment::where('channel_id', $channel->id)
+            ->get()
+            ->keyBy('filename');
 
         foreach ($diskFiles as $filepath) {
             if (!is_file($filepath)) continue;
 
             $filename = basename($filepath);
+            $diskSize = filesize($filepath) ?: 0;
 
-            if (isset($knownFilenames[$filename])) continue;
+            if (isset($known[$filename])) {
+                $seg = $known[$filename];
+                if ($seg->filesize !== $diskSize) {
+                    $seg->update(['filesize' => $diskSize]);
+                }
+                continue;
+            }
 
             $seq = $this->extractSeq($filename);
             if ($seq === null) continue;
@@ -45,7 +52,7 @@ class DVRService
                 'filepath'    => $filepath,
                 'duration'    => $segmentDuration,
                 'sequence'    => $seq,
-                'filesize'    => filesize($filepath) ?: 0,
+                'filesize'    => $diskSize,
                 'recorded_at' => now(),
                 'is_available'=> true,
             ]);

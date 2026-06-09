@@ -20,8 +20,18 @@ class DvrController extends Controller
             ->withSum('dvrSegments', 'filesize')
             ->get()
             ->map(function ($c) {
+                $dbSize = $c->dvr_segments_sum_filesize ?? 0;
+
+                if ($dbSize === 0 && $c->dvr_segments_count > 0) {
+                    $diskSize = 0;
+                    foreach (glob("{$c->dvr_directory}/seg_*.ts") ?: [] as $f) {
+                        $diskSize += @filesize($f) ?: 0;
+                    }
+                    $dbSize = $diskSize;
+                }
+
                 $c->dvr_hours   = round(($c->dvr_segments_sum_duration ?? 0) / 3600, 2);
-                $c->dvr_mb      = round(($c->dvr_segments_sum_filesize ?? 0) / 1_048_576, 1);
+                $c->dvr_mb      = round($dbSize / 1_048_576, 1);
                 $c->dvr_pct     = $c->dvr_duration > 0
                     ? min(100, round((($c->dvr_segments_sum_duration ?? 0) / $c->dvr_duration) * 100))
                     : 0;
