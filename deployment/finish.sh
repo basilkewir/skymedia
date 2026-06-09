@@ -121,7 +121,40 @@ chown -R www-data:www-data "${APP_DIR}/storage" "${APP_DIR}/bootstrap/cache"
 chmod -R 775 "${APP_DIR}/storage" "${APP_DIR}/bootstrap/cache"
 ok "Permissions set"
 
-step "Supervisor"
+step "Nginx"
+# Install nginx config — always refresh it so server_name stays correct
+cp "${APP_DIR}/deployment/nginx.conf" /etc/nginx/sites-available/skymedia
+ln -sf /etc/nginx/sites-available/skymedia /etc/nginx/sites-enabled/skymedia
+rm -f /etc/nginx/sites-enabled/default
+nginx -t && systemctl reload nginx
+ok "Nginx configured and reloaded"
+
+step "Admin user"
+ADMIN_EMAIL="admin@skymedia.local"
+ADMIN_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)
+# Only create if no users exist
+USER_EXISTS=$(mysql -u"$(get_env DB_USERNAME)" -p"$(get_env DB_PASSWORD)" "$(get_env DB_DATABASE)" \
+    -se "SELECT COUNT(*) FROM users;" 2>/dev/null || echo "0")
+if [[ "${USER_EXISTS}" == "0" ]]; then
+    "${PHP}" artisan tinker --execute="
+        \App\Models\User::create([
+            'name' => 'Admin',
+            'email' => '${ADMIN_EMAIL}',
+            'password' => bcrypt('${ADMIN_PASS}'),
+            'email_verified_at' => now(),
+        ]);
+    " 2>/dev/null
+    # Save credentials
+    {
+        echo "# SkyMedia Admin credentials — $(date)"
+        echo "ADMIN_EMAIL=${ADMIN_EMAIL}"
+        echo "ADMIN_PASSWORD=${ADMIN_PASS}"
+    } >> /root/skymedia_credentials.txt
+    ok "Admin user created"
+else
+    ADMIN_PASS=$(grep 'ADMIN_PASSWORD' /root/skymedia_credentials.txt 2>/dev/null | tail -1 | cut -d= -f2 || echo "(see /root/skymedia_credentials.txt)")
+    ok "Admin user already exists"
+fi
 cp "${APP_DIR}/deployment/supervisord.conf" /etc/supervisor/conf.d/skymedia.conf
 supervisorctl reread  >/dev/null 2>&1 || true
 supervisorctl update  >/dev/null 2>&1 || true
@@ -130,14 +163,22 @@ supervisorctl start skymedia-scheduler 2>/dev/null || supervisorctl restart skym
 supervisorctl start skymedia-queue     2>/dev/null || supervisorctl restart skymedia-queue     2>/dev/null || true
 ok "Supervisor services running"
 
+NGINX_PORT=$(nginx -T 2>/dev/null | grep -m1 'listen' | grep -oP '\d+' | head -1 || echo "80")
+
 echo ""
-echo -e "${GREEN}╔═════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║   SkyMedia is ready!                        ║${NC}"
-echo -e "${GREEN}╚═════════════════════════════════════════════╝${NC}"
-echo ""
-APP_URL=$(grep '^APP_URL' .env | cut -d= -f2 | tr -d ' ')
-echo -e "  URL     : ${CYAN}${APP_URL}${NC}"
-echo -e "  SSL     : ${YELLOW}certbot --nginx -d $(echo "${APP_URL}" | sed 's|https\?://||')${NC}"
+echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║            SkyMedia is ready!                            ║${NC}"
+echo -e "${GREEN}╠══════════════════════════════════════════════════════════╣${NC}"
+echo -e "${GREEN}║                                                          ║${NC}"
+echo -e "${GREEN}║  🌐 Admin URL   : ${CYAN}http://${SERVER_IP}:${NGINX_PORT}${GREEN}                     ║${NC}"
+echo -e "${GREEN}║  🔑 Login page  : ${CYAN}http://${SERVER_IP}:${NGINX_PORT}/login${GREEN}              ║${NC}"
+echo -e "${GREEN}║                                                          ║${NC}"
+echo -e "${GREEN}║  📧 Email       : ${YELLOW}${ADMIN_EMAIL}${GREEN}              ║${NC}"
+echo -e "${GREEN}║  🔒 Password    : ${YELLOW}${ADMIN_PASS}${GREEN}                        ║${NC}"
+echo -e "${GREEN}║                                                          ║${NC}"
+echo -e "${GREEN}║  💾 Credentials saved to: /root/skymedia_credentials.txt   ║${NC}"
+echo -e "${GREEN}║                                                          ║${NC}"
+echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  Supervisor status:"
 supervisorctl status 2>/dev/null | sed 's/^/    /'
