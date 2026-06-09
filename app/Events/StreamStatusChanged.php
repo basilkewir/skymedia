@@ -34,6 +34,8 @@ class StreamStatusChanged implements ShouldBroadcastNow
             'id'            => $this->channel->id,
             'name'          => $this->channel->name,
             'stream_status' => $this->newStatus,
+            'push_status'   => $this->channel->push_status,
+            'dvr_status'    => $this->channel->dvr_status,
             'source_live'   => $this->channel->source_live,
             'last_live_at'  => $this->channel->last_live_at?->toISOString(),
         ];

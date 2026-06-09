@@ -37,8 +37,9 @@ class ChannelApiController extends Controller
     {
         $channels = Channel::select([
             'id', 'name', 'slug', 'stream_status', 'source_live',
-            'is_active', 'pid', 'dvr_pid', 'last_live_at', 'last_check_at',
-            'dvr_duration', 'source_type', 'push_protocol',
+            'is_active', 'pid', 'dvr_pid', 'push_pid', 'push_status', 'dvr_status',
+            'last_live_at', 'last_check_at',
+            'dvr_duration', 'source_type', 'push_protocol', 'retry_count',
         ])->get();
 
         return response()->json($channels);
@@ -50,10 +51,15 @@ class ChannelApiController extends Controller
             'id'            => $channel->id,
             'name'          => $channel->name,
             'stream_status' => $channel->stream_status,
+            'push_status'   => $channel->push_status,
+            'dvr_status'    => $channel->dvr_status,
             'source_live'   => $channel->source_live,
             'is_active'     => $channel->is_active,
             'pid'           => $channel->pid,
             'dvr_pid'       => $channel->dvr_pid,
+            'push_pid'      => $channel->push_pid,
+            'retry_count'   => $channel->retry_count,
+            'last_error'    => $channel->last_error,
             'last_live_at'  => $channel->last_live_at?->toISOString(),
             'last_check_at' => $channel->last_check_at?->toISOString(),
         ]);

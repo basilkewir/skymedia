@@ -141,19 +141,19 @@ const errorCount   = ref(props.stats.error)
 
 let timer = null
 
-async function pollStatus() {
-    try {
-        const res  = await fetch(route('api.channels.status-all'), { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-        const data = await res.json()
-        data.forEach(remote => {
-            const local = liveChannels.value.find(c => c.id === remote.id)
-            if (local) Object.assign(local, remote)
-        })
-        liveCount.value  = data.filter(c => c.stream_status === 'live').length
-        dvrCount.value   = data.filter(c => c.stream_status === 'dvr_playback').length
-        errorCount.value = data.filter(c => c.stream_status === 'error').length
-    } catch {}
-}
+    async function pollStatus() {
+        try {
+            const res  = await fetch(route('api.channels.status-all'), { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            const data = await res.json()
+            data.forEach(remote => {
+                const local = liveChannels.value.find(c => c.id === remote.id)
+                if (local) Object.assign(local, remote)
+            })
+            liveCount.value  = data.filter(c => c.stream_status === 'live').length
+            dvrCount.value   = data.filter(c => c.stream_status === 'dvr_playback').length
+            errorCount.value = data.filter(c => c.stream_status === 'error').length
+        } catch {}
+    }
 
 onMounted(() => { timer = setInterval(pollStatus, 5000) })
 onUnmounted(() => clearInterval(timer))

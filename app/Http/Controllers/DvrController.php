@@ -33,12 +33,12 @@ class DvrController extends Controller
 
     public function show(Channel $channel): Response
     {
-        $segments      = DvrSegment::where('channel_id', $channel->id)
+        $segments = DvrSegment::where('channel_id', $channel->id)
             ->orderBy('sequence', 'desc')
             ->paginate(100);
 
         $totalDuration = $this->dvr->totalDuration($channel);
-        $totalSize     = DvrSegment::where('channel_id', $channel->id)->sum('filesize');
+        $totalSize     = $this->dvr->totalSize($channel);
 
         return Inertia::render('DVR/Show', [
             'channel'       => $channel,
@@ -59,7 +59,7 @@ class DvrController extends Controller
 
     public function purge(Channel $channel): RedirectResponse
     {
-        $this->dvr->purgeAll($channel);
-        return back()->with('success', 'DVR storage cleared for ' . $channel->name);
+        $count = $this->dvr->purgeAll($channel);
+        return back()->with('success', "DVR storage cleared for {$channel->name} ({$count} segments deleted)");
     }
 }

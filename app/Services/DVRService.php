@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Channel;
 use App\Models\DvrSegment;
+use Illuminate\Support\Facades\Log;
 
 class DVRService
 {
@@ -18,32 +19,36 @@ class DVRService
         $dvrDir = $channel->dvr_directory;
         if (!is_dir($dvrDir)) return;
 
-        // Register new .ts files that aren't yet in DB
         $diskFiles = glob("{$dvrDir}/seg_*.ts") ?: [];
-        sort($diskFiles);
+        natsort($diskFiles);
+        $diskFiles = array_values($diskFiles);
+
+        $knownFilenames = DvrSegment::where('channel_id', $channel->id)
+            ->pluck('filename')
+            ->flip();
 
         foreach ($diskFiles as $filepath) {
+            if (!is_file($filepath)) continue;
+
             $filename = basename($filepath);
 
-            if (!file_exists($filepath)) continue;
+            if (isset($knownFilenames[$filename])) continue;
 
-            $exists = DvrSegment::where('channel_id', $channel->id)
-                ->where('filename', $filename)
-                ->exists();
+            $seq = $this->extractSeq($filename);
+            if ($seq === null) continue;
 
-            if (!$exists) {
-                $seq = $this->extractSeq($filename);
-                DvrSegment::create([
-                    'channel_id'  => $channel->id,
-                    'filename'    => $filename,
-                    'filepath'    => $filepath,
-                    'duration'    => (float) $channel->segment_duration,
-                    'sequence'    => $seq ?? 0,
-                    'filesize'    => filesize($filepath) ?: 0,
-                    'recorded_at' => now(),
-                    'is_available'=> true,
-                ]);
-            }
+            $segmentDuration = $this->probeSegmentDuration($filepath) ?: (float) $channel->segment_duration;
+
+            DvrSegment::create([
+                'channel_id'  => $channel->id,
+                'filename'    => $filename,
+                'filepath'    => $filepath,
+                'duration'    => $segmentDuration,
+                'sequence'    => $seq,
+                'filesize'    => filesize($filepath) ?: 0,
+                'recorded_at' => now(),
+                'is_available'=> true,
+            ]);
         }
 
         $this->enforceWindow($channel);
@@ -51,24 +56,22 @@ class DVRService
 
     // ---------------------------------------------------------------
     // Enforce rolling DVR window — delete oldest segments over limit
+    // Uses BOTH time-based and count-based enforcement
     // ---------------------------------------------------------------
 
     public function enforceWindow(Channel $channel): void
     {
-        $maxSegs = (int) ceil($channel->dvr_duration / $channel->segment_duration);
+        $maxSegs = max(1, (int) ceil($channel->dvr_duration / max(1, $channel->segment_duration)));
 
-        // Delete old DB records AND their files
         $cutoff = now()->subSeconds($channel->dvr_duration + $channel->segment_duration);
         $expired = DvrSegment::where('channel_id', $channel->id)
             ->where('recorded_at', '<', $cutoff)
             ->get();
 
         foreach ($expired as $seg) {
-            @unlink($seg->filepath);
-            $seg->delete();
+            $this->deleteSegment($seg);
         }
 
-        // Hard cap: if still over maxSegs, remove oldest by sequence
         $count = DvrSegment::where('channel_id', $channel->id)->count();
         if ($count > $maxSegs) {
             $toDelete = DvrSegment::where('channel_id', $channel->id)
@@ -77,17 +80,13 @@ class DVRService
                 ->get();
 
             foreach ($toDelete as $seg) {
-                @unlink($seg->filepath);
-                $seg->delete();
+                $this->deleteSegment($seg);
             }
         }
-
-        // Also enforce on disk directly (catches ffmpeg wrap-around filenames)
-        $this->ffmpeg->enforceWindow($channel);
     }
 
     // ---------------------------------------------------------------
-    // Rebuild the concat.txt for DVR playback
+    // Rebuild the concat.txt for DVR playback from DB records
     // ---------------------------------------------------------------
 
     public function buildConcatFile(Channel $channel): bool
@@ -101,10 +100,14 @@ class DVRService
             return $this->ffmpeg->buildConcatFile($channel);
         }
 
-        $lines = $segments->map(fn($s) => "file '{$s->filepath}'")->toArray();
+        $lines = $segments->map(fn($s) => "file '" . str_replace("'", "'\\''", $s->filepath) . "'")->toArray();
         file_put_contents($channel->dvr_directory . '/concat.txt', implode("\n", $lines));
         return true;
     }
+
+    // ---------------------------------------------------------------
+    // Segment availability checks
+    // ---------------------------------------------------------------
 
     public function hasSegments(Channel $channel): bool
     {
@@ -122,23 +125,79 @@ class DVRService
             ->sum('duration');
     }
 
-    public function purgeAll(Channel $channel): void
+    public function totalSize(Channel $channel): int
+    {
+        return (int) DvrSegment::where('channel_id', $channel->id)->sum('filesize');
+    }
+
+    public function segmentCount(Channel $channel): int
+    {
+        return DvrSegment::where('channel_id', $channel->id)->count();
+    }
+
+    // ---------------------------------------------------------------
+    // Purge all DVR data for a channel
+    // ---------------------------------------------------------------
+
+    public function purgeAll(Channel $channel): int
     {
         $dvrDir = $channel->dvr_directory;
+        $deleted = 0;
 
-        DvrSegment::where('channel_id', $channel->id)->delete();
+        $segments = DvrSegment::where('channel_id', $channel->id)->get();
+        foreach ($segments as $seg) {
+            @unlink($seg->filepath);
+            $seg->delete();
+            $deleted++;
+        }
 
-        if (is_dir($dvrDir)) {
-            foreach (glob("{$dvrDir}/*.ts") as $f) {
-                @unlink($f);
-            }
-            foreach (['index.m3u8', 'concat.txt'] as $f) {
-                @unlink("{$dvrDir}/{$f}");
+        foreach (['concat.txt', 'index.m3u8'] as $f) {
+            @unlink("{$dvrDir}/{$f}");
+        }
+
+        return $deleted;
+    }
+
+    // ---------------------------------------------------------------
+    // Mark segments as unavailable (when files are missing)
+    // ---------------------------------------------------------------
+
+    public function verifySegments(Channel $channel): void
+    {
+        $segments = DvrSegment::where('channel_id', $channel->id)->get();
+        foreach ($segments as $seg) {
+            if (!file_exists($seg->filepath)) {
+                $seg->update(['is_available' => false]);
             }
         }
     }
 
     // ---------------------------------------------------------------
+    // Clean up orphaned files (segments in DB that don't exist on disk)
+    // ---------------------------------------------------------------
+
+    public function cleanupOrphans(Channel $channel): int
+    {
+        $cleaned = 0;
+        $segments = DvrSegment::where('channel_id', $channel->id)->get();
+        foreach ($segments as $seg) {
+            if (!file_exists($seg->filepath)) {
+                $seg->delete();
+                $cleaned++;
+            }
+        }
+        return $cleaned;
+    }
+
+    // ---------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------
+
+    protected function deleteSegment(DvrSegment $seg): void
+    {
+        @unlink($seg->filepath);
+        $seg->delete();
+    }
 
     protected function extractSeq(string $filename): ?int
     {
@@ -146,5 +205,29 @@ class DVRService
             return (int) $m[1];
         }
         return null;
+    }
+
+    protected function probeSegmentDuration(string $filepath): ?float
+    {
+        try {
+            $proc = new \Symfony\Component\Process\Process([
+                config('skymedia.ffprobe_binary', 'ffprobe'),
+                '-v', 'quiet',
+                '-print_format', 'json',
+                '-show_format',
+                $filepath,
+            ]);
+            $proc->setTimeout(3);
+            $proc->run();
+
+            if (!$proc->isSuccessful()) return null;
+
+            $data = json_decode($proc->getOutput(), true);
+            $dur = $data['format']['duration'] ?? null;
+            return $dur ? (float) $dur : null;
+        } catch (\Throwable $e) {
+            Log::debug("Segment probe failed: {$e->getMessage()}");
+            return null;
+        }
     }
 }

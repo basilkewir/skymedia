@@ -71,6 +71,7 @@ class ChannelController extends Controller
         $channel->load(['dvrSegments' => fn($q) => $q->orderBy('sequence', 'desc')->limit(100)]);
         $channel->loadCount('streamLogs');
         $channel->dvr_total_duration = $this->dvr->totalDuration($channel);
+        $channel->dvr_total_size     = $this->dvr->totalSize($channel);
 
         return Inertia::render('Channels/Show', ['channel' => $channel]);
     }

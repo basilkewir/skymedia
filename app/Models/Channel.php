@@ -15,7 +15,8 @@ class Channel extends Model
         'push_protocol', 'push_url', 'push_stream_key',
         'dvr_duration', 'segment_duration', 'dvr_path',
         'is_active', 'stream_status', 'push_status', 'dvr_status', 'source_live',
-        'pid', 'dvr_pid', 'last_live_at', 'last_check_at',
+        'pid', 'dvr_pid', 'push_pid', 'retry_count', 'last_error',
+        'last_live_at', 'last_check_at',
         'check_interval', 'max_retries', 'notes',
     ];
 
@@ -28,6 +29,8 @@ class Channel extends Model
         'max_retries' => 'integer',
         'pid' => 'integer',
         'dvr_pid' => 'integer',
+        'push_pid' => 'integer',
+        'retry_count' => 'integer',
         'last_live_at' => 'datetime',
         'last_check_at' => 'datetime',
     ];
@@ -52,5 +55,19 @@ class Channel extends Model
     public function getDvrDirectoryAttribute(): string
     {
         return $this->dvr_path ?? storage_path("app/dvr/{$this->id}");
+    }
+
+    public function resetRetries(): void
+    {
+        $this->update(['retry_count' => 0, 'last_error' => null]);
+    }
+
+    public function incrementRetry(?string $error = null): bool
+    {
+        $this->increment('retry_count');
+        if ($error) {
+            $this->update(['last_error' => $error]);
+        }
+        return $this->retry_count >= $this->max_retries;
     }
 }

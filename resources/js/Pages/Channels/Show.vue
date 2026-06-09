@@ -65,6 +65,8 @@
                     <InfoItem label="Last Live"    :value="channel.last_live_at ? new Date(channel.last_live_at).toLocaleString() : 'Never'" />
                     <InfoItem label="Source Signal" :value="channel.source_live ? 'Live ●' : 'Offline ●'"
                               :class="channel.source_live ? 'text-green-400' : 'text-red-400'" />
+                    <InfoItem label="Retries" :value="channel.retry_count + ' / ' + channel.max_retries" />
+                    <InfoItem v-if="channel.last_error" label="Last Error" :value="channel.last_error" class-name="sm:col-span-2" />
                 </div>
             </div>
 

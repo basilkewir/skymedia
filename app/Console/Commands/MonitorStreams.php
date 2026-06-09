@@ -12,7 +12,6 @@ class MonitorStreams extends Command
     protected $signature   = 'streams:monitor {--channel= : Limit to one channel ID}';
     protected $description = 'Long-running stream monitor daemon';
 
-    /** @var array<int, int> channel_id => unix timestamp of last check */
     private array $lastChecked = [];
 
     public function handle(StreamManager $manager): void
@@ -37,13 +36,14 @@ class MonitorStreams extends Command
                         $this->lastChecked[$channel->id] = time();
                         $ch = $channel->fresh();
                         $this->line(sprintf(
-                            '[%s] %-20s  source=%-4s  dvr=%-10s  push=%-10s  stream=%s',
+                            '[%s] %-20s  src=%-4s  dvr=%-10s  push=%-10s  stream=%-12s  retry=%d',
                             now()->format('H:i:s'),
                             $ch->name,
                             $ch->source_live ? 'LIVE' : 'DOWN',
                             $ch->dvr_status,
                             $ch->push_status,
-                            $ch->stream_status
+                            $ch->stream_status,
+                            $ch->retry_count
                         ));
                     }
                 });
