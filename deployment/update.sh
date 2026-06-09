@@ -42,6 +42,7 @@ cd "${APP_DIR}"
 
 # Resolve binaries — handles sudo stripping PATH
 PHP=$(command -v php8.2 || command -v php)
+PHP_VER=$("${PHP}" -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;" 2>/dev/null || echo "8.2")
 COMPOSER=$(command -v composer || find /usr/local/bin /usr/bin /home -name composer 2>/dev/null | head -1)
 NPM=$(command -v npm)
 
@@ -154,7 +155,10 @@ ok "Migrations applied"
 # ─────────────────────────────────────────────────────────────────────────────
 step "7 / 8  Caches & permissions"
 # ─────────────────────────────────────────────────────────────────────────────
-"${PHP}" artisan cache:clear    --quiet
+# Restart PHP-FPM to clear stale opcache after code update
+systemctl restart "php${PHP_VER}-fpm" 2>/dev/null || true
+# Clear all Laravel caches before rebuilding them
+"${PHP}" artisan optimize:clear --quiet 2>/dev/null || true
 "${PHP}" artisan config:cache   --quiet
 "${PHP}" artisan route:cache    --quiet
 "${PHP}" artisan view:cache     --quiet

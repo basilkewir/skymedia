@@ -17,3 +17,12 @@ yarn-error.log
 /.vscode
 storage/app/dvr
 storage/logs/*.log
+storage/framework/views/*.php
+storage/framework/cache/data/*
+storage/framework/sessions/*
+storage/framework/testing/*
+!.gitkeep
+bootstrap/cache/*.php
+!.gitignore
+database/database.sqlite
+/public/storage/.gitignore
