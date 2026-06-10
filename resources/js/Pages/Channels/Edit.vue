@@ -178,9 +178,9 @@
 
                 <!-- DVR -->
                 <section class="card">
-                    <h2 class="section-title">DVR Recording Window</h2>
+                    <h2 class="section-title">DVR Segment Buffer</h2>
                     <p class="text-xs text-slate-500 mb-4">
-                        Continuous rolling buffer — the last
+                        Rolling HLS segment buffer — the last
                         <strong class="text-slate-300">{{ dvrWindowLabel }}</strong>
                         is always kept. Older segments are deleted automatically.
                     </p>
@@ -223,6 +223,48 @@
                     </div>
                 </section>
 
+                <!-- Recording -->
+                <section class="card">
+                    <h2 class="section-title">Scheduled Recording</h2>
+                    <p class="text-xs text-slate-500 mb-4">
+                        Records a single MP4 file while the stream is live. Old file deleted only after new recording
+                        is verified complete. Loops as fallback when source goes offline.
+                        Set to <strong class="text-slate-300">0</strong> to disable.
+                    </p>
+                    <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                        <FormField label="Recording Duration (seconds)" :error="form.errors.record_duration">
+                            <div class="flex gap-2">
+                                <input v-model.number="form.record_duration" type="number"
+                                       min="0" max="86400" required class="form-input flex-1" />
+                                <select @change="applyRecordPreset" v-model="recordPreset" class="form-input w-32">
+                                    <option value="">Custom</option>
+                                    <option value="0">Disabled</option>
+                                    <option value="1800">30 min</option>
+                                    <option value="3600">1 hour</option>
+                                    <option value="7200">2 hours</option>
+                                    <option value="10800">3 hours</option>
+                                    <option value="18000">5 hours</option>
+                                    <option value="43200">12 hours</option>
+                                    <option value="86400">24 hours</option>
+                                </select>
+                            </div>
+                            <p class="hint">
+                                <template v-if="form.record_duration > 0">
+                                    {{ recordDurationLabel }} per cycle · ~{{ recordStorageMB }} MB per file
+                                </template>
+                                <template v-else>Recording disabled</template>
+                            </p>
+                        </FormField>
+
+                        <div v-if="channel.fallback_recording_path" class="flex items-start pt-1">
+                            <div class="px-3 py-2.5 bg-slate-800/50 rounded-lg text-xs text-slate-400 w-full">
+                                <span class="text-green-400 font-medium block mb-1">✓ Fallback file available</span>
+                                <span class="font-mono break-all">{{ channel.fallback_recording_path.split('/').pop() }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
                 <div class="flex justify-end gap-3">
                     <Link :href="route('channels.show', channel.id)"
                           class="px-4 py-2 text-sm text-slate-400 border border-slate-700 rounded-lg hover:border-slate-500 hover:text-white transition-colors">
@@ -246,7 +288,8 @@ import FormField from '@/Components/FormField.vue'
 
 const props = defineProps({ channel: Object })
 
-const dvrPreset = ref('')
+const dvrPreset    = ref('')
+const recordPreset = ref('')
 
 const form = useForm({
     name:             props.channel.name,
@@ -272,10 +315,15 @@ const form = useForm({
     segment_duration: props.channel.segment_duration,
     check_interval:   props.channel.check_interval,
     max_retries:      props.channel.max_retries,
+    record_duration:  props.channel.record_duration ?? 0,
 })
 
 function applyPreset() {
     if (dvrPreset.value) form.dvr_duration = parseInt(dvrPreset.value)
+}
+
+function applyRecordPreset() {
+    if (recordPreset.value !== '') form.record_duration = parseInt(recordPreset.value)
 }
 
 const pushTarget = computed(() => {
@@ -300,6 +348,18 @@ const estimatedStorageMB = computed(() => {
     const audioBitrate = form.push_audio_codec !== 'copy' ? form.push_audio_bitrate : 128
     const totalKbps = videoBitrate + audioBitrate
     return Math.round((form.dvr_duration * totalKbps * 1000) / 8 / 1_048_576)
+})
+
+const recordDurationLabel = computed(() => {
+    const s = form.record_duration
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60)
+    return h > 0 ? `${h}h ${m}m` : `${m}m`
+})
+
+const recordStorageMB = computed(() => {
+    const videoBitrate = form.push_video_codec !== 'copy' && form.push_video_bitrate ? form.push_video_bitrate : 4000
+    const audioBitrate = form.push_audio_codec !== 'copy' ? form.push_audio_bitrate : 128
+    return Math.round((form.record_duration * (videoBitrate + audioBitrate) * 1000) / 8 / 1_048_576)
 })
 
 function submit() { form.put(route('channels.update', props.channel.id)) }

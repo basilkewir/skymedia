@@ -189,10 +189,10 @@
 
                 <!-- DVR -->
                 <section class="card">
-                    <h2 class="section-title">DVR Recording Window</h2>
+                    <h2 class="section-title">DVR Segment Buffer</h2>
                     <p class="text-xs text-slate-500 mb-4">
-                        Continuous rolling buffer. The last <strong class="text-slate-300">{{ dvrWindowLabel }}</strong>
-                        of content is always kept on disk. Older segments are deleted automatically as new ones arrive.
+                        Rolling HLS segment buffer — the last <strong class="text-slate-300">{{ dvrWindowLabel }}</strong>
+                        is kept on disk for near-live push playback. Older segments are deleted automatically.
                     </p>
                     <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
                         <FormField label="DVR Window" :error="form.errors.dvr_duration">
@@ -233,6 +233,51 @@
                     </div>
                 </section>
 
+                <!-- Recording -->
+                <section class="card">
+                    <h2 class="section-title">Scheduled Recording</h2>
+                    <p class="text-xs text-slate-500 mb-4">
+                        When the stream is live, a single MP4 file is recorded for the set duration.
+                        When that recording completes successfully, the previous file is deleted and replaced.
+                        The recording loops automatically as the push fallback whenever the live source goes offline.
+                        Set to <strong class="text-slate-300">0</strong> to disable.
+                    </p>
+                    <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                        <FormField label="Recording Duration" :error="form.errors.record_duration">
+                            <div class="flex gap-2">
+                                <input v-model.number="form.record_duration" type="number"
+                                       min="0" max="86400" required class="form-input flex-1" />
+                                <select @change="applyRecordPreset" v-model="recordPreset" class="form-input w-32">
+                                    <option value="">Custom</option>
+                                    <option value="0">Disabled</option>
+                                    <option value="1800">30 min</option>
+                                    <option value="3600">1 hour</option>
+                                    <option value="7200">2 hours</option>
+                                    <option value="10800">3 hours</option>
+                                    <option value="18000">5 hours</option>
+                                    <option value="43200">12 hours</option>
+                                    <option value="86400">24 hours</option>
+                                </select>
+                            </div>
+                            <p class="hint">
+                                <template v-if="form.record_duration > 0">
+                                    Records {{ recordDurationLabel }} per cycle · ~{{ recordStorageMB }} MB per file
+                                </template>
+                                <template v-else>Recording disabled</template>
+                            </p>
+                        </FormField>
+
+                        <div class="flex items-start pt-6">
+                            <div class="px-3 py-2.5 bg-slate-800/50 rounded-lg text-xs text-slate-400 leading-relaxed w-full">
+                                <span class="text-slate-300 font-medium block mb-1">How it works</span>
+                                Starts automatically when ingest is live.
+                                On success, old file deleted only after new file is verified.
+                                Loops as push fallback on source failure — output stays live 24/7.
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
                 <div class="flex justify-end gap-3">
                     <Link :href="route('channels.index')"
                           class="px-4 py-2 text-sm text-slate-400 border border-slate-700 rounded-lg hover:border-slate-500 hover:text-white transition-colors">
@@ -254,7 +299,8 @@ import { Link, useForm } from '@inertiajs/vue3'
 import AppLayout from '@/Layouts/AppLayout.vue'
 import FormField from '@/Components/FormField.vue'
 
-const dvrPreset = ref('3600')
+const dvrPreset    = ref('3600')
+const recordPreset = ref('')
 
 const form = useForm({
     name: '', slug: '', notes: '',
@@ -273,6 +319,7 @@ const form = useForm({
     // DVR
     dvr_duration: 3600, segment_duration: 4,
     check_interval: 5, max_retries: 5,
+    record_duration: 0,
 })
 
 function autoSlug() {
@@ -281,6 +328,10 @@ function autoSlug() {
 
 function applyPreset() {
     if (dvrPreset.value) form.dvr_duration = parseInt(dvrPreset.value)
+}
+
+function applyRecordPreset() {
+    if (recordPreset.value !== '') form.record_duration = parseInt(recordPreset.value)
 }
 
 const sourcePlaceholders = {
@@ -328,6 +379,18 @@ const estimatedStorageMB = computed(() => {
 })
 
 function submit() { form.post(route('channels.store')) }
+
+const recordDurationLabel = computed(() => {
+    const s = form.record_duration
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60)
+    return h > 0 ? `${h}h ${m}m` : `${m}m`
+})
+
+const recordStorageMB = computed(() => {
+    const videoBitrate = form.push_video_codec !== 'copy' && form.push_video_bitrate ? form.push_video_bitrate : 4000
+    const audioBitrate = form.push_audio_codec !== 'copy' ? form.push_audio_bitrate : 128
+    return Math.round((form.record_duration * (videoBitrate + audioBitrate) * 1000) / 8 / 1_048_576)
+})
 </script>
 
 <style scoped>

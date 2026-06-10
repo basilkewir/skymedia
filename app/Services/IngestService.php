@@ -5,15 +5,17 @@ namespace App\Services;
 use App\Models\Channel;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * IngestService manages the ingest ffmpeg process:
+ *   source → HLS segments on disk (live.m3u8 + seg_NNNNN.ts)
+ *
+ * This process is responsible solely for DVR recording.
+ * It does NOT start, stop, or affect the push process in any way.
+ */
 class IngestService
 {
     public function __construct(protected FFmpegService $ffmpeg) {}
 
-    /**
-     * Start the ingest process: source → HLS segments on disk.
-     * This process is responsible ONLY for DVR recording.
-     * The push process is managed separately by PushService.
-     */
     public function start(Channel $channel): bool
     {
         $this->stop($channel);
@@ -30,12 +32,12 @@ class IngestService
             if ($pid <= 0) return false;
 
             $channel->update([
-                'pid'           => $pid,
-                'dvr_status'    => 'recording',
-                'stream_status' => 'live',
-                'is_active'     => true,
-                'source_live'   => true,
-                'last_live_at'  => now(),
+                'pid'          => $pid,
+                'dvr_status'   => 'recording',
+                'stream_status'=> 'live',
+                'is_active'    => true,
+                'source_live'  => true,
+                'last_live_at' => now(),
             ]);
 
             return true;
@@ -53,10 +55,11 @@ class IngestService
         if ($pid > 0) $this->ffmpeg->stopProcess($pid);
         $this->ffmpeg->clearPid($pidFile);
 
+        // Only clear ingest-owned fields — never touch push_pid or push_status
         $channel->update([
-            'pid'        => null,
-            'dvr_status' => 'idle',
-            'source_live'=> false,
+            'pid'         => null,
+            'dvr_status'  => 'idle',
+            'source_live' => false,
         ]);
     }
 

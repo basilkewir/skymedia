@@ -30,9 +30,12 @@ class Channel extends Model
         'dvr_duration', 'segment_duration', 'dvr_path',
 
         // Runtime state
-        'is_active', 'stream_status', 'push_status', 'dvr_status', 'source_live',
-        'pid', 'dvr_pid', 'push_pid', 'retry_count', 'last_error',
+        'is_active', 'stream_status', 'push_status', 'dvr_status', 'record_status', 'source_live',
+        'pid', 'dvr_pid', 'push_pid', 'record_pid', 'retry_count', 'last_error',
         'last_live_at', 'last_check_at',
+
+        // Recording
+        'record_duration', 'fallback_recording_path',
 
         // Behaviour
         'check_interval', 'max_retries',
@@ -54,8 +57,10 @@ class Channel extends Model
         'push_audio_bitrate' => 'integer',
         'push_audio_samplerate' => 'integer',
         'push_audio_channels'   => 'integer',
-        'last_live_at'       => 'datetime',
-        'last_check_at'      => 'datetime',
+        'last_live_at'          => 'datetime',
+        'last_check_at'         => 'datetime',
+        'record_duration'       => 'integer',
+        'record_pid'            => 'integer',
     ];
 
     public function dvrSegments(): HasMany
@@ -66,6 +71,19 @@ class Channel extends Model
     public function streamLogs(): HasMany
     {
         return $this->hasMany(StreamLog::class);
+    }
+
+    public function recordings(): HasMany
+    {
+        return $this->hasMany(Recording::class);
+    }
+
+    public function latestCompletedRecording(): ?Recording
+    {
+        return $this->recordings()
+            ->where('status', 'completed')
+            ->latest('completed_at')
+            ->first();
     }
 
     public function getPushTargetAttribute(): string

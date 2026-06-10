@@ -5,14 +5,21 @@ namespace App\Services;
 use App\Models\Channel;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * PushService manages the push ffmpeg process:
+ *   DVR HLS → encode → RTMP/SRT output
+ *
+ * Push is ALWAYS manual. The monitor never calls any method here.
+ * Two modes:
+ *   live  — reads live.m3u8 (near-live, updated by ingest)
+ *   dvr   — reads concat.txt (loops stored segments)
+ */
 class PushService
 {
-    // How many seconds to wait for live.m3u8 + minimum segments before starting push
-    private const HLS_READY_WAIT_SEC  = 10;
-    private const HLS_MIN_SEGMENTS    = 2;
-
-    // How long to wait before refreshing a looping DVR push with new segments
-    private const DVR_REFRESH_SEC     = 60;
+    // Minimum segments before allowing a live push to start
+    private const HLS_MIN_SEGMENTS   = 2;
+    // Max seconds to wait for HLS to be ready before giving up
+    private const HLS_READY_WAIT_SEC = 12;
 
     public function __construct(
         protected FFmpegService $ffmpeg,
@@ -20,39 +27,27 @@ class PushService
     ) {}
 
     // ===================================================================
-    //  START — always reads from DVR HLS (live or offline)
+    //  LIVE PUSH — reads live.m3u8 (near-live from ingest)
     // ===================================================================
 
     /**
-     * Start the push process reading from the local DVR HLS playlist.
-     *
-     * When the source is live, live.m3u8 is being updated by the ingest
-     * process and the push stays near-live.
-     *
-     * When the source is offline, push reads whatever segments exist in
-     * live.m3u8, looping them via the concat fallback if needed.
+     * Start push reading from the live DVR HLS playlist.
+     * Waits up to HLS_READY_WAIT_SEC for segments to appear.
      */
-    public function start(Channel $channel, bool $waitForHls = true): bool
+    public function startLive(Channel $channel): bool
     {
         $this->stop($channel);
 
+        $m3u8 = $channel->dvr_directory . '/live.m3u8';
+
+        if (!$this->waitForHlsReady($channel)) {
+            // live.m3u8 not ready — no ingest running
+            Log::warning("[Push:{$channel->id}] live.m3u8 not ready — start ingest first");
+            return false;
+        }
+
         try {
-            if ($waitForHls) {
-                $this->waitForHlsReady($channel);
-            }
-
-            // Prefer live.m3u8 (ingest is/was running); fall back to concat
-            $m3u8 = $channel->dvr_directory . '/live.m3u8';
-
-            if (file_exists($m3u8)) {
-                $cmd = $this->ffmpeg->buildPushCommand($channel);
-            } elseif ($this->dvr->buildConcatFile($channel)) {
-                $cmd = $this->ffmpeg->buildDvrPlaybackCommand($channel);
-            } else {
-                Log::warning("[Push:{$channel->id}] No HLS or DVR segments available.");
-                return false;
-            }
-
+            $cmd     = $this->ffmpeg->buildPushCommand($channel);
             $pidFile = $this->ffmpeg->pidFile($channel, 'push');
             $logFile = $this->ffmpeg->logFile($channel, 'push');
 
@@ -66,10 +61,94 @@ class PushService
 
             return true;
         } catch (\Throwable $e) {
-            Log::error("[Push:{$channel->id}] {$e->getMessage()}");
+            Log::error("[Push:{$channel->id}] startLive: {$e->getMessage()}");
             return false;
         }
     }
+
+    // ===================================================================
+    //  DVR LOOP PUSH — reads concat.txt (loops stored segments)
+    // ===================================================================
+
+    /**
+     * Start push looping all available DVR segments via concat demuxer.
+     * Works even when ingest is not running.
+     */
+    public function startDvrPlayback(Channel $channel): bool
+    {
+        $this->stop($channel);
+
+        if (!$this->dvr->buildConcatFile($channel)) {
+            Log::warning("[Push:{$channel->id}] No DVR segments for playback");
+            return false;
+        }
+
+        try {
+            $cmd     = $this->ffmpeg->buildDvrPlaybackCommand($channel);
+            $pidFile = $this->ffmpeg->pidFile($channel, 'push');
+            $logFile = $this->ffmpeg->logFile($channel, 'push');
+
+            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile);
+            if ($pid <= 0) return false;
+
+            $channel->update([
+                'push_pid'    => $pid,
+                'push_status' => 'pushing',
+                'dvr_status'  => 'playing',
+            ]);
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error("[Push:{$channel->id}] startDvrPlayback: {$e->getMessage()}");
+            return false;
+        }
+    }
+
+    // ===================================================================
+    //  RECORDING FALLBACK PUSH — loops completed MP4 recording file
+    // ===================================================================
+
+    /**
+     * Start push looping the channel's last completed MP4 recording.
+     * Called automatically by monitor when source goes offline.
+     * Never called manually — that is what startDvrPlayback is for.
+     */
+    public function startRecordingFallback(Channel $channel): bool
+    {
+        $file = $channel->fallback_recording_path;
+
+        if (empty($file) || !file_exists($file) || filesize($file) < 1024) {
+            Log::warning("[Push:{$channel->id}] No valid recording fallback file");
+            return false;
+        }
+
+        $this->stop($channel);
+
+        try {
+            $cmd     = $this->ffmpeg->buildRecordingFallbackCommand($channel, $file);
+            $pidFile = $this->ffmpeg->pidFile($channel, 'push');
+            $logFile = $this->ffmpeg->logFile($channel, 'push');
+
+            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile);
+            if ($pid <= 0) return false;
+
+            $channel->update([
+                'push_pid'      => $pid,
+                'push_status'   => 'pushing',
+                'stream_status' => 'fallback',
+            ]);
+
+            Log::info("[Push:{$channel->id}] Recording fallback started — PID {$pid} — file: {$file}");
+            return true;
+        } catch (\Throwable $e) {
+            Log::error("[Push:{$channel->id}] startRecordingFallback: {$e->getMessage()}");
+            return false;
+        }
+    }
+
+    // ===================================================================
+    //  STOP
+    // ===================================================================
 
     public function stop(Channel $channel): void
     {
@@ -80,7 +159,16 @@ class PushService
         $this->ffmpeg->clearPid($pidFile);
 
         $channel->update(['push_pid' => null, 'push_status' => 'idle']);
+
+        // If DVR was in 'playing' state, revert it to 'idle' unless ingest is running
+        if ($channel->dvr_status === 'playing') {
+            $channel->update(['dvr_status' => 'idle']);
+        }
     }
+
+    // ===================================================================
+    //  STATUS
+    // ===================================================================
 
     public function isRunning(Channel $channel): bool
     {
@@ -89,77 +177,15 @@ class PushService
     }
 
     // ===================================================================
-    //  DVR LOOPING PUSH — used when source is offline
+    //  COMPAT ALIASES
     // ===================================================================
 
-    /**
-     * Start a looping DVR push using the concat file.
-     * Called by StreamManager when source goes offline.
-     */
-    public function startDvrPlayback(Channel $channel): bool
+    public function start(Channel $channel, bool $waitForHls = true): bool
     {
-        $this->stop($channel);
-
-        try {
-            if (!$this->dvr->buildConcatFile($channel)) return false;
-
-            $cmd     = $this->ffmpeg->buildDvrPlaybackCommand($channel);
-            $pidFile = $this->ffmpeg->pidFile($channel, 'push');
-            $logFile = $this->ffmpeg->logFile($channel, 'push');
-
-            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile);
-            if ($pid <= 0) return false;
-
-            $channel->update([
-                'dvr_pid'       => $pid,
-                'push_pid'      => $pid,
-                'stream_status' => 'dvr_playback',
-                'dvr_status'    => 'playing',
-                'push_status'   => 'pushing',
-            ]);
-
-            return true;
-        } catch (\Throwable $e) {
-            Log::error("[DvrPush:{$channel->id}] {$e->getMessage()}");
-            return false;
-        }
+        return $this->startLive($channel);
     }
 
-    public function stopDvrPlayback(Channel $channel): void
-    {
-        // Same PID file as regular push
-        $this->stop($channel);
-        $channel->update(['dvr_pid' => null]);
-    }
-
-    public function isDvrRunning(Channel $channel): bool
-    {
-        return $this->isRunning($channel);
-    }
-
-    /**
-     * Returns true when the DVR push has been looping long enough that
-     * we should rebuild concat.txt and restart with fresher segments.
-     */
-    public function dvrPlaybackNeedsRefresh(Channel $channel): bool
-    {
-        $pidFile = $this->ffmpeg->pidFile($channel, 'push');
-        if (!file_exists($pidFile)) return false;
-
-        $age = time() - filemtime($pidFile);
-        return $age >= self::DVR_REFRESH_SEC;
-    }
-
-    // ===================================================================
-    //  LEGACY COMPAT (called by StreamManager)
-    // ===================================================================
-
-    public function startLive(Channel $channel): bool
-    {
-        return $this->start($channel, waitForHls: true);
-    }
-
-    public function stopLive(Channel $channel): void
+    public function stopAll(Channel $channel): void
     {
         $this->stop($channel);
     }
@@ -169,28 +195,22 @@ class PushService
         return $this->isRunning($channel);
     }
 
-    public function stopAll(Channel $channel): void
+    public function isDvrRunning(Channel $channel): bool
     {
-        $this->stop($channel);
-        $channel->update(['dvr_pid' => null]);
-    }
-
-    /** @deprecated use dvrPlaybackNeedsRefresh */
-    public function dvrPlaybackNeedsRestart(Channel $channel): bool
-    {
-        return $this->dvrPlaybackNeedsRefresh($channel);
+        return $this->isRunning($channel);
     }
 
     // ===================================================================
     //  INTERNAL
     // ===================================================================
 
-    private function waitForHlsReady(Channel $channel): void
+    private function waitForHlsReady(Channel $channel): bool
     {
         $waited = 0;
         while (!$this->ffmpeg->hlsReady($channel, self::HLS_MIN_SEGMENTS) && $waited < self::HLS_READY_WAIT_SEC) {
             sleep(1);
             $waited++;
         }
+        return $this->ffmpeg->hlsReady($channel, self::HLS_MIN_SEGMENTS);
     }
 }

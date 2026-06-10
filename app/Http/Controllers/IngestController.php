@@ -19,26 +19,27 @@ class IngestController extends Controller
 
     public function start(Channel $channel): RedirectResponse
     {
-        $ok = $this->manager->startChannel($channel);
-        return back()->with($ok ? 'success' : 'error', $ok ? 'Channel started' : 'Failed to start channel');
+        $ok = $this->manager->startStream($channel);
+        return back()->with($ok ? 'success' : 'error', $ok ? 'Ingest started' : 'Ingest failed to start — check ffmpeg log');
     }
 
     public function stop(Channel $channel): RedirectResponse
     {
-        $this->manager->stopChannel($channel);
-        return back()->with('success', 'Channel stopped');
+        $this->manager->stopStream($channel);
+        return back()->with('success', 'Ingest stopped');
     }
 
     public function restart(Channel $channel): RedirectResponse
     {
-        $this->manager->stopChannel($channel);
-        $ok = $this->manager->startChannel($channel);
-        return back()->with($ok ? 'success' : 'error', $ok ? 'Channel restarted' : 'Failed to restart channel');
+        $this->manager->stopStream($channel);
+        $ok = $this->manager->startStream($channel);
+        return back()->with($ok ? 'success' : 'error', $ok ? 'Ingest restarted' : 'Ingest failed to restart — check ffmpeg log');
     }
 
     public function log(Channel $channel): JsonResponse
     {
-        $logFile = $this->ffmpeg->logFile($channel, 'ingest');
-        return response()->json(['log' => $this->ffmpeg->readLogTail($logFile, 80)]);
+        return response()->json([
+            'log' => $this->ffmpeg->readLogTail($this->ffmpeg->logFile($channel, 'ingest'), 80),
+        ]);
     }
 }

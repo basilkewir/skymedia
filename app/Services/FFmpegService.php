@@ -107,6 +107,29 @@ class FFmpegService
         );
     }
 
+    /**
+     * RECORDING FALLBACK PUSH: loops a single MP4 recording file indefinitely.
+     * Used automatically by the monitor when the live source goes offline
+     * and a completed recording exists. Push stays alive until operator
+     * stops it or ingest recovers.
+     */
+    public function buildRecordingFallbackCommand(Channel $channel, string $recordingFile): array
+    {
+        return array_merge(
+            [$this->ffmpegBin, '-y', '-loglevel', 'warning'],
+            [
+                '-stream_loop', '-1',
+                '-re',
+                '-i', $recordingFile,
+            ],
+            $this->videoEncodeFlags($channel),
+            $this->audioEncodeFlags($channel),
+            ['-f', $channel->push_protocol === 'srt' ? 'mpegts' : 'flv'],
+            $channel->push_protocol === 'rtmp' ? ['-flvflags', 'no_duration_filesize'] : [],
+            [$this->pushUrl($channel)]
+        );
+    }
+
     // ===================================================================
     //  PROCESS MANAGEMENT
     // ===================================================================

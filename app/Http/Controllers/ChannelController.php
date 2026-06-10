@@ -148,6 +148,10 @@ class ChannelController extends Controller
             // DVR
             'dvr_duration'     => 'required|integer|min:60|max:86400',
             'segment_duration' => 'required|integer|min:2|max:30',
+
+            // Recording
+            'record_duration'  => 'required|integer|min:0|max:86400',
+
             'check_interval'   => 'required|integer|min:1|max:60',
             'max_retries'      => 'required|integer|min:0|max:20',
         ];
