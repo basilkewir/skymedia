@@ -77,7 +77,7 @@
                             <div class="flex items-center gap-2">
                                 <Link :href="route('channels.show', ch.id)"
                                       class="text-xs text-slate-400 hover:text-white transition-colors">View</Link>
-                                <Link :href="route('channels.toggle', ch.id)" method="post" as="button"
+                                <Link :href="route('channels.toggle', ch.id)" method="post" as="button" preserve-scroll
                                       class="text-xs font-medium transition-colors"
                                       :class="ch.is_active ? 'text-red-400 hover:text-red-300' : 'text-green-400 hover:text-green-300'">
                                     {{ ch.is_active ? 'Stop' : 'Start' }}

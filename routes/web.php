@@ -15,7 +15,8 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
 
     // Channels (CRUD + overview)
     Route::resource('channels', ChannelController::class);
-    Route::get('channels/{channel}/probe', [ChannelController::class, 'probe'])->name('channels.probe');
+    Route::get('channels/{channel}/probe',  [ChannelController::class, 'probe'])->name('channels.probe');
+    Route::post('channels/{channel}/toggle', [ChannelController::class, 'toggle'])->name('channels.toggle');
 
     // ── Ingest (Source) controls ──────────────────────────────────
     Route::post('channels/{channel}/ingest/start',   [IngestController::class, 'start'])->name('ingest.start');

@@ -20,34 +20,36 @@ class PushController extends Controller
 
     public function start(Request $request, Channel $channel): RedirectResponse
     {
-        $mode = $request->input('mode', 'live'); // live | dvr
-        $ok   = $mode === 'dvr'
-            ? $this->push->startDvrPlayback($channel)
-            : $this->push->startLive($channel);
+        $mode = $request->input('mode', 'live');
 
-        return back()->with($ok ? 'success' : 'error', $ok ? "Push ({$mode}) started" : 'Failed to start push');
+        $ok = $mode === 'dvr'
+            ? $this->push->startDvrPlayback($channel)
+            : $this->push->start($channel, waitForHls: false);
+
+        return back()->with($ok ? 'success' : 'error', $ok ? "Push started ({$mode})" : 'Failed to start push');
     }
 
     public function stop(Channel $channel): RedirectResponse
     {
-        $this->push->stopAll($channel);
+        $this->push->stop($channel);
         return back()->with('success', 'Push stopped');
     }
 
     public function restart(Request $request, Channel $channel): RedirectResponse
     {
         $mode = $request->input('mode', 'live');
-        $this->push->stopAll($channel);
+        $this->push->stop($channel);
+
         $ok = $mode === 'dvr'
             ? $this->push->startDvrPlayback($channel)
-            : $this->push->startLive($channel);
+            : $this->push->start($channel, waitForHls: false);
 
-        return back()->with($ok ? 'success' : 'error', $ok ? "Push ({$mode}) restarted" : 'Failed to restart push');
+        return back()->with($ok ? 'success' : 'error', $ok ? "Push restarted ({$mode})" : 'Failed to restart push');
     }
 
     public function log(Channel $channel): JsonResponse
     {
         $logFile = $this->ffmpeg->logFile($channel, 'push');
-        return response()->json(['log' => $this->ffmpeg->readLogTail($logFile, 50)]);
+        return response()->json(['log' => $this->ffmpeg->readLogTail($logFile, 80)]);
     }
 }

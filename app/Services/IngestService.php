@@ -10,9 +10,9 @@ class IngestService
     public function __construct(protected FFmpegService $ffmpeg) {}
 
     /**
-     * Start a single ffmpeg process that simultaneously:
-     * - Records DVR segments to disk
-     * - Pushes live stream to the configured output
+     * Start the ingest process: source → HLS segments on disk.
+     * This process is responsible ONLY for DVR recording.
+     * The push process is managed separately by PushService.
      */
     public function start(Channel $channel): bool
     {
@@ -22,7 +22,7 @@ class IngestService
             $dvrDir = $channel->dvr_directory;
             if (!is_dir($dvrDir)) mkdir($dvrDir, 0755, true);
 
-            $cmd     = $this->ffmpeg->buildLiveCommand($channel);
+            $cmd     = $this->ffmpeg->buildIngestCommand($channel);
             $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
             $logFile = $this->ffmpeg->logFile($channel, 'ingest');
 
@@ -31,9 +31,7 @@ class IngestService
 
             $channel->update([
                 'pid'           => $pid,
-                'push_pid'      => $pid, // same process handles both
                 'dvr_status'    => 'recording',
-                'push_status'   => 'pushing',
                 'stream_status' => 'live',
                 'is_active'     => true,
                 'source_live'   => true,
@@ -51,17 +49,14 @@ class IngestService
     {
         $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
         $pid     = $this->ffmpeg->readPid($pidFile);
+
         if ($pid > 0) $this->ffmpeg->stopProcess($pid);
         $this->ffmpeg->clearPid($pidFile);
 
         $channel->update([
-            'pid'           => null,
-            'push_pid'      => null,
-            'dvr_status'    => 'idle',
-            'push_status'   => 'idle',
-            'stream_status' => 'stopped',
-            'source_live'   => false,
-            'is_active'     => false,
+            'pid'        => null,
+            'dvr_status' => 'idle',
+            'source_live'=> false,
         ]);
     }
 
