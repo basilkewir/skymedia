@@ -31,16 +31,7 @@ class PushService
 
     public function startLive(Channel $channel): bool
     {
-        $m3u8 = $channel->dvr_directory . '/live.m3u8';
-
-        // Wait up to 10 s for HLS to be ready
-        $waited = 0;
-        while (!$this->ffmpeg->hlsReady($channel, 2) && $waited < 10) {
-            sleep(1);
-            $waited++;
-        }
-
-        if (!file_exists($m3u8)) {
+        if (!file_exists($channel->dvr_directory . '/live.m3u8')) {
             return false;
         }
 
@@ -105,7 +96,12 @@ class PushService
         $pidFile = $this->ffmpeg->pidFile($channel, 'push');
         $logFile = $this->ffmpeg->logFile($channel, 'push');
 
-        $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile);
+        try {
+            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile);
+        } catch (\Throwable $e) {
+            $channel->update(['push_status' => 'error']);
+            return false;
+        }
 
         if ($pid <= 0) {
             $channel->update(['push_status' => 'error']);

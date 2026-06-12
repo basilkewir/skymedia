@@ -19,20 +19,29 @@ class IngestController extends Controller
 
     public function start(Channel $channel): RedirectResponse
     {
-        $ok = $this->manager->startStream($channel);
+        try {
+            $ok = $this->manager->startChannel($channel);
+        } catch (\Throwable $e) {
+            return back()->with('error', 'Ingest failed: ' . $e->getMessage());
+        }
         return back()->with($ok ? 'success' : 'error', $ok ? 'Ingest started' : 'Ingest failed to start — check ffmpeg log');
     }
 
     public function stop(Channel $channel): RedirectResponse
     {
-        $this->manager->stopStream($channel);
+        $this->manager->stopChannel($channel);
         return back()->with('success', 'Ingest stopped');
     }
 
     public function restart(Channel $channel): RedirectResponse
     {
-        $this->manager->stopStream($channel);
-        $ok = $this->manager->startStream($channel);
+        try {
+            $this->manager->stopChannel($channel);
+            $channel->update(['is_active' => true]);
+            $ok = $this->manager->startChannel($channel->fresh());
+        } catch (\Throwable $e) {
+            return back()->with('error', 'Ingest restart failed: ' . $e->getMessage());
+        }
         return back()->with($ok ? 'success' : 'error', $ok ? 'Ingest restarted' : 'Ingest failed to restart — check ffmpeg log');
     }
 
