@@ -8,6 +8,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (Schema::hasTable('stream_logs')) {
+            return;
+        }
+
         Schema::create('stream_logs', function (Blueprint $table) {
             $table->id();
             $table->foreignId('channel_id')->constrained()->cascadeOnDelete();

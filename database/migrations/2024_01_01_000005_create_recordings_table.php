@@ -8,6 +8,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (Schema::hasTable('recordings')) {
+            return;
+        }
+
         Schema::create('recordings', function (Blueprint $table) {
             $table->id();
             $table->foreignId('channel_id')->constrained()->cascadeOnDelete();
@@ -16,7 +20,7 @@ return new class extends Migration
             $table->string('filename');
             $table->float('duration')->default(0)->comment('Actual recorded duration in seconds');
             $table->bigInteger('filesize')->default(0);
-            $table->enum('status', ['recording','completed','failed'])->default('recording');
+            $table->enum('status', ['recording', 'completed', 'failed'])->default('recording');
 
             $table->timestamp('started_at')->nullable();
             $table->timestamp('completed_at')->nullable();
