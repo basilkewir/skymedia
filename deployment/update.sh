@@ -111,8 +111,19 @@ COMPOSER_ALLOW_SUPERUSER=1 "${PHP}" "${COMPOSER}" install --no-dev --optimize-au
 "${PHP}" artisan package:discover --ansi 2>/dev/null || true
 ok "Composer packages updated"
 
-# ── 5. Frontend ───────────────────────────────────────────────────────────────
-step "5 / 8  Frontend assets"
+# ── 5. Clear caches + generate routes BEFORE frontend build ───────────────────
+# Ziggy bakes the route list into the JS bundle at BUILD TIME.
+# Routes must be cached BEFORE npm run build or Ziggy uses stale routes.
+step "5a / 8  Pre-build: clear & cache routes"
+"${PHP}" artisan optimize:clear --quiet 2>/dev/null || true
+"${PHP}" artisan config:cache   --quiet
+"${PHP}" artisan route:cache    --quiet
+ok "Routes cached for Ziggy"
+
+# ── 5b. Frontend ──────────────────────────────────────────────────────────────
+step "5b / 8  Frontend assets (clean build)"
+# Always delete old build so browsers never load stale hashed JS files
+rm -rf "${APP_DIR}/public/build"
 "${NPM}" ci --silent
 "${NPM}" run build
 ok "Frontend built"
@@ -133,18 +144,13 @@ ok "Migrations applied"
 
 # ── 7. Caches & permissions ───────────────────────────────────────────────────
 step "7 / 8  Caches & permissions"
+# Restart PHP-FPM to clear opcache
 systemctl restart "php${PHP_VER}-fpm" 2>/dev/null || true
-# Clear ALL caches first so Ziggy picks up fresh route list
-"${PHP}" artisan optimize:clear   --quiet 2>/dev/null || true
-"${PHP}" artisan route:clear      --quiet
-"${PHP}" artisan config:clear     --quiet
-"${PHP}" artisan view:clear       --quiet
-# Rebuild caches — route:cache regenerates Ziggy route list baked into JS
-"${PHP}" artisan config:cache     --quiet
-"${PHP}" artisan route:cache      --quiet
-"${PHP}" artisan view:cache       --quiet
-"${PHP}" artisan event:cache      --quiet
-ok "Caches rebuilt (including Ziggy route list)"
+# Routes & config already cached before build in step 5a
+# Just add view + event caches here
+"${PHP}" artisan view:cache  --quiet
+"${PHP}" artisan event:cache --quiet
+ok "All caches warm"
 
 chown -R www-data:www-data "${APP_DIR}/storage" "${APP_DIR}/bootstrap/cache"
 chmod -R 775 "${APP_DIR}/storage" "${APP_DIR}/bootstrap/cache"

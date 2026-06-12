@@ -3,6 +3,7 @@
 use App\Http\Controllers\ChannelController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DvrController;
+use App\Http\Controllers\IngestController;
 use App\Http\Controllers\LogController;
 use App\Http\Controllers\SettingsController;
 use Illuminate\Support\Facades\Route;
@@ -12,6 +13,12 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     // ── Dashboard ─────────────────────────────────────────────────────────────
     Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
     Route::get('/dashboard/status', [DashboardController::class, 'status'])->name('dashboard.status');
+
+    // ── Ingest ────────────────────────────────────────────────────────────────
+    Route::post('channels/{channel}/ingest/start',   [IngestController::class, 'start'])->name('ingest.start');
+    Route::post('channels/{channel}/ingest/stop',    [IngestController::class, 'stop'])->name('ingest.stop');
+    Route::post('channels/{channel}/ingest/restart', [IngestController::class, 'restart'])->name('ingest.restart');
+    Route::get('channels/{channel}/ingest/log',      [IngestController::class, 'log'])->name('ingest.log');
 
     // ── Channels — specific action routes BEFORE resource (prevents conflicts) ─
     Route::post('channels/{channel}/toggle',     [ChannelController::class, 'toggle'])->name('channels.toggle');
