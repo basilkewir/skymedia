@@ -250,7 +250,14 @@ class StreamManager
         // ── Push watchdog ────────────────────────────────────────────────
         if (!$this->push->isRunning($channel)) {
             $this->log($channel, 'warning', 'push_died', 'Push died — restarting');
-            $this->push->startLive($channel);
+            $ok = $this->push->startLive($channel);
+            if ($ok) {
+                $this->log($channel, 'info', 'push_restarted', 'Push restarted successfully');
+                $channel->update(['push_status' => 'live']);
+            } else {
+                $this->log($channel, 'error', 'push_restart_failed', 'Push failed to restart — will retry next tick');
+                $channel->update(['push_status' => 'error']);
+            }
         }
 
         if ($channel->stream_status !== 'live') {
@@ -270,7 +277,13 @@ class StreamManager
     {
         if (!$this->push->isRunning($channel) && $this->recording->hasFallback($channel)) {
             $this->log($channel, 'warning', 'fallback_restart', 'Fallback push died — restarting');
-            $this->push->startRecordingFallback($channel);
+            $ok = $this->push->startRecordingFallback($channel);
+            if ($ok) {
+                $channel->update(['push_status' => 'fallback']);
+                $this->log($channel, 'info', 'fallback_restarted', 'Fallback push restarted');
+            } else {
+                $this->log($channel, 'error', 'fallback_restart_failed', 'Fallback push failed to restart');
+            }
         }
 
         $channel->incrementRetry('Source offline');

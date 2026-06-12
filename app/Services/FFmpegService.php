@@ -74,11 +74,11 @@ class FFmpegService
         return array_merge(
             [
                 $this->ffmpegBin, '-y', '-loglevel', 'warning', '-stats',
-                '-fflags',             '+genpts+igndts',
-                '-re',
-                '-live_start_index',   '-3',
+                '-fflags',             '+genpts+igndts+discardcorrupt',
+                '-live_start_index',   '0',
                 '-allowed_extensions', 'ALL',
                 '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
+                '-timeout',            '10000000',
                 '-i',                  $m3u8,
             ],
             $this->videoEncodeFlags($channel),
