@@ -20,11 +20,11 @@ class DashboardController extends Controller
         $stats = [
             'total'       => $channels->count(),
             'live'        => $channels->where('stream_status', 'live')->count(),
-            'dvr'         => $channels->where('stream_status', 'dvr_playback')->count(),
+            'dvr'         => $channels->whereIn('stream_status', ['dvr_playback', 'fallback'])->count(),
             'error'       => $channels->where('stream_status', 'error')->count(),
             'idle'        => $channels->whereIn('stream_status', ['idle', 'stopped'])->count(),
             'active'      => $channels->where('is_active', true)->count(),
-            'dvr_storage' => $channels->sum('dvr_segments_sum_filesize'),  // bytes
+            'dvr_storage' => $channels->sum('dvr_segments_sum_filesize'),
         ];
 
         $recentLogs = StreamLog::with('channel:id,name')

@@ -55,13 +55,26 @@ class ChannelController extends Controller
     public function show(Channel $channel): Response
     {
         $channel->load([
-            'dvrSegments'  => fn($q) => $q->orderBy('sequence', 'desc')->limit(50),
-            'recordings'   => fn($q) => $q->limit(10),
+            'dvrSegments' => fn($q) => $q->orderBy('sequence', 'desc')->limit(50),
+            'recordings'  => fn($q) => $q->orderByDesc('started_at')->limit(10),
         ]);
         $channel->loadCount('streamLogs');
+
+        // Append computed DVR stats as plain attributes for the Vue page
         $channel->dvr_total_duration = $this->dvr->totalDuration($channel);
         $channel->dvr_total_size     = $this->dvr->totalSize($channel);
         $channel->dvr_buffer_pct     = $this->dvr->bufferPercent($channel);
+        $channel->dvr_segment_count  = $this->dvr->segmentCount($channel);
+
+        // Hint if the source URL looks like HTTP MPEG-TS despite being set to HLS
+        $url = $channel->source_url;
+        $path = parse_url($url, PHP_URL_PATH) ?? '';
+        $channel->source_type_hint = null;
+        if ($channel->source_type === 'hls'
+            && (str_starts_with($url, 'http://') || str_starts_with($url, 'https://'))
+            && !preg_match('/\.(m3u8?)(\?|#|$)/i', $path)) {
+            $channel->source_type_hint = 'mpegts'; // URL looks like HTTP MPEG-TS, not HLS
+        }
 
         return Inertia::render('Channels/Show', ['channel' => $channel]);
     }

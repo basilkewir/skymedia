@@ -26,6 +26,18 @@
                         </div>
                         <p class="text-xs text-slate-500 font-mono mt-1">{{ channel.slug }}</p>
                         <p v-if="channel.notes" class="text-sm text-slate-400 mt-2">{{ channel.notes }}</p>
+
+                    <!-- Source type mismatch warning -->
+                    <div v-if="channel.source_type_hint"
+                         class="mt-3 flex items-start gap-2 bg-yellow-500/10 border border-yellow-500/30 text-yellow-300 rounded-lg px-3 py-2 text-xs">
+                        <span class="flex-shrink-0 mt-0.5">⚠</span>
+                        <span>
+                            This URL looks like an <strong>HTTP MPEG-TS</strong> stream (IPTV), not HLS —
+                            it has no <code>.m3u8</code> extension.
+                            SkyMedia will handle it correctly, but consider changing
+                            <strong>Source Protocol</strong> to <strong>MPEG-TS</strong> in Edit to make it explicit.
+                        </span>
+                    </div>
                     </div>
                     <div class="flex items-center gap-2 flex-wrap justify-end">
                         <button @click="probeStream" :disabled="probing"
@@ -117,7 +129,8 @@
                         <h2 class="text-sm font-semibold text-white">DVR Rolling Buffer</h2>
                         <p class="text-xs text-slate-500 mt-0.5">
                             {{ formatDuration(channel.dvr_total_duration) }} of {{ channel.dvr_window_label }} recorded
-                            · {{ formatBytes(channel.dvr_total_size) }} on disk · {{ channel.dvr_segments_count }} segments
+                            · {{ formatBytes(channel.dvr_total_size) }} on disk
+                            · {{ channel.dvr_segment_count ?? channel.dvr_segments_count ?? 0 }} segments
                         </p>
                     </div>
                     <Link :href="route('channels.purge-dvr', channel.id)" method="delete" as="button"
