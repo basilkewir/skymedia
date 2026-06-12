@@ -9,12 +9,10 @@ use Illuminate\Support\Facades\Route;
 
 Route::middleware(['auth:sanctum', 'verified'])->group(function () {
 
+    // ── Dashboard ─────────────────────────────────────────────────────────────
     Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
 
-    // Channels CRUD
-    Route::resource('channels', ChannelController::class);
-
-    // Channel actions
+    // ── Channels — specific action routes BEFORE resource (prevents conflicts) ─
     Route::post('channels/{channel}/toggle',     [ChannelController::class, 'toggle'])->name('channels.toggle');
     Route::post('channels/{channel}/restart',    [ChannelController::class, 'restart'])->name('channels.restart');
     Route::post('channels/{channel}/push/start', [ChannelController::class, 'startPush'])->name('channels.push.start');
@@ -24,16 +22,19 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::get('channels/{channel}/diagnose',    [ChannelController::class, 'diagnose'])->name('channels.diagnose');
     Route::get('channels/{channel}/logs',        [ChannelController::class, 'logs'])->name('channels.logs');
 
-    // DVR
-    Route::get('dvr',                        [DvrController::class, 'index'])->name('dvr.index');
-    Route::get('dvr/{channel}',              [DvrController::class, 'show'])->name('dvr.show');
-    Route::delete('dvr/segment/{segment}',   [DvrController::class, 'destroySegment'])->name('dvr.segment.destroy');
-    Route::delete('dvr/{channel}/purge',     [DvrController::class, 'purge'])->name('dvr.purge');
+    // ── Channels CRUD resource ────────────────────────────────────────────────
+    Route::resource('channels', ChannelController::class);
 
-    // Logs
+    // ── DVR — specific routes BEFORE parameterised ones ───────────────────────
+    Route::delete('dvr/segment/{segment}',  [DvrController::class, 'destroySegment'])->name('dvr.segment.destroy');
+    Route::delete('dvr/{channel}/purge',    [DvrController::class, 'purge'])->name('dvr.purge');
+    Route::get('dvr',                       [DvrController::class, 'index'])->name('dvr.index');
+    Route::get('dvr/{channel}',             [DvrController::class, 'show'])->name('dvr.show');
+
+    // ── Logs ──────────────────────────────────────────────────────────────────
     Route::get('logs', [LogController::class, 'index'])->name('logs.index');
 
-    // Settings
+    // ── Settings ──────────────────────────────────────────────────────────────
     Route::get('settings', [SettingsController::class, 'index'])->name('settings.index');
     Route::put('settings', [SettingsController::class, 'update'])->name('settings.update');
 });

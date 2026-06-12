@@ -134,12 +134,17 @@ ok "Migrations applied"
 # ── 7. Caches & permissions ───────────────────────────────────────────────────
 step "7 / 8  Caches & permissions"
 systemctl restart "php${PHP_VER}-fpm" 2>/dev/null || true
-"${PHP}" artisan optimize:clear --quiet 2>/dev/null || true
-"${PHP}" artisan config:cache  --quiet
-"${PHP}" artisan route:cache   --quiet
-"${PHP}" artisan view:cache    --quiet
-"${PHP}" artisan event:cache   --quiet
-ok "Caches rebuilt"
+# Clear ALL caches first so Ziggy picks up fresh route list
+"${PHP}" artisan optimize:clear   --quiet 2>/dev/null || true
+"${PHP}" artisan route:clear      --quiet
+"${PHP}" artisan config:clear     --quiet
+"${PHP}" artisan view:clear       --quiet
+# Rebuild caches — route:cache regenerates Ziggy route list baked into JS
+"${PHP}" artisan config:cache     --quiet
+"${PHP}" artisan route:cache      --quiet
+"${PHP}" artisan view:cache       --quiet
+"${PHP}" artisan event:cache      --quiet
+ok "Caches rebuilt (including Ziggy route list)"
 
 chown -R www-data:www-data "${APP_DIR}/storage" "${APP_DIR}/bootstrap/cache"
 chmod -R 775 "${APP_DIR}/storage" "${APP_DIR}/bootstrap/cache"
