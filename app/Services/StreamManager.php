@@ -7,46 +7,20 @@ use App\Models\Channel;
 use App\Models\StreamLog;
 use Illuminate\Support\Facades\Log;
 
-/**
- * StreamManager — orchestrates ingest, push, recording and DVR.
- *
- * PIPELINE:
- *
- *   [Source] ──► [Ingest ffmpeg] ──► live.m3u8 (HLS segments on disk)
- *                                         │
- *                                    [DVRService]
- *                                    enforces rolling window
- *                                         │
- *                              ┌──────────┴──────────┐
- *                         [Record ffmpeg]        [Push ffmpeg]
- *                         rec_YYYYMMDD.mp4       reads live.m3u8
- *                              │                 → RTMP / SRT output
- *                              │
- *                      on source offline:
- *                         Push switches to loop rec_*.mp4
- *                         → output stays LIVE to viewers
- *
- * GUARANTEE: Push output NEVER goes offline as long as at least one
- * completed recording exists (rec_*.mp4).
- */
 class StreamManager
 {
     public function __construct(
-        protected FFmpegService   $ffmpeg,
-        protected IngestService   $ingest,
-        protected PushService     $push,
-        protected DVRService      $dvr,
+        protected FFmpegService    $ffmpeg,
+        protected IngestService    $ingest,
+        protected PushService      $push,
+        protected DVRService       $dvr,
         protected RecordingService $recording,
     ) {}
 
     // ═══════════════════════════════════════════════════════════════════
-    //  PUBLIC API — called by controllers / artisan commands
+    //  PUBLIC API
     // ═══════════════════════════════════════════════════════════════════
 
-    /**
-     * Start ingest + push for a channel.
-     * Always starts ingest first, then push once HLS is ready.
-     */
     public function startChannel(Channel $channel): bool
     {
         $channel->update(['is_active' => true, 'stream_status' => 'starting']);
@@ -54,44 +28,41 @@ class StreamManager
 
         try {
             $dvrDir = $channel->dvr_directory;
-            if (!is_dir($dvrDir)) mkdir($dvrDir, 0755, true);
+            if (!is_dir($dvrDir)) {
+                mkdir($dvrDir, 0755, true);
+            }
 
-            // 1. Start ingest
-            // startChannel / IngestService::start throws with ffmpeg stderr on failure
+            // 1. Start ingest — throws RuntimeException with ffmpeg stderr on failure
             $this->ingest->start($channel);
+            $channel->refresh();
+            $this->log($channel, 'info', 'ingest_started', "Ingest PID {$channel->pid}");
 
-            $fresh = $channel->fresh();
-            $this->log($channel, 'info', 'ingest_started', "Ingest PID {$fresh->pid}");
-
-            // 2. Start push (startLive waits for HLS to be ready internally)
-            if (!$this->push->startLive($fresh)) {
-                $this->log($channel, 'warning', 'push_start_failed',
-                    'Push failed — will retry when ingest produces segments');
+            // 2. Start push — waits internally for HLS segments (non-blocking on failure)
+            if ($this->push->startLive($channel)) {
+                $channel->refresh();
+                $this->log($channel, 'info', 'push_started', "Push PID {$channel->push_pid}");
             } else {
-                $this->log($channel, 'info', 'push_started', "Push PID {$fresh->fresh()->push_pid}");
+                $this->log($channel, 'warning', 'push_start_failed',
+                    'Push not ready yet — monitor will retry');
             }
 
-            // 3. Start recording if enabled
-            if ($fresh->record_duration > 0) {
-                sleep(2); // brief wait for HLS
-                $this->recording->start($fresh->fresh());
-            }
-
-            $channel->fresh()->update(['stream_status' => 'live']);
+            // 3. Recording is started by the monitor once segments exist
+            //    (avoids blocking the web request with sleep())
+            $channel->update(['stream_status' => 'live']);
             event(new StreamStatusChanged($channel, 'live'));
             return true;
 
         } catch (\Throwable $e) {
-            $channel->update(['stream_status' => 'error', 'last_error' => substr($e->getMessage(), 0, 1000)]);
+            $channel->update([
+                'stream_status' => 'error',
+                'last_error'    => substr($e->getMessage(), 0, 1000),
+            ]);
             $this->log($channel, 'error', 'stream_start_failed', $e->getMessage());
             Log::error("[Channel {$channel->id}] startChannel: {$e->getMessage()}");
             return false;
         }
     }
 
-    /**
-     * Fully stop a channel — ingest, push, and recording.
-     */
     public function stopChannel(Channel $channel): bool
     {
         $this->recording->stop($channel);
@@ -115,10 +86,6 @@ class StreamManager
         return true;
     }
 
-    /**
-     * Start only the push — operator-initiated.
-     * mode: 'live' | 'dvr' | 'fallback'
-     */
     public function startPush(Channel $channel, string $mode = 'live'): bool
     {
         $ok = match ($mode) {
@@ -141,20 +108,13 @@ class StreamManager
         return true;
     }
 
-    /**
-     * Restart both ingest and push cleanly.
-     */
     public function restartChannel(Channel $channel): bool
     {
         $this->stopChannel($channel);
-        sleep(1);
         $channel->update(['is_active' => true]);
         return $this->startChannel($channel->fresh());
     }
 
-    /**
-     * Activate all channels marked is_active that are not currently running.
-     */
     public function activateAll(): void
     {
         Channel::where('is_active', true)
@@ -163,7 +123,7 @@ class StreamManager
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    //  MONITOR TICK — called by streams:monitor daemon
+    //  MONITOR TICK
     // ═══════════════════════════════════════════════════════════════════
 
     public function monitorChannel(Channel $channel): void
@@ -188,18 +148,10 @@ class StreamManager
     //  STATE TRANSITIONS
     // ═══════════════════════════════════════════════════════════════════
 
-    /**
-     * Source just went offline.
-     *
-     * 1. Stop ingest + recording immediately.
-     * 2. Switch push to loop the latest recording — output stays live.
-     * 3. If no recording exists yet, push stays as-is (still reading HLS
-     *    segments already on disk until they run out).
-     */
     protected function onSourceLost(Channel $channel): void
     {
         $this->log($channel, 'warning', 'source_lost',
-            'Source offline — stopping ingest, switching push to recording fallback');
+            'Source offline — stopping ingest, switching push to fallback');
 
         $this->recording->stop($channel);
         $this->ingest->stop($channel);
@@ -213,35 +165,25 @@ class StreamManager
             'record_status' => 'idle',
         ]);
 
-        // ── Seamless failover to recording ──────────────────────────────
         if ($this->recording->hasFallback($channel)) {
             $this->push->stop($channel->fresh());
-            usleep(300_000);
 
             if ($this->push->startRecordingFallback($channel->fresh())) {
                 $channel->update(['stream_status' => 'fallback', 'push_status' => 'fallback']);
                 $this->log($channel, 'info', 'fallback_activated',
-                    "Push now looping: {$channel->fallback_recording_path}");
+                    "Push looping: {$channel->fallback_recording_path}");
                 event(new StreamStatusChanged($channel, 'fallback'));
             } else {
-                $this->log($channel, 'error', 'fallback_failed', 'Recording fallback push failed');
+                $this->log($channel, 'error', 'fallback_failed', 'Fallback push failed to start');
                 event(new StreamStatusChanged($channel, 'offline'));
             }
         } else {
-            // No recording yet — push reads stale HLS segments until they run out
             $this->log($channel, 'warning', 'no_fallback',
-                'No recording available yet for fallback — waiting for source recovery');
+                'No recording available yet — waiting for source recovery');
             event(new StreamStatusChanged($channel, 'offline'));
         }
     }
 
-    /**
-     * Source just came back online.
-     *
-     * 1. Restart ingest immediately.
-     * 2. Start recording.
-     * 3. Once HLS is ready (≥2 segments), switch push back to live.
-     */
     protected function onSourceRecovered(Channel $channel): void
     {
         $this->log($channel, 'info', 'source_recovered', 'Source back online — restarting ingest');
@@ -249,27 +191,19 @@ class StreamManager
         $this->ingest->stop($channel);
         $channel->update(['source_live' => true, 'last_live_at' => now()]);
 
-        if (!$this->ingest->start($channel)) {
-            $this->log($channel, 'error', 'ingest_restart_failed', 'Ingest restart failed');
+        try {
+            $this->ingest->start($channel);
+        } catch (\Throwable $e) {
+            $this->log($channel, 'error', 'ingest_restart_failed', $e->getMessage());
             return;
         }
 
-        // Start recording
-        $fresh = $channel->fresh();
-        if ($fresh->record_duration > 0) {
-            sleep(2);
-            $this->recording->start($fresh->fresh());
-        }
-
-        // Switch push back to live (waits for HLS internally)
-        $this->push->stop($fresh->fresh());
-        usleep(200_000);
-
-        if ($this->push->startLive($fresh->fresh())) {
+        // Switch push back to live — push will start once HLS has segments
+        $this->push->stop($channel->fresh());
+        if ($this->push->startLive($channel->fresh())) {
             $channel->update(['stream_status' => 'live', 'push_status' => 'live']);
-            $this->log($channel, 'info', 'push_switched_live', 'Push switched back to live source');
+            $this->log($channel, 'info', 'push_switched_live', 'Push back to live');
         } else {
-            // HLS not ready yet — push will be picked up next tick
             $channel->update(['stream_status' => 'live']);
         }
 
@@ -277,10 +211,6 @@ class StreamManager
         event(new StreamStatusChanged($channel, 'live'));
     }
 
-    /**
-     * Source is live and running normally.
-     * Responsibilities: sync DVR, manage recording lifecycle, watchdog ingest+push.
-     */
     protected function onSourceStillLive(Channel $channel): void
     {
         // ── Recording lifecycle ──────────────────────────────────────────
@@ -288,11 +218,19 @@ class StreamManager
             $this->recording->finish($channel);
             $channel->refresh();
             $this->log($channel, 'info', 'recording_completed',
-                "Recording completed: {$channel->fallback_recording_path}");
+                "Completed: {$channel->fallback_recording_path}");
         }
 
+        // Update live filesize/duration for the recording-in-progress indicator
+        $this->recording->refreshProgress($channel);
+
+        // Start a new recording if none is running
         if ($this->recording->shouldRecord($channel)) {
-            $this->recording->start($channel);
+            $started = $this->recording->start($channel);
+            if ($started) {
+                $this->log($channel, 'info', 'recording_started',
+                    "Recording started ({$channel->record_duration}s)");
+            }
         }
 
         // ── DVR rolling window ───────────────────────────────────────────
@@ -300,17 +238,18 @@ class StreamManager
 
         // ── Ingest watchdog ──────────────────────────────────────────────
         if (!$this->ingest->isRunning($channel)) {
-            $this->log($channel, 'warning', 'ingest_died', 'Ingest process died — restarting');
-            $this->ingest->start($channel);
-            if ($channel->record_duration > 0) {
-                sleep(2);
-                $this->recording->start($channel->fresh());
+            $this->log($channel, 'warning', 'ingest_died', 'Ingest died — restarting');
+            try {
+                $this->ingest->start($channel);
+            } catch (\Throwable $e) {
+                $this->log($channel, 'error', 'ingest_restart_failed', $e->getMessage());
+                return;
             }
         }
 
         // ── Push watchdog ────────────────────────────────────────────────
         if (!$this->push->isRunning($channel)) {
-            $this->log($channel, 'warning', 'push_died', 'Push process died — restarting');
+            $this->log($channel, 'warning', 'push_died', 'Push died — restarting');
             $this->push->startLive($channel);
         }
 
@@ -318,24 +257,22 @@ class StreamManager
             $channel->update(['stream_status' => 'live', 'source_live' => true]);
         }
 
+        // Update dvr_status to reflect recording is active
+        $dvrStatus = $this->ingest->isRunning($channel) ? 'recording' : 'idle';
+        if ($channel->dvr_status !== $dvrStatus) {
+            $channel->update(['dvr_status' => $dvrStatus]);
+        }
+
         $channel->resetRetries();
     }
 
-    /**
-     * Source is still offline.
-     * Watchdog: restart fallback push if it died.
-     */
     protected function onSourceStillDown(Channel $channel): void
     {
-        // Watchdog: restart fallback if push died
         if (!$this->push->isRunning($channel) && $this->recording->hasFallback($channel)) {
             $this->log($channel, 'warning', 'fallback_restart', 'Fallback push died — restarting');
-            if ($this->push->startRecordingFallback($channel)) {
-                $channel->update(['push_status' => 'fallback']);
-            }
+            $this->push->startRecordingFallback($channel);
         }
 
-        // Increment retry counter for alerting
         $channel->incrementRetry('Source offline');
     }
 
@@ -354,7 +291,7 @@ class StreamManager
                 'metadata'   => $meta,
             ]);
         } catch (\Throwable $e) {
-            Log::error("StreamLog write failed: {$e->getMessage()}");
+            Log::error("StreamLog write: {$e->getMessage()}");
         }
     }
 }

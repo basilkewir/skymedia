@@ -137,6 +137,30 @@ class ChannelController extends Controller
         return back()->with('success', "DVR cleared ({$n} segments removed)");
     }
 
+    public function status(Channel $channel): JsonResponse
+    {
+        $channel->loadCount('dvrSegments');
+        $channel->load(['recordings' => fn($q) => $q->orderByDesc('started_at')->limit(10)]);
+
+        return response()->json([
+            'stream_status'           => $channel->stream_status,
+            'push_status'             => $channel->push_status,
+            'dvr_status'              => $channel->dvr_status,
+            'record_status'           => $channel->record_status,
+            'source_live'             => $channel->source_live,
+            'pid'                     => $channel->pid,
+            'push_pid'                => $channel->push_pid,
+            'record_pid'              => $channel->record_pid,
+            'last_live_at'            => $channel->last_live_at?->toISOString(),
+            'fallback_recording_path' => $channel->fallback_recording_path,
+            'dvr_total_duration'      => $this->dvr->totalDuration($channel),
+            'dvr_total_size'          => $this->dvr->totalSize($channel),
+            'dvr_buffer_pct'          => $this->dvr->bufferPercent($channel),
+            'dvr_segment_count'       => $this->dvr->segmentCount($channel),
+            'recordings'              => $channel->recordings,
+        ]);
+    }
+
     public function probe(Channel $channel): JsonResponse
     {
         return response()->json($this->ffmpeg->probeStream($channel));

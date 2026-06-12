@@ -8,27 +8,15 @@ use Illuminate\Support\Facades\Log;
 use Symfony\Component\Process\Process;
 
 /**
- * RecordingService — produces timed MP4 recordings from the live HLS buffer.
+ * RecordingService
  *
- * HOW IT WORKS:
- *   1. When ingest starts, a recording process is launched immediately.
- *   2. The recording runs for exactly record_duration seconds, then exits.
- *   3. The monitor calls justFinished() each tick; when true it calls finish()
- *      which: atomically marks the file as completed, updates
- *      fallback_recording_path on the channel, and logs the event.
- *   4. shouldRecord() returns true immediately after finish() so the next
- *      recording starts without a gap.
- *   5. Old recordings beyond 3 are pruned to save disk space.
- *
- * WHY MP4 NOT HLS:
- *   A self-contained MP4 is reliable for infinite looping (-stream_loop -1).
- *   The push process can loop it without any gap or sync issues.
+ * Records timed MP4 files from the DVR segments already on disk.
+ * Reads from local .ts files (concat demuxer) — NOT from live.m3u8.
+ * This avoids all HLS/network issues and works on any source type.
  */
 class RecordingService
 {
     public function __construct(protected FFmpegService $ffmpeg) {}
-
-    // ── Start a new recording ────────────────────────────────────────────────
 
     public function start(Channel $channel): bool
     {
@@ -36,52 +24,59 @@ class RecordingService
             return false;
         }
 
-        // Don't double-start
         if ($this->isRunning($channel)) {
             return true;
         }
 
-        $dvrDir  = $channel->dvr_directory;
-        if (!is_dir($dvrDir)) mkdir($dvrDir, 0755, true);
+        $dvrDir   = $channel->dvr_directory;
+        $segments = $this->getSegmentFiles($dvrDir);
 
-        $filename   = 'rec_' . now()->format('Ymd_His') . '.mp4';
-        $filepath   = "{$dvrDir}/{$filename}";
-        $m3u8       = "{$dvrDir}/live.m3u8";
-
-        if (!file_exists($m3u8)) {
-            Log::debug("[Recording] {$channel->name}: live.m3u8 not ready yet");
+        if (count($segments) < 2) {
+            Log::debug("[Recording] {$channel->name}: need ≥2 segments, have " . count($segments));
             return false;
         }
 
-        // Create DB record immediately
+        $filename = 'rec_' . now()->format('Ymd_His') . '.mp4';
+        $filepath = "{$dvrDir}/{$filename}";
+        $concat   = "{$dvrDir}/rec_concat.txt";
+
+        // Write concat list of current segments
+        $lines = array_map(fn($f) => "file '" . addslashes($f) . "'", $segments);
+        file_put_contents($concat, implode("\n", $lines));
+
+        // Create DB record so UI shows it immediately
         $recording = Recording::create([
             'channel_id'  => $channel->id,
             'filepath'    => $filepath,
             'filename'    => $filename,
             'status'      => 'recording',
+            'filesize'    => 0,
+            'duration'    => 0,
             'started_at'  => now(),
         ]);
 
-        $cmd = $this->buildRecordCommand($channel, $m3u8, $filepath);
+        $cmd     = $this->buildCommand($channel, $concat, $filepath);
         $pidFile = $this->ffmpeg->pidFile($channel, 'record');
         $logFile = $this->ffmpeg->logFile($channel, 'record');
 
-        $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile);
+        try {
+            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile);
 
-        if ($pid <= 0) {
-            $recording->update(['status' => 'failed']);
+            $channel->update([
+                'record_pid'    => $pid,
+                'record_status' => 'recording',
+            ]);
+
+            Log::info("[Recording] {$channel->name} started — PID {$pid} → {$filename}");
+            return true;
+
+        } catch (\Throwable $e) {
+            $recording->update(['status' => 'failed', 'completed_at' => now()]);
+            $channel->update(['record_pid' => null, 'record_status' => 'idle']);
+            Log::error("[Recording] {$channel->name} failed: {$e->getMessage()}");
             return false;
         }
-
-        $channel->update([
-            'record_pid'    => $pid,
-            'record_status' => 'recording',
-        ]);
-
-        return true;
     }
-
-    // ── Stop recording gracefully ────────────────────────────────────────────
 
     public function stop(Channel $channel): void
     {
@@ -94,7 +89,6 @@ class RecordingService
 
         $this->ffmpeg->clearPid($pidFile);
 
-        // Mark any in-progress recording as failed
         Recording::where('channel_id', $channel->id)
             ->where('status', 'recording')
             ->update(['status' => 'failed', 'completed_at' => now()]);
@@ -102,20 +96,42 @@ class RecordingService
         $channel->update(['record_pid' => null, 'record_status' => 'idle']);
     }
 
-    // ── Detect natural completion (process exited) ───────────────────────────
+    /**
+     * Called every monitor tick while recording is active.
+     * Updates filesize + elapsed duration in DB so the UI shows live progress.
+     */
+    public function refreshProgress(Channel $channel): void
+    {
+        if (!$channel->record_pid || $channel->record_status !== 'recording') {
+            return;
+        }
+
+        $recording = Recording::where('channel_id', $channel->id)
+            ->where('status', 'recording')
+            ->latest('started_at')
+            ->first();
+
+        if (!$recording) {
+            return;
+        }
+
+        $size    = file_exists($recording->filepath) ? (filesize($recording->filepath) ?: 0) : 0;
+        $elapsed = (int) now()->diffInSeconds($recording->started_at);
+
+        $recording->update(['filesize' => $size, 'duration' => $elapsed]);
+    }
 
     public function justFinished(Channel $channel): bool
     {
-        if (!$channel->record_pid) return false;
-        return !$this->ffmpeg->isRunning($channel->record_pid);
+        if (!$channel->record_pid || $channel->record_pid <= 0) {
+            return false;
+        }
+        return !$this->ffmpeg->isRunning((int) $channel->record_pid);
     }
-
-    // ── Finalize a completed recording ──────────────────────────────────────
 
     public function finish(Channel $channel): void
     {
-        $pidFile = $this->ffmpeg->pidFile($channel, 'record');
-        $this->ffmpeg->clearPid($pidFile);
+        $this->ffmpeg->clearPid($this->ffmpeg->pidFile($channel, 'record'));
 
         $recording = Recording::where('channel_id', $channel->id)
             ->where('status', 'recording')
@@ -129,35 +145,36 @@ class RecordingService
 
         $filepath = $recording->filepath;
 
-        if (file_exists($filepath) && filesize($filepath) > 0) {
-            // Probe actual duration
+        if (file_exists($filepath) && filesize($filepath) > 1024) {
             $duration = $this->probeDuration($filepath) ?? (float) $channel->record_duration;
+            $filesize = filesize($filepath);
 
             $recording->update([
                 'status'       => 'completed',
                 'duration'     => $duration,
-                'filesize'     => filesize($filepath),
+                'filesize'     => $filesize,
                 'completed_at' => now(),
             ]);
 
-            // Set as the active fallback
             $channel->update([
                 'record_pid'              => null,
                 'record_status'           => 'idle',
                 'fallback_recording_path' => $filepath,
             ]);
 
-            Log::info("[Recording] {$channel->name}: completed {$filepath} ({$duration}s)");
+            Log::info(sprintf(
+                "[Recording] %s completed: %s (%.1fs, %.1f MB)",
+                $channel->name, $filepath, $duration, $filesize / 1_048_576
+            ));
         } else {
+            Log::warning("[Recording] {$channel->name} produced empty file: {$filepath}");
             $recording->update(['status' => 'failed', 'completed_at' => now()]);
             $channel->update(['record_pid' => null, 'record_status' => 'idle']);
         }
 
-        // Prune old recordings (keep 3 most recent completed)
+        @unlink($channel->dvr_directory . '/rec_concat.txt');
         $this->pruneOld($channel, keep: 3);
     }
-
-    // ── Predicates ──────────────────────────────────────────────────────────
 
     public function isRunning(Channel $channel): bool
     {
@@ -168,11 +185,16 @@ class RecordingService
     public function hasFallback(Channel $channel): bool
     {
         if ($channel->fallback_recording_path && file_exists($channel->fallback_recording_path)) {
-            return true;
+            return filesize($channel->fallback_recording_path) > 1024;
         }
-        // Check disk
-        $files = glob($channel->dvr_directory . '/rec_*.mp4') ?: [];
-        return !empty($files);
+
+        foreach (glob($channel->dvr_directory . '/rec_*.mp4') ?: [] as $f) {
+            if (filesize($f) > 1024) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function shouldRecord(Channel $channel): bool
@@ -180,41 +202,48 @@ class RecordingService
         if ($channel->record_duration <= 0) return false;
         if ($this->isRunning($channel)) return false;
         if ($channel->record_status === 'recording') return false;
-        if (!file_exists($channel->dvr_directory . '/live.m3u8')) return false;
-        return true;
+        return count($this->getSegmentFiles($channel->dvr_directory)) >= 2;
     }
 
-    // ── Command builder ──────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
 
-    private function buildRecordCommand(Channel $channel, string $m3u8, string $output): array
+    private function buildCommand(Channel $channel, string $concatFile, string $output): array
     {
         return [
             $this->ffmpeg->getBin(),
             '-y',
-            '-loglevel',         'warning',
-            '-fflags',           '+genpts+igndts',
-            '-allowed_extensions','ALL',
-            '-protocol_whitelist','file,crypto,data,http,https,tcp,tls',
-            '-i',                $m3u8,
-            '-t',                (string) $channel->record_duration,  // stop after N seconds
-            '-c:v',              'copy',
-            '-c:a',              'copy',
-            '-movflags',         '+faststart',   // moov atom at front for reliable looping
-            '-avoid_negative_ts','make_zero',
+            '-loglevel',  'warning',
+            '-stats',
+            '-safe',      '0',
+            '-f',         'concat',
+            '-i',         $concatFile,
+            '-t',         (string) $channel->record_duration,
+            '-c:v',       'copy',
+            '-c:a',       'copy',
+            '-movflags',  '+faststart',
+            '-avoid_negative_ts', 'make_zero',
             $output,
         ];
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
+    private function getSegmentFiles(string $dvrDir): array
+    {
+        $files = glob("{$dvrDir}/seg_*.ts") ?: [];
+        natsort($files);
+        return array_values(array_filter($files, fn($f) => file_exists($f) && filesize($f) > 0));
+    }
 
     private function probeDuration(string $file): ?float
     {
         try {
             $proc = new Process([
                 config('skymedia.ffprobe_binary', 'ffprobe'),
-                '-v', 'quiet', '-print_format', 'json', '-show_format', $file,
+                '-v', 'quiet',
+                '-print_format', 'json',
+                '-show_format',
+                $file,
             ]);
-            $proc->setTimeout(5);
+            $proc->setTimeout(8);
             $proc->run();
             $data = json_decode($proc->getOutput(), true);
             return isset($data['format']['duration']) ? (float) $data['format']['duration'] : null;
@@ -225,18 +254,17 @@ class RecordingService
 
     private function pruneOld(Channel $channel, int $keep = 3): void
     {
-        $old = Recording::where('channel_id', $channel->id)
+        Recording::where('channel_id', $channel->id)
             ->where('status', 'completed')
             ->orderByDesc('completed_at')
             ->skip($keep)
-            ->take(100)
-            ->get();
-
-        foreach ($old as $rec) {
-            if ($rec->filepath !== $channel->fallback_recording_path) {
-                @unlink($rec->filepath);
-            }
-            $rec->delete();
-        }
+            ->take(1000)
+            ->get()
+            ->each(function (Recording $rec) use ($channel) {
+                if ($rec->filepath !== $channel->fallback_recording_path) {
+                    @unlink($rec->filepath);
+                }
+                $rec->delete();
+            });
     }
 }

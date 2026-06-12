@@ -18,7 +18,8 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('channels/{channel}/push/start', [ChannelController::class, 'startPush'])->name('channels.push.start');
     Route::post('channels/{channel}/push/stop',  [ChannelController::class, 'stopPush'])->name('channels.push.stop');
     Route::delete('channels/{channel}/dvr',      [ChannelController::class, 'purgeDvr'])->name('channels.purge-dvr');
-    Route::get('channels/{channel}/probe',       [ChannelController::class, 'probe'])->name('channels.probe');
+    Route::get('channels/{channel}/status',    [ChannelController::class, 'status'])->name('channels.status');
+    Route::get('channels/{channel}/probe',      [ChannelController::class, 'probe'])->name('channels.probe');
     Route::get('channels/{channel}/diagnose',    [ChannelController::class, 'diagnose'])->name('channels.diagnose');
     Route::get('channels/{channel}/logs',        [ChannelController::class, 'logs'])->name('channels.logs');
 

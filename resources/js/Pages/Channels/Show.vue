@@ -16,12 +16,12 @@
                     <div>
                         <div class="flex items-center gap-3 flex-wrap">
                             <h1 class="text-xl font-bold text-white">{{ channel.name }}</h1>
-                            <StatusBadge :status="channel.stream_status" />
+                            <StatusBadge :status="state.stream_status" />
                             <span class="flex items-center gap-1.5 text-xs font-medium"
-                                  :class="channel.source_live ? 'text-green-400' : 'text-slate-500'">
+                                  :class="state.source_live ? 'text-green-400' : 'text-slate-500'">
                                 <span class="w-1.5 h-1.5 rounded-full"
-                                      :class="channel.source_live ? 'bg-green-400 animate-pulse' : 'bg-slate-600'" />
-                                Source {{ channel.source_live ? 'Online' : 'Offline' }}
+                                      :class="state.source_live ? 'bg-green-400 animate-pulse' : 'bg-slate-600'" />
+                                Source {{ state.source_live ? 'Online' : 'Offline' }}
                             </span>
                         </div>
                         <p class="text-xs text-slate-500 font-mono mt-1">{{ channel.slug }}</p>
@@ -84,10 +84,10 @@
 
             <!-- Status row -->
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                <StatusCard label="Ingest" :status="channel.stream_status" :pid="channel.pid" />
-                <StatusCard label="Push Output" :status="channel.push_status" :pid="channel.push_pid" />
-                <StatusCard label="DVR Recording" :status="channel.dvr_status" />
-                <StatusCard label="File Recording" :status="channel.record_status" :pid="channel.record_pid" />
+                <StatusCard label="Ingest" :status="state.stream_status" :pid="state.pid" />
+                <StatusCard label="Push Output" :status="state.push_status" :pid="state.push_pid" />
+                <StatusCard label="DVR Recording" :status="state.dvr_status" />
+                <StatusCard label="File Recording" :status="state.record_status" :pid="state.record_pid" />
             </div>
 
             <!-- Push controls -->
@@ -95,8 +95,8 @@
                 <h2 class="text-sm font-semibold text-white mb-4">Push Output Control</h2>
                 <div class="flex flex-wrap items-center gap-3">
                     <div class="flex items-center gap-2 text-xs text-slate-400 mr-2">
-                        Push: <StatusBadge :status="channel.push_status" :pulse="false" />
-                        <span v-if="channel.push_pid" class="text-slate-500 font-mono">PID {{ channel.push_pid }}</span>
+                        Push: <StatusBadge :status="state.push_status" :pulse="false" />
+                        <span v-if="state.push_pid" class="text-slate-500 font-mono">PID {{ state.push_pid }}</span>
                     </div>
                     <Link :href="route('channels.push.start', channel.id)" method="post" as="button"
                           :data="{ mode: 'live' }"
@@ -105,7 +105,7 @@
                     </Link>
                     <Link :href="route('channels.push.start', channel.id)" method="post" as="button"
                           :data="{ mode: 'fallback' }"
-                          :class="!channel.fallback_recording_path ? 'opacity-40 cursor-not-allowed' : ''"
+                          :class="!state.fallback_recording_path ? 'opacity-40 cursor-not-allowed' : ''"
                           class="px-3 py-1.5 text-xs bg-yellow-600/20 text-yellow-400 border border-yellow-500/30 rounded-lg hover:bg-yellow-600/30 transition-colors">
                         ↺ Start Push (Fallback Recording)
                     </Link>
@@ -114,11 +114,11 @@
                         ■ Stop Push
                     </Link>
                 </div>
-                <p v-if="channel.fallback_recording_path" class="mt-3 text-xs text-slate-500 font-mono truncate">
-                    Fallback file: {{ channel.fallback_recording_path }}
+                <p v-if="state.fallback_recording_path" class="mt-3 text-xs text-slate-500 font-mono truncate">
+                    Fallback file: {{ state.fallback_recording_path }}
                 </p>
                 <p v-else class="mt-3 text-xs text-yellow-500">
-                    ⚠ No fallback recording yet — recording will start automatically when the channel is live.
+                    ⚠ No fallback recording yet — recording starts automatically when channel is live.
                 </p>
             </div>
 
@@ -128,9 +128,9 @@
                     <div>
                         <h2 class="text-sm font-semibold text-white">DVR Rolling Buffer</h2>
                         <p class="text-xs text-slate-500 mt-0.5">
-                            {{ formatDuration(channel.dvr_total_duration) }} of {{ channel.dvr_window_label }} recorded
-                            · {{ formatBytes(channel.dvr_total_size) }} on disk
-                            · {{ channel.dvr_segment_count ?? channel.dvr_segments_count ?? 0 }} segments
+                            {{ formatDuration(state.dvr_total_duration) }} of {{ channel.dvr_window_label }} recorded
+                            · {{ formatBytes(state.dvr_total_size) }} on disk
+                            · {{ state.dvr_segment_count }} segments
                         </p>
                     </div>
                     <Link :href="route('channels.purge-dvr', channel.id)" method="delete" as="button"
@@ -140,11 +140,11 @@
                 </div>
                 <div class="w-full bg-slate-800 rounded-full h-2">
                     <div class="h-2 rounded-full transition-all duration-700"
-                         :class="channel.dvr_buffer_pct >= 90 ? 'bg-green-500' : channel.dvr_buffer_pct >= 50 ? 'bg-indigo-500' : 'bg-slate-600'"
-                         :style="{ width: channel.dvr_buffer_pct + '%' }" />
+                         :class="state.dvr_buffer_pct >= 90 ? 'bg-green-500' : state.dvr_buffer_pct >= 50 ? 'bg-indigo-500' : 'bg-slate-600'"
+                         :style="{ width: state.dvr_buffer_pct + '%' }" />
                 </div>
                 <div class="mt-2 flex justify-between text-xs text-slate-500">
-                    <span>{{ channel.dvr_buffer_pct }}% full</span>
+                    <span>{{ state.dvr_buffer_pct }}% full</span>
                     <Link :href="route('dvr.show', channel.id)" class="text-indigo-400 hover:text-indigo-300 transition-colors">
                         View all segments →
                     </Link>
@@ -170,12 +170,16 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-800/50">
-                        <tr v-for="rec in channel.recordings" :key="rec.id" class="hover:bg-slate-800/20">
+                        <tr v-for="rec in state.recordings" :key="rec.id" class="hover:bg-slate-800/20">
                             <td class="px-6 py-3 text-xs font-mono text-slate-300">
                                 {{ rec.filename }}
-                                <span v-if="rec.filepath === channel.fallback_recording_path"
+                                <span v-if="rec.filepath === state.fallback_recording_path"
                                       class="ml-2 px-1.5 py-0.5 bg-yellow-500/15 text-yellow-400 text-xs rounded">
                                     active fallback
+                                </span>
+                                <span v-if="rec.status === 'recording'"
+                                      class="ml-2 px-1.5 py-0.5 bg-blue-500/15 text-blue-400 text-xs rounded animate-pulse">
+                                    recording…
                                 </span>
                             </td>
                             <td class="px-6 py-3 text-xs text-slate-400">{{ formatDuration(rec.duration) }}</td>
@@ -194,7 +198,7 @@
                                 {{ rec.completed_at ? new Date(rec.completed_at).toLocaleString() : '—' }}
                             </td>
                         </tr>
-                        <tr v-if="!channel.recordings?.length">
+                        <tr v-if="!state.recordings?.length">
                             <td colspan="5" class="px-6 py-10 text-center text-slate-500 text-sm">
                                 No recordings yet. Start the channel to begin recording.
                             </td>
@@ -267,24 +271,71 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, reactive } from 'vue'
 import { Link } from '@inertiajs/vue3'
 import AppLayout from '@/Layouts/AppLayout.vue'
 import StatusBadge from '@/Components/StatusBadge.vue'
+import StatusCard from '@/Components/StatusCard.vue'
 import InfoItem from '@/Components/InfoItem.vue'
 
-const props  = defineProps({ channel: Object })
-const logs        = ref([])
-const probing     = ref(false)
-const probeData   = ref(null)
-const diagnosing  = ref(false)
+const props = defineProps({ channel: Object })
+
+// Live-reactive channel state (updated by polling)
+const state = reactive({
+    stream_status:            props.channel.stream_status,
+    push_status:              props.channel.push_status,
+    dvr_status:               props.channel.dvr_status,
+    record_status:            props.channel.record_status,
+    source_live:              props.channel.source_live,
+    pid:                      props.channel.pid,
+    push_pid:                 props.channel.push_pid,
+    record_pid:               props.channel.record_pid,
+    dvr_buffer_pct:           props.channel.dvr_buffer_pct   ?? 0,
+    dvr_total_duration:       props.channel.dvr_total_duration ?? 0,
+    dvr_total_size:           props.channel.dvr_total_size    ?? 0,
+    dvr_segment_count:        props.channel.dvr_segment_count ?? 0,
+    fallback_recording_path:  props.channel.fallback_recording_path,
+    recordings:               props.channel.recordings        ?? [],
+    last_live_at:             props.channel.last_live_at,
+})
+
+const logs         = ref([])
+const probing      = ref(false)
+const probeData    = ref(null)
+const diagnosing   = ref(false)
 const diagnoseData = ref(null)
 let timer = null
 
-async function pollLogs() {
+async function poll() {
     try {
-        const res  = await fetch(route('channels.logs', props.channel.id))
-        logs.value = await res.json()
+        // Fetch status + logs in parallel
+        const [statusRes, logsRes] = await Promise.all([
+            fetch(route('channels.status', props.channel.id)),
+            fetch(route('channels.logs',   props.channel.id)),
+        ])
+        const status = await statusRes.json()
+        const newLogs = await logsRes.json()
+
+        // Update reactive state
+        Object.assign(state, {
+            stream_status:           status.stream_status,
+            push_status:             status.push_status,
+            dvr_status:              status.dvr_status,
+            record_status:           status.record_status,
+            source_live:             status.source_live,
+            pid:                     status.pid,
+            push_pid:                status.push_pid,
+            record_pid:              status.record_pid,
+            dvr_buffer_pct:          status.dvr_buffer_pct   ?? state.dvr_buffer_pct,
+            dvr_total_duration:      status.dvr_total_duration ?? state.dvr_total_duration,
+            dvr_total_size:          status.dvr_total_size    ?? state.dvr_total_size,
+            dvr_segment_count:       status.dvr_segment_count ?? state.dvr_segment_count,
+            fallback_recording_path: status.fallback_recording_path,
+            recordings:              status.recordings        ?? state.recordings,
+            last_live_at:            status.last_live_at,
+        })
+
+        logs.value = newLogs
     } catch {}
 }
 
@@ -301,7 +352,7 @@ async function probeStream() {
 }
 
 async function diagnoseIngest() {
-    diagnosing.value  = true
+    diagnosing.value   = true
     diagnoseData.value = null
     try {
         const res = await fetch(route('channels.diagnose', props.channel.id))
@@ -313,22 +364,19 @@ async function diagnoseIngest() {
     }
 }
 
-onMounted(() => {
-    pollLogs()
-    timer = setInterval(pollLogs, 5000)
-})
+onMounted(() => { poll(); timer = setInterval(poll, 4000) })
 onUnmounted(() => clearInterval(timer))
 
 function formatDuration(s) {
-    if (!s) return '0m'
+    if (!s || s <= 0) return '0s'
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60)
     return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sec}s` : `${sec}s`
 }
 function formatBytes(b) {
-    if (!b) return '0 B'
-    const k = 1024, sizes = ['B','KB','MB','GB']
+    if (!b || b <= 0) return '0 B'
+    const k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB']
     const i = Math.floor(Math.log(b) / Math.log(k))
-    return (b / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i]
+    return parseFloat((b / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
 }
 function formatTime(ts) {
     return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
