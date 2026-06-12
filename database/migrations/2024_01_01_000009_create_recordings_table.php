@@ -12,6 +12,7 @@ return new class extends Migration
             $table->id();
             $table->foreignId('channel_id')->constrained()->cascadeOnDelete();
             $table->string('filepath');
+            $table->string('filename')->default('');
             $table->unsignedBigInteger('filesize')->default(0)->comment('bytes');
             $table->float('duration')->default(0)->comment('seconds');
             $table->string('status', 20)->default('recording')
