@@ -69,7 +69,7 @@ class FFmpegService
      */
     public function buildPushCommand(Channel $channel): array
     {
-        $m3u8 = $channel->dvr_directory . '/live.m3u8';
+        $playout = $channel->dvr_directory . '/playout.m3u8';
 
         return array_merge(
             [
@@ -79,7 +79,7 @@ class FFmpegService
                 '-allowed_extensions', 'ALL',
                 '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
                 '-timeout',            '10000000',
-                '-i',                  $m3u8,
+                '-i',                  $playout,
             ],
             $this->videoEncodeFlags($channel),
             $this->audioEncodeFlags($channel),
@@ -91,6 +91,7 @@ class FFmpegService
 
     /**
      * DVR LOOP: concat.txt → encode → RTMP/SRT (looping)
+     * Kept for manual operator use via DVR playback.
      */
     public function buildDvrPlaybackCommand(Channel $channel): array
     {
@@ -102,26 +103,6 @@ class FFmpegService
                 '-f', 'concat',
                 '-re',
                 '-i', $channel->dvr_directory . '/concat.txt',
-            ],
-            $this->videoEncodeFlags($channel),
-            $this->audioEncodeFlags($channel),
-            ['-f', $channel->push_protocol === 'srt' ? 'mpegts' : 'flv'],
-            $channel->push_protocol === 'rtmp' ? ['-flvflags', 'no_duration_filesize'] : [],
-            [$this->pushUrl($channel)]
-        );
-    }
-
-    /**
-     * FALLBACK: loops rec_*.mp4 → encode → RTMP/SRT
-     */
-    public function buildRecordingFallbackCommand(Channel $channel, string $recordingFile): array
-    {
-        return array_merge(
-            [
-                $this->ffmpegBin, '-y', '-loglevel', 'warning', '-stats',
-                '-stream_loop', '-1',
-                '-re',
-                '-i', $recordingFile,
             ],
             $this->videoEncodeFlags($channel),
             $this->audioEncodeFlags($channel),

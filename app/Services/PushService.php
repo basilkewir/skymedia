@@ -3,68 +3,50 @@
 namespace App\Services;
 
 use App\Models\Channel;
+use Illuminate\Support\Facades\Log;
 
 /**
- * PushService — manages the push ffmpeg process.
+ * PushService — pushes playout.m3u8 to an external RTMP/SRT server.
  *
- * THREE modes:
+ * This service has ONE job: read playout.m3u8 (produced by PlayoutService)
+ * and push it to the configured destination.
  *
- *  LIVE      — reads live.m3u8 (always the last N segments from ingest)
- *              When source is live, this tracks ~segment_duration behind live.
- *
- *  DVR LOOP  — reads concat.txt (all stored segments, looped)
- *              Used when operator manually forces a loop of stored content.
- *
- *  FALLBACK  — loops the latest completed recording .mp4 file indefinitely.
- *              Automatically activated by the monitor when source goes offline.
- *              Output NEVER goes dark as long as a recording exists.
- *
- * The push process applies encoding settings from the channel:
- *   push_video_codec, push_video_bitrate, push_resolution, push_framerate
- *   push_audio_codec, push_audio_bitrate, push_audio_samplerate, push_audio_channels
+ * It knows nothing about live vs fallback — that is PlayoutService's concern.
  */
 class PushService
 {
     public function __construct(protected FFmpegService $ffmpeg) {}
 
-    // ── Live push: reads from live.m3u8 ─────────────────────────────────────
-
-    public function startLive(Channel $channel): bool
+    public function start(Channel $channel): bool
     {
-        if (!file_exists($channel->dvr_directory . '/live.m3u8')) {
+        $playout = $channel->dvr_directory . '/playout.m3u8';
+
+        if (!file_exists($playout)) {
+            Log::warning("[Push] {$channel->name}: playout.m3u8 not ready yet");
             return false;
         }
 
-        return $this->launch($channel, $this->ffmpeg->buildPushCommand($channel), 'live');
-    }
+        $this->stop($channel);
 
-    // ── DVR loop: reads from concat.txt ─────────────────────────────────────
+        $pidFile = $this->ffmpeg->pidFile($channel, 'push');
+        $logFile = $this->ffmpeg->logFile($channel, 'push');
 
-    public function startDvrPlayback(Channel $channel): bool
-    {
-        return $this->launch($channel, $this->ffmpeg->buildDvrPlaybackCommand($channel), 'dvr');
-    }
-
-    // ── Fallback: loops the latest completed recording .mp4 ─────────────────
-
-    public function startRecordingFallback(Channel $channel): bool
-    {
-        $file = $channel->fallback_recording_path;
-
-        if (!$file || !file_exists($file)) {
-            // Try to find the latest completed recording from disk
-            $files = glob($channel->dvr_directory . '/rec_*.mp4') ?: [];
-            if (empty($files)) {
-                return false;
-            }
-            usort($files, fn($a, $b) => filemtime($b) - filemtime($a));
-            $file = $files[0];
+        try {
+            $pid = $this->ffmpeg->startProcess(
+                $this->ffmpeg->buildPushCommand($channel),
+                $pidFile,
+                $logFile
+            );
+        } catch (\Throwable $e) {
+            Log::error("[Push] {$channel->name} failed: {$e->getMessage()}");
+            $channel->update(['push_pid' => null, 'push_status' => 'error']);
+            return false;
         }
 
-        return $this->launch($channel, $this->ffmpeg->buildRecordingFallbackCommand($channel, $file), 'fallback');
+        $channel->update(['push_pid' => $pid, 'push_status' => 'live']);
+        Log::info("[Push] {$channel->name} started — PID {$pid}");
+        return true;
     }
-
-    // ── Stop push ────────────────────────────────────────────────────────────
 
     public function stop(Channel $channel): void
     {
@@ -79,46 +61,9 @@ class PushService
         $channel->update(['push_pid' => null, 'push_status' => 'stopped']);
     }
 
-    // ── State ────────────────────────────────────────────────────────────────
-
     public function isRunning(Channel $channel): bool
     {
         $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'push'));
         return $pid > 0 && $this->ffmpeg->isRunning($pid);
-    }
-
-    // ── Internal ─────────────────────────────────────────────────────────────
-
-    private function launch(Channel $channel, array $cmd, string $mode): bool
-    {
-        $this->stop($channel);
-
-        $pidFile = $this->ffmpeg->pidFile($channel, 'push');
-        $logFile = $this->ffmpeg->logFile($channel, 'push');
-
-        try {
-            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile);
-        } catch (\Throwable $e) {
-            $channel->update(['push_status' => 'error']);
-            return false;
-        }
-
-        if ($pid <= 0) {
-            $channel->update(['push_status' => 'error']);
-            return false;
-        }
-
-        $statusMap = [
-            'live'     => 'live',
-            'dvr'      => 'fallback',
-            'fallback' => 'fallback',
-        ];
-
-        $channel->update([
-            'push_pid'    => $pid,
-            'push_status' => $statusMap[$mode] ?? 'live',
-        ]);
-
-        return true;
     }
 }

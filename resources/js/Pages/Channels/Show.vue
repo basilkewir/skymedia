@@ -83,8 +83,9 @@
             </div>
 
             <!-- Status row -->
-            <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div class="grid grid-cols-2 sm:grid-cols-5 gap-4">
                 <StatusCard label="Ingest" :status="state.stream_status" :pid="state.pid" />
+                <StatusCard label="Playout" :status="state.playout_status" :pid="state.playout_pid" />
                 <StatusCard label="Push Output" :status="state.push_status" :pid="state.push_pid" />
                 <StatusCard label="DVR Recording" :status="state.dvr_status" />
                 <StatusCard label="File Recording" :status="state.record_status" :pid="state.record_pid" />
@@ -92,27 +93,32 @@
 
             <!-- Push controls -->
             <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
-                <h2 class="text-sm font-semibold text-white mb-4">Push Output Control</h2>
-                <div class="flex flex-wrap items-center gap-3">
-                    <div class="flex items-center gap-2 text-xs text-slate-400 mr-2">
-                        Push: <StatusBadge :status="state.push_status" :pulse="false" />
-                        <span v-if="state.push_pid" class="text-slate-500 font-mono">PID {{ state.push_pid }}</span>
+                <h2 class="text-sm font-semibold text-white mb-4">Output Control</h2>
+                <div class="space-y-4">
+
+                    <!-- Playout layer -->
+                    <div class="flex flex-wrap items-center gap-3">
+                        <span class="text-xs text-slate-500 w-16">Playout</span>
+                        <StatusBadge :status="state.playout_status" :pulse="false" />
+                        <span v-if="state.playout_pid" class="text-xs text-slate-500 font-mono">PID {{ state.playout_pid }}</span>
+                        <span v-if="state.playout_status === 'fallback'" class="text-xs text-yellow-400">⚠ on fallback recording</span>
                     </div>
-                    <Link :href="route('channels.push.start', channel.id)" method="post" as="button"
-                          :data="{ mode: 'live' }"
-                          class="px-3 py-1.5 text-xs bg-green-600/20 text-green-400 border border-green-500/30 rounded-lg hover:bg-green-600/30 transition-colors">
-                        ▶ Start Push (Live)
-                    </Link>
-                    <Link :href="route('channels.push.start', channel.id)" method="post" as="button"
-                          :data="{ mode: 'fallback' }"
-                          :class="!state.fallback_recording_path ? 'opacity-40 cursor-not-allowed' : ''"
-                          class="px-3 py-1.5 text-xs bg-yellow-600/20 text-yellow-400 border border-yellow-500/30 rounded-lg hover:bg-yellow-600/30 transition-colors">
-                        ↺ Start Push (Fallback Recording)
-                    </Link>
-                    <Link :href="route('channels.push.stop', channel.id)" method="post" as="button"
-                          class="px-3 py-1.5 text-xs bg-red-600/20 text-red-400 border border-red-500/30 rounded-lg hover:bg-red-600/30 transition-colors">
-                        ■ Stop Push
-                    </Link>
+
+                    <!-- Push layer -->
+                    <div class="flex flex-wrap items-center gap-3">
+                        <span class="text-xs text-slate-500 w-16">Push</span>
+                        <StatusBadge :status="state.push_status" :pulse="false" />
+                        <span v-if="state.push_pid" class="text-xs text-slate-500 font-mono">PID {{ state.push_pid }}</span>
+                        <Link :href="route('channels.push.start', channel.id)" method="post" as="button"
+                              class="px-3 py-1.5 text-xs bg-green-600/20 text-green-400 border border-green-500/30 rounded-lg hover:bg-green-600/30 transition-colors">
+                            ▶ Start Push
+                        </Link>
+                        <Link :href="route('channels.push.stop', channel.id)" method="post" as="button"
+                              class="px-3 py-1.5 text-xs bg-red-600/20 text-red-400 border border-red-500/30 rounded-lg hover:bg-red-600/30 transition-colors">
+                            ■ Stop Push
+                        </Link>
+                    </div>
+
                 </div>
                 <p v-if="state.fallback_recording_path" class="mt-3 text-xs text-slate-500 font-mono truncate">
                     Fallback file: {{ state.fallback_recording_path }}
@@ -283,11 +289,13 @@ const props = defineProps({ channel: Object })
 // Live-reactive channel state (updated by polling)
 const state = reactive({
     stream_status:            props.channel.stream_status,
+    playout_status:           props.channel.playout_status ?? 'idle',
     push_status:              props.channel.push_status,
     dvr_status:               props.channel.dvr_status,
     record_status:            props.channel.record_status,
     source_live:              props.channel.source_live,
     pid:                      props.channel.pid,
+    playout_pid:              props.channel.playout_pid,
     push_pid:                 props.channel.push_pid,
     record_pid:               props.channel.record_pid,
     dvr_buffer_pct:           props.channel.dvr_buffer_pct   ?? 0,
@@ -319,11 +327,13 @@ async function poll() {
         // Update reactive state
         Object.assign(state, {
             stream_status:           status.stream_status,
+            playout_status:          status.playout_status  ?? state.playout_status,
             push_status:             status.push_status,
             dvr_status:              status.dvr_status,
             record_status:           status.record_status,
             source_live:             status.source_live,
             pid:                     status.pid,
+            playout_pid:             status.playout_pid,
             push_pid:                status.push_pid,
             record_pid:              status.record_pid,
             dvr_buffer_pct:          status.dvr_buffer_pct   ?? state.dvr_buffer_pct,

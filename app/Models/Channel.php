@@ -23,8 +23,8 @@ class Channel extends Model
         // Recording / fallback
         'record_duration', 'fallback_recording_path',
         // Runtime state
-        'is_active', 'stream_status', 'push_status', 'dvr_status', 'record_status', 'source_live',
-        'pid', 'push_pid', 'record_pid',
+        'is_active', 'stream_status', 'playout_status', 'push_status', 'dvr_status', 'record_status', 'source_live',
+        'pid', 'playout_pid', 'push_pid', 'record_pid',
         'retry_count', 'last_error',
         'last_live_at', 'last_check_at',
         'check_interval', 'max_retries',
@@ -40,6 +40,7 @@ class Channel extends Model
         'max_retries'            => 'integer',
         'retry_count'            => 'integer',
         'pid'                    => 'integer',
+        'playout_pid'            => 'integer',
         'push_pid'               => 'integer',
         'record_pid'             => 'integer',
         'push_video_bitrate'     => 'integer',

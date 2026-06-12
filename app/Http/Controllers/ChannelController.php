@@ -120,9 +120,8 @@ class ChannelController extends Controller
 
     public function startPush(Request $request, Channel $channel): RedirectResponse
     {
-        $mode = $request->input('mode', 'live'); // live | dvr | fallback
-        $this->manager->startPush($channel, $mode);
-        return back()->with('success', "Push started (mode: {$mode})");
+        $this->manager->startPush($channel);
+        return back()->with('success', 'Push started');
     }
 
     public function stopPush(Channel $channel): RedirectResponse
@@ -144,11 +143,13 @@ class ChannelController extends Controller
 
         return response()->json([
             'stream_status'           => $channel->stream_status,
+            'playout_status'          => $channel->playout_status,
             'push_status'             => $channel->push_status,
             'dvr_status'              => $channel->dvr_status,
             'record_status'           => $channel->record_status,
             'source_live'             => $channel->source_live,
             'pid'                     => $channel->pid,
+            'playout_pid'             => $channel->playout_pid,
             'push_pid'                => $channel->push_pid,
             'record_pid'              => $channel->record_pid,
             'last_live_at'            => $channel->last_live_at?->toISOString(),
