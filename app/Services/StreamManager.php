@@ -57,9 +57,8 @@ class StreamManager
             if (!is_dir($dvrDir)) mkdir($dvrDir, 0755, true);
 
             // 1. Start ingest
-            if (!$this->ingest->start($channel)) {
-                throw new \RuntimeException('Ingest failed to start — check ffmpeg log');
-            }
+            // startChannel / IngestService::start throws with ffmpeg stderr on failure
+            $this->ingest->start($channel);
 
             $fresh = $channel->fresh();
             $this->log($channel, 'info', 'ingest_started', "Ingest PID {$fresh->pid}");
@@ -83,8 +82,9 @@ class StreamManager
             return true;
 
         } catch (\Throwable $e) {
-            $channel->update(['stream_status' => 'error']);
-            $this->log($channel, 'error', 'channel_start_failed', $e->getMessage());
+            $channel->update(['stream_status' => 'error', 'last_error' => substr($e->getMessage(), 0, 1000)]);
+            $this->log($channel, 'error', 'stream_start_failed', $e->getMessage());
+            Log::error("[Channel {$channel->id}] startChannel: {$e->getMessage()}");
             return false;
         }
     }

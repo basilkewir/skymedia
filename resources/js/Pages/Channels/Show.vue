@@ -30,7 +30,12 @@
                     <div class="flex items-center gap-2 flex-wrap justify-end">
                         <button @click="probeStream" :disabled="probing"
                                 class="px-3 py-1.5 text-xs text-slate-300 border border-slate-700 rounded-lg hover:border-slate-500 transition-colors disabled:opacity-40">
-                            {{ probing ? 'Probing…' : '🔍 Probe' }}
+                            {{ probing ? 'Probing…' : '🔍 Probe Source' }}
+                        </button>
+                        <button @click="diagnoseIngest" :disabled="diagnosing"
+                                class="px-3 py-1.5 text-xs text-orange-400 border border-orange-500/30 rounded-lg hover:bg-orange-500/10 transition-colors disabled:opacity-40"
+                                title="Runs ffmpeg for 5s and shows the exact error output">
+                            {{ diagnosing ? 'Running…' : '🩺 Diagnose' }}
                         </button>
                         <Link :href="route('channels.restart', channel.id)" method="post" as="button"
                               class="px-3 py-1.5 text-xs text-yellow-400 border border-yellow-500/30 rounded-lg hover:bg-yellow-500/10 transition-colors">
@@ -185,6 +190,24 @@
                 </table>
             </div>
 
+            <!-- Diagnose output -->
+            <div v-if="diagnoseData" class="bg-slate-900 border border-orange-500/30 rounded-xl p-6">
+                <div class="flex items-center justify-between mb-3">
+                    <h2 class="text-sm font-semibold text-orange-400">🩺 Ingest Diagnostics</h2>
+                    <button @click="diagnoseData = null" class="text-xs text-slate-500 hover:text-white">✕</button>
+                </div>
+                <div class="mb-2 text-xs text-slate-400 font-mono break-all">
+                    <span class="text-slate-500">command:</span> {{ diagnoseData.command }}
+                </div>
+                <div class="mb-2">
+                    <span class="text-xs font-semibold" :class="diagnoseData.success ? 'text-green-400' : 'text-red-400'">
+                        {{ diagnoseData.success ? '✓ ffmpeg ran successfully' : `✗ ffmpeg exited with code ${diagnoseData.exit_code}` }}
+                    </span>
+                </div>
+                <pre v-if="diagnoseData.stderr" class="bg-slate-800/80 rounded-lg p-3 text-xs text-red-300 font-mono whitespace-pre-wrap overflow-auto max-h-64">{{ diagnoseData.stderr }}</pre>
+                <pre v-if="diagnoseData.stdout" class="mt-2 bg-slate-800/80 rounded-lg p-3 text-xs text-slate-300 font-mono whitespace-pre-wrap overflow-auto max-h-32">{{ diagnoseData.stdout }}</pre>
+            </div>
+
             <!-- Probe output -->
             <div v-if="probeData" class="bg-slate-900 border border-slate-800 rounded-xl p-6">
                 <div class="flex items-center justify-between mb-3">
@@ -238,9 +261,11 @@ import StatusBadge from '@/Components/StatusBadge.vue'
 import InfoItem from '@/Components/InfoItem.vue'
 
 const props  = defineProps({ channel: Object })
-const logs   = ref([])
-const probing  = ref(false)
-const probeData = ref(null)
+const logs        = ref([])
+const probing     = ref(false)
+const probeData   = ref(null)
+const diagnosing  = ref(false)
+const diagnoseData = ref(null)
 let timer = null
 
 async function pollLogs() {
@@ -259,6 +284,19 @@ async function probeStream() {
         probeData.value = { error: e.message }
     } finally {
         probing.value = false
+    }
+}
+
+async function diagnoseIngest() {
+    diagnosing.value  = true
+    diagnoseData.value = null
+    try {
+        const res = await fetch(route('channels.diagnose', props.channel.id))
+        diagnoseData.value = await res.json()
+    } catch (e) {
+        diagnoseData.value = { exit_code: -1, success: false, stderr: e.message, stdout: '', command: '' }
+    } finally {
+        diagnosing.value = false
     }
 }
 

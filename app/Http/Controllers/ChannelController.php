@@ -129,6 +129,12 @@ class ChannelController extends Controller
         return response()->json($this->ffmpeg->probeStream($channel));
     }
 
+    public function diagnose(Channel $channel): JsonResponse
+    {
+        // Runs ffmpeg for 5 s and returns the full output — safe to call anytime
+        return response()->json($this->ffmpeg->diagnoseIngest($channel));
+    }
+
     public function logs(Channel $channel): JsonResponse
     {
         $logs = $channel->streamLogs()->latest()->limit(50)->get();
