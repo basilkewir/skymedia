@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Log;
 class MonitorStreams extends Command
 {
     protected $signature   = 'streams:monitor {--channel= : Limit to one channel ID}';
-    protected $description = 'Long-running stream monitor daemon';
+    protected $description = 'Long-running stream monitor daemon — never leave the output offline';
 
     private array $lastChecked = [];
 
@@ -22,28 +22,27 @@ class MonitorStreams extends Command
         while (true) {
             try {
                 $query = Channel::where('is_active', true);
-
                 if ($id = $this->option('channel')) {
                     $query->where('id', (int) $id);
                 }
 
                 $query->each(function (Channel $channel) use ($manager) {
-                    $interval  = max(1, $channel->check_interval);
+                    $interval  = max(1, (int) $channel->check_interval);
                     $lastCheck = $this->lastChecked[$channel->id] ?? 0;
 
                     if ((time() - $lastCheck) >= $interval) {
                         $manager->monitorChannel($channel->fresh());
                         $this->lastChecked[$channel->id] = time();
+
                         $ch = $channel->fresh();
                         $this->line(sprintf(
-                            '[%s] %-20s  src=%-4s  dvr=%-10s  push=%-10s  stream=%-12s  retry=%d',
+                            '[%s] %-22s  ingest=%-10s  push=%-10s  rec=%-10s  src=%s',
                             now()->format('H:i:s'),
-                            $ch->name,
-                            $ch->source_live ? 'LIVE' : 'DOWN',
-                            $ch->dvr_status,
-                            $ch->push_status,
+                            mb_substr($ch->name, 0, 22),
                             $ch->stream_status,
-                            $ch->retry_count
+                            $ch->push_status,
+                            $ch->record_status,
+                            $ch->source_live ? 'LIVE' : 'DOWN'
                         ));
                     }
                 });

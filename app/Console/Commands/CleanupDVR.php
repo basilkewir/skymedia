@@ -3,14 +3,18 @@
 namespace App\Console\Commands;
 
 use App\Models\Channel;
+use App\Models\Recording;
 use App\Models\StreamLog;
 use App\Services\DVRService;
 use Illuminate\Console\Command;
 
 class CleanupDVR extends Command
 {
-    protected $signature   = 'dvr:cleanup {--channel= : Target a specific channel ID} {--log-days=30 : Prune stream logs older than N days} {--orphans : Clean up orphaned DB records}';
-    protected $description = 'Enforce DVR rolling windows, verify segments, and prune old stream logs';
+    protected $signature   = 'dvr:cleanup
+                                {--channel= : Target a specific channel ID}
+                                {--log-days=30 : Prune stream logs older than N days}
+                                {--keep-recordings=3 : Completed recordings to keep per channel}';
+    protected $description = 'Enforce DVR rolling windows, prune old recordings and stream logs';
 
     public function handle(DVRService $dvr): void
     {
@@ -23,25 +27,35 @@ class CleanupDVR extends Command
         $bar = $this->output->createProgressBar($channels->count());
         $bar->start();
 
-        foreach ($channels as $channel) {
-            $dvr->verifySegments($channel);
+        $keepRec = (int) $this->option('keep-recordings');
 
-            if ($this->option('orphans')) {
-                $cleaned = $dvr->cleanupOrphans($channel);
-                if ($cleaned > 0) {
-                    $this->line(" [{$channel->name}] cleaned {$cleaned} orphan records");
-                }
+        foreach ($channels as $channel) {
+            // DVR rolling window
+            $dvr->enforceWindow($channel);
+
+            // Prune old completed recordings beyond keep limit
+            $old = Recording::where('channel_id', $channel->id)
+                ->where('status', 'completed')
+                ->whereNot('filepath', $channel->fallback_recording_path)
+                ->orderByDesc('completed_at')
+                ->skip($keepRec)
+                ->take(1000)
+                ->get();
+
+            foreach ($old as $rec) {
+                @unlink($rec->filepath);
+                $rec->delete();
             }
 
-            $dvr->enforceWindow($channel);
             $bar->advance();
         }
 
         $bar->finish();
         $this->newLine();
 
-        $days = (int) $this->option('log-days');
+        // Prune stream logs
+        $days    = (int) $this->option('log-days');
         $deleted = StreamLog::where('created_at', '<', now()->subDays($days))->delete();
-        $this->info("DVR cleanup done. Pruned {$deleted} stream log entries older than {$days} days.");
+        $this->info("Done. Pruned {$deleted} log entries older than {$days} days.");
     }
 }

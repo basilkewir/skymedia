@@ -300,6 +300,11 @@ class FFmpegService
         @unlink($pidFile);
     }
 
+    public function getBin(): string
+    {
+        return $this->ffmpegBin;
+    }
+
     public function readLogTail(string $logFile, int $lines = 80): string
     {
         if (!file_exists($logFile)) return '';
