@@ -35,7 +35,8 @@ class PushService
             $pid = $this->ffmpeg->startProcess(
                 $this->ffmpeg->buildPushCommand($channel),
                 $pidFile,
-                $logFile
+                $logFile,
+                8
             );
         } catch (\Throwable $e) {
             Log::error("[Push] {$channel->name} failed: {$e->getMessage()}");

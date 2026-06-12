@@ -120,7 +120,7 @@ class FFmpegService
      * Launch an ffmpeg process in the background.
      * Throws \RuntimeException with full ffmpeg stderr on failure.
      */
-    public function startProcess(array $command, string $pidFile, string $logFile): int
+    public function startProcess(array $command, string $pidFile, string $logFile, int $stabiliseSeconds = 3): int
     {
         foreach ([dirname($logFile), dirname($pidFile)] as $dir) {
             if (!is_dir($dir)) mkdir($dir, 0755, true);
@@ -145,12 +145,14 @@ class FFmpegService
 
         file_put_contents($pidFile, $pid);
 
-        // Wait up to 3 s for process to stabilise
-        $alive = false;
-        for ($i = 0; $i < 6; $i++) {
+        // Wait up to $stabiliseSeconds for process to stabilise
+        $checks   = $stabiliseSeconds * 2; // 500ms per check
+        $minAlive = max(2, (int) ($stabiliseSeconds * 0.6)); // must survive 60% of window
+        $alive    = false;
+        for ($i = 0; $i < $checks; $i++) {
             usleep(500_000);
             if (!$this->isRunning($pid)) break;
-            if ($i >= 2) { $alive = true; break; }
+            if ($i >= $minAlive) { $alive = true; break; }
         }
 
         if (!$alive) {

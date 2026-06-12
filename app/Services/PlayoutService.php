@@ -88,7 +88,7 @@ class PlayoutService
         $logFile = $this->ffmpeg->logFile($channel, 'playout');
 
         try {
-            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile);
+            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 6);
         } catch (\Throwable $e) {
             Log::error("[Playout] {$channel->name} failed ({$mode}): {$e->getMessage()}");
             $channel->update(['playout_pid' => null, 'playout_status' => 'error']);
@@ -118,19 +118,25 @@ class PlayoutService
         return [
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
+            // Input: read the live ingest playlist
+            // -live_start_index -1 = always start from the newest segment,
+            // never try to fetch already-deleted older segments
             '-fflags',             '+genpts+igndts+discardcorrupt',
-            '-live_start_index',   '0',
+            '-live_start_index',   '-1',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
             '-timeout',            '10000000',
             '-i',                  "{$dvrDir}/live.m3u8",
+            // Output: re-mux to a fresh rolling HLS for push
+            // append_list keeps the sequence numbers incrementing even across
+            // restarts so push never sees a discontinuity
             '-c:v', 'copy',
             '-c:a', 'copy',
             '-f',                    'hls',
             '-hls_time',             (string) $segDur,
-            '-hls_list_size',        '10',
-            '-hls_flags',            'delete_segments+omit_endlist',
-            '-hls_delete_threshold', '1',
+            '-hls_list_size',        '5',
+            '-hls_flags',            'append_list+omit_endlist+delete_segments',
+            '-hls_delete_threshold', '2',
             '-hls_segment_type',     'mpegts',
             '-hls_segment_filename', $segPattern,
             '-hls_allow_cache',      '0',
