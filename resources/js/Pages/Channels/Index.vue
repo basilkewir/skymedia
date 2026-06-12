@@ -5,16 +5,14 @@
         </template>
 
         <div class="space-y-4">
-            <!-- Toolbar -->
             <div class="flex items-center justify-between">
-                <p class="text-sm text-slate-400">{{ channels.total }} channel{{ channels.total !== 1 ? 's' : '' }} configured</p>
+                <p class="text-sm text-slate-400">{{ channels.total }} channel{{ channels.total !== 1 ? 's' : '' }}</p>
                 <Link :href="route('channels.create')"
                       class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors">
                     + Add Channel
                 </Link>
             </div>
 
-            <!-- Table -->
             <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
                 <table class="min-w-full">
                     <thead>
@@ -23,8 +21,8 @@
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Source</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Push Target</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Ingest</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">DVR</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Push</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">DVR</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Segments</th>
                             <th class="px-6 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Actions</th>
                         </tr>
@@ -47,35 +45,37 @@
                                 <span class="px-2 py-0.5 bg-slate-800 text-slate-300 text-xs font-mono rounded mr-1">
                                     {{ ch.push_protocol.toUpperCase() }}
                                 </span>
-                                <span class="truncate max-w-[140px] inline-block align-bottom" :title="ch.push_url">{{ ch.push_url }}</span>
+                                <span class="truncate max-w-[120px] inline-block align-bottom" :title="ch.push_url">
+                                    {{ ch.push_url }}
+                                </span>
                             </td>
                             <td class="px-6 py-4"><StatusBadge :status="ch.stream_status" /></td>
-                            <td class="px-6 py-4"><StatusBadge :status="ch.dvr_status" /></td>
-                            <td class="px-6 py-4"><StatusBadge :status="ch.push_status" /></td>
-                            <td class="px-6 py-4 text-sm text-slate-400">{{ ch.dvr_segments_count }}</td>
+                            <td class="px-6 py-4"><StatusBadge :status="ch.push_status ?? 'idle'" /></td>
+                            <td class="px-6 py-4"><StatusBadge :status="ch.dvr_status ?? 'idle'" /></td>
+                            <td class="px-6 py-4 text-sm text-slate-400">{{ ch.dvr_segments_count ?? 0 }}</td>
                             <td class="px-6 py-4">
                                 <div class="flex items-center justify-end gap-3">
                                     <Link :href="route('channels.show', ch.id)"
                                           class="text-xs text-slate-400 hover:text-white transition-colors">Manage</Link>
                                     <Link :href="route('channels.edit', ch.id)"
                                           class="text-xs text-slate-400 hover:text-white transition-colors">Edit</Link>
-                                    <Link v-if="!ch.is_active" :href="route('ingest.start', ch.id)" method="post" as="button"
-                                          class="text-xs font-medium text-green-400 hover:text-green-300 transition-colors">
-                                        ▶ Start
-                                    </Link>
-                                    <Link v-else :href="route('ingest.stop', ch.id)" method="post" as="button"
-                                          class="text-xs font-medium text-red-400 hover:text-red-300 transition-colors">
-                                        ■ Stop
+                                    <Link :href="route('channels.toggle', ch.id)" method="post" as="button"
+                                          preserve-scroll
+                                          class="text-xs font-medium transition-colors"
+                                          :class="ch.is_active
+                                              ? 'text-red-400 hover:text-red-300'
+                                              : 'text-green-400 hover:text-green-300'">
+                                        {{ ch.is_active ? '■ Stop' : '▶ Start' }}
                                     </Link>
                                     <button @click="confirmDelete(ch)"
-                                          class="text-xs text-slate-600 hover:text-red-400 transition-colors">
+                                            class="text-xs text-slate-600 hover:text-red-400 transition-colors">
                                         Delete
                                     </button>
                                 </div>
                             </td>
                         </tr>
                         <tr v-if="channels.data.length === 0">
-                            <td colspan="7" class="px-6 py-16 text-center text-slate-500 text-sm">
+                            <td colspan="8" class="px-6 py-16 text-center text-slate-500 text-sm">
                                 No channels configured.
                                 <Link :href="route('channels.create')" class="text-indigo-400 hover:underline ml-1">Add one</Link>
                             </td>
@@ -91,7 +91,9 @@
         <div v-if="deleting" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
             <div class="bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-sm shadow-2xl">
                 <h3 class="text-base font-semibold text-white mb-2">Delete "{{ deleting.name }}"?</h3>
-                <p class="text-sm text-slate-400 mb-6">This will stop the stream and permanently delete all settings. DVR files on disk will remain.</p>
+                <p class="text-sm text-slate-400 mb-6">
+                    Stops the stream and permanently removes settings. DVR files on disk are kept.
+                </p>
                 <div class="flex justify-end gap-3">
                     <button @click="deleting = null"
                             class="px-4 py-2 text-sm text-slate-400 border border-slate-700 rounded-lg hover:border-slate-500 transition-colors">
@@ -118,9 +120,4 @@ defineProps({ channels: Object })
 
 const deleting = ref(null)
 function confirmDelete(ch) { deleting.value = ch }
-
-function formatDuration(s) {
-    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60)
-    return h > 0 ? `${h}h ${m}m` : `${m}m`
-}
 </script>

@@ -6,13 +6,13 @@
 
         <!-- Stats row -->
         <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4 mb-6">
-            <StatCard title="Total"     :value="stats.total"   color="slate" />
-            <StatCard title="Live"      :value="liveCount"     color="green" />
-            <StatCard title="DVR Play"  :value="dvrCount"      color="yellow" />
-            <StatCard title="Error"     :value="errorCount"    color="red" />
-            <StatCard title="Idle"      :value="stats.idle"    color="slate" />
-            <StatCard title="Active"    :value="stats.active"  color="indigo" />
-            <StatCard title="DVR Store" :value="formatBytes(stats.dvr_storage)" color="blue" />
+            <StatCard title="Total"      :value="stats.total"              color="slate" />
+            <StatCard title="Live"       :value="counts.live"              color="green" />
+            <StatCard title="Fallback"   :value="counts.fallback"          color="yellow" />
+            <StatCard title="Error"      :value="counts.error"             color="red" />
+            <StatCard title="Idle"       :value="counts.idle"              color="slate" />
+            <StatCard title="Active"     :value="stats.active"             color="indigo" />
+            <StatCard title="DVR Store"  :value="formatBytes(stats.dvr_storage)" color="blue" />
         </div>
 
         <!-- Channel grid -->
@@ -20,7 +20,7 @@
             <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
                 <h2 class="text-sm font-semibold text-white">Channels</h2>
                 <div class="flex items-center gap-3">
-                    <span class="text-xs text-slate-500">Auto-refresh every 5s</span>
+                    <span class="text-xs text-slate-500">Live · refreshes every 5s</span>
                     <Link :href="route('channels.create')"
                           class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded-lg transition-colors">
                         + Add Channel
@@ -33,9 +33,9 @@
                     <tr class="border-b border-slate-800">
                         <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Channel</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Source</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Status</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Source Signal</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Ingest</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Push</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Signal</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">DVR</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Last Live</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Actions</th>
@@ -54,17 +54,13 @@
                             </span>
                         </td>
                         <td class="px-6 py-4"><StatusBadge :status="ch.stream_status" /></td>
+                        <td class="px-6 py-4"><StatusBadge :status="ch.push_status ?? 'idle'" /></td>
                         <td class="px-6 py-4">
                             <span class="flex items-center gap-1.5 text-xs font-medium"
                                   :class="ch.source_live ? 'text-green-400' : 'text-red-400'">
                                 <span class="w-1.5 h-1.5 rounded-full"
                                       :class="ch.source_live ? 'bg-green-400 animate-pulse' : 'bg-red-400'" />
                                 {{ ch.source_live ? 'Live' : 'Offline' }}
-                            </span>
-                        </td>
-                        <td class="px-6 py-4">
-                            <span class="px-2 py-0.5 bg-slate-800 text-slate-300 text-xs font-mono rounded">
-                                {{ ch.push_protocol?.toUpperCase() }}
                             </span>
                         </td>
                         <td class="px-6 py-4 text-xs text-slate-400">
@@ -74,7 +70,7 @@
                             {{ ch.last_live_at ? timeAgo(ch.last_live_at) : '—' }}
                         </td>
                         <td class="px-6 py-4">
-                            <div class="flex items-center gap-2">
+                            <div class="flex items-center gap-3">
                                 <Link :href="route('channels.show', ch.id)"
                                       class="text-xs text-slate-400 hover:text-white transition-colors">View</Link>
                                 <Link :href="route('channels.toggle', ch.id)" method="post" as="button" preserve-scroll
@@ -103,11 +99,11 @@
             <div class="divide-y divide-slate-800/50 max-h-80 overflow-y-auto">
                 <div v-for="log in recentLogs" :key="log.id"
                      class="px-6 py-3 flex items-start gap-3 hover:bg-slate-800/20">
-                    <span class="mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5"
+                    <span class="w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5"
                           :class="{
-                              'bg-green-400': log.level === 'info',
+                              'bg-green-400':  log.level === 'info',
                               'bg-yellow-400': log.level === 'warning',
-                              'bg-red-400': log.level === 'error' || log.level === 'critical',
+                              'bg-red-400':    log.level === 'error' || log.level === 'critical',
                           }" />
                     <span class="text-xs text-slate-500 flex-shrink-0 w-16">{{ formatTime(log.created_at) }}</span>
                     <span class="text-xs font-medium text-slate-300 flex-shrink-0 w-32 truncate">{{ log.channel?.name }}</span>
@@ -122,8 +118,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Link, router } from '@inertiajs/vue3'
+import { onMounted, onUnmounted, ref, reactive } from 'vue'
+import { Link } from '@inertiajs/vue3'
 import AppLayout from '@/Layouts/AppLayout.vue'
 import StatusBadge from '@/Components/StatusBadge.vue'
 import StatCard from '@/Components/StatCard.vue'
@@ -134,26 +130,38 @@ const props = defineProps({
     recentLogs: Array,
 })
 
-const liveChannels = ref([...props.channels])
-const liveCount    = ref(props.stats.live)
-const dvrCount     = ref(props.stats.dvr)
-const errorCount   = ref(props.stats.error)
+const liveChannels = ref(props.channels.map(c => ({ ...c })))
+
+const counts = reactive({
+    live:     props.stats.live,
+    fallback: props.stats.dvr,
+    error:    props.stats.error,
+    idle:     props.stats.idle,
+})
 
 let timer = null
 
-    async function pollStatus() {
-        try {
-            const res  = await fetch(route('api.channels.status-all'), { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-            const data = await res.json()
-            data.forEach(remote => {
-                const local = liveChannels.value.find(c => c.id === remote.id)
-                if (local) Object.assign(local, remote)
-            })
-            liveCount.value  = data.filter(c => c.stream_status === 'live').length
-            dvrCount.value   = data.filter(c => c.stream_status === 'dvr_playback').length
-            errorCount.value = data.filter(c => c.stream_status === 'error').length
-        } catch {}
-    }
+async function pollStatus() {
+    try {
+        // Use the web route (session-authenticated, no 401)
+        const res  = await fetch(route('dashboard.status'), {
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
+            credentials: 'same-origin',
+        })
+        if (!res.ok) return
+        const data = await res.json()
+
+        data.channels.forEach(remote => {
+            const local = liveChannels.value.find(c => c.id === remote.id)
+            if (local) Object.assign(local, remote)
+        })
+
+        counts.live     = data.channels.filter(c => c.stream_status === 'live').length
+        counts.fallback = data.channels.filter(c => ['fallback', 'dvr_playback'].includes(c.stream_status)).length
+        counts.error    = data.channels.filter(c => c.stream_status === 'error').length
+        counts.idle     = data.channels.filter(c => ['idle', 'stopped', 'offline'].includes(c.stream_status)).length
+    } catch {}
+}
 
 onMounted(() => { timer = setInterval(pollStatus, 5000) })
 onUnmounted(() => clearInterval(timer))
@@ -165,7 +173,7 @@ function formatDuration(s) {
 
 function formatBytes(b) {
     if (!b) return '0 B'
-    const k = 1024, sizes = ['B','KB','MB','GB','TB']
+    const k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB']
     const i = Math.floor(Math.log(b) / Math.log(k))
     return (b / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i]
 }
@@ -177,7 +185,7 @@ function formatTime(ts) {
 function timeAgo(ts) {
     const diff = Math.floor((Date.now() - new Date(ts)) / 1000)
     if (diff < 60) return `${diff}s ago`
-    if (diff < 3600) return `${Math.floor(diff/60)}m ago`
-    return `${Math.floor(diff/3600)}h ago`
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+    return `${Math.floor(diff / 3600)}h ago`
 }
 </script>

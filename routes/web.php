@@ -11,6 +11,7 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
 
     // ── Dashboard ─────────────────────────────────────────────────────────────
     Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
+    Route::get('/dashboard/status', [DashboardController::class, 'status'])->name('dashboard.status');
 
     // ── Channels — specific action routes BEFORE resource (prevents conflicts) ─
     Route::post('channels/{channel}/toggle',     [ChannelController::class, 'toggle'])->name('channels.toggle');
