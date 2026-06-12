@@ -64,6 +64,16 @@
                         <FormField label="Stream Key" :error="form.errors.push_stream_key">
                             <input v-model="form.push_stream_key" type="text" required class="form-input font-mono text-sm" />
                         </FormField>
+                        <FormField label="Username" :error="form.errors.push_username">
+                            <input v-model="form.push_username" type="text"
+                                   placeholder="Optional — leave blank if no auth required"
+                                   class="form-input" />
+                        </FormField>
+                        <FormField label="Password" :error="form.errors.push_password">
+                            <input v-model="form.push_password" type="password"
+                                   placeholder="Optional — leave blank if no auth required"
+                                   class="form-input" />
+                        </FormField>
                         <div class="sm:col-span-2 px-3 py-2 bg-slate-800/60 rounded-lg text-xs font-mono text-slate-400">
                             Push target: <span class="text-indigo-400">{{ pushTarget }}</span>
                         </div>
@@ -221,6 +231,8 @@ const form = useForm({
     push_protocol:          props.channel.push_protocol,
     push_url:               props.channel.push_url,
     push_stream_key:        props.channel.push_stream_key,
+    push_username:          props.channel.push_username      ?? '',
+    push_password:          props.channel.push_password      ?? '',
     push_video_codec:       props.channel.push_video_codec    ?? 'copy',
     push_video_bitrate:     props.channel.push_video_bitrate  ?? null,
     push_resolution:        props.channel.push_resolution     ?? '',

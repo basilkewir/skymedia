@@ -505,10 +505,30 @@ class FFmpegService
     {
         if ($channel->push_protocol === 'srt') {
             $latency = config('skymedia.srt_latency', 200) * 1000;
-            return 'srt://' . $this->parseSrtUrl($channel->push_target)
-                   . "?latency={$latency}&mode=caller";
+            $base    = $this->parseSrtUrl($channel->push_target);
+            $query   = "latency={$latency}&mode=caller";
+            if ($channel->push_username) {
+                $query .= '&username=' . urlencode($channel->push_username);
+            }
+            if ($channel->push_password) {
+                $query .= '&passphrase=' . urlencode($channel->push_password);
+            }
+            return "srt://{$base}?{$query}";
         }
-        return $channel->push_target;
+
+        // RTMP — credentials embedded as rtmp://user:pass@host/app/key
+        $target = $channel->push_target;
+        if ($channel->push_username || $channel->push_password) {
+            $user = urlencode($channel->push_username ?? '');
+            $pass = urlencode($channel->push_password ?? '');
+            // Insert credentials after rtmp(s)://
+            $target = preg_replace(
+                '#^(rtmps?://)#',
+                "$1{$user}:{$pass}@",
+                $target
+            );
+        }
+        return $target;
     }
 
     protected function parseSrtUrl(string $url): string

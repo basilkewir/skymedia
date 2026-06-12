@@ -13,7 +13,7 @@ class Channel extends Model
     protected $fillable = [
         'name', 'slug', 'notes',
         'source_type', 'source_url',
-        'push_protocol', 'push_url', 'push_stream_key',
+        'push_protocol', 'push_url', 'push_stream_key', 'push_username', 'push_password',
         // Video encoding
         'push_video_codec', 'push_video_bitrate', 'push_resolution', 'push_framerate',
         // Audio encoding

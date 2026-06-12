@@ -89,9 +89,28 @@ class RecordingService
 
         $this->ffmpeg->clearPid($pidFile);
 
-        Recording::where('channel_id', $channel->id)
+        // Finalize any in-progress recording — mark completed if file is usable,
+        // failed only if the file is missing or empty.
+        $recording = Recording::where('channel_id', $channel->id)
             ->where('status', 'recording')
-            ->update(['status' => 'failed', 'completed_at' => now()]);
+            ->latest('started_at')
+            ->first();
+
+        if ($recording) {
+            if (file_exists($recording->filepath) && filesize($recording->filepath) > 1024) {
+                $recording->update([
+                    'status'       => 'completed',
+                    'filesize'     => filesize($recording->filepath),
+                    'completed_at' => now(),
+                ]);
+                // Promote to fallback if no fallback exists yet
+                if (!$channel->fallback_recording_path) {
+                    $channel->update(['fallback_recording_path' => $recording->filepath]);
+                }
+            } else {
+                $recording->update(['status' => 'failed', 'completed_at' => now()]);
+            }
+        }
 
         $channel->update(['record_pid' => null, 'record_status' => 'idle']);
     }

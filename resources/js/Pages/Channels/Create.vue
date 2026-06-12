@@ -66,6 +66,16 @@
                             <input v-model="form.push_stream_key" type="text" required
                                    placeholder="channel1" class="form-input font-mono text-sm" />
                         </FormField>
+                        <FormField label="Username" :error="form.errors.push_username">
+                            <input v-model="form.push_username" type="text"
+                                   placeholder="Optional — only if server requires auth"
+                                   class="form-input" />
+                        </FormField>
+                        <FormField label="Password" :error="form.errors.push_password">
+                            <input v-model="form.push_password" type="password"
+                                   placeholder="Optional — only if server requires auth"
+                                   class="form-input" />
+                        </FormField>
                         <div class="sm:col-span-2 px-3 py-2 bg-slate-800/60 rounded-lg text-xs font-mono text-slate-400">
                             Push target: <span class="text-indigo-400">{{ pushTarget }}</span>
                         </div>
@@ -258,6 +268,7 @@ const form = useForm({
     name: '', slug: '', notes: '',
     source_type: 'hls', source_url: '',
     push_protocol: 'rtmp', push_url: '', push_stream_key: '',
+    push_username: '', push_password: '',
     push_video_codec: 'copy',   push_video_bitrate: null,
     push_resolution: '',        push_framerate: null,
     push_audio_codec: 'aac',    push_audio_bitrate: 128,

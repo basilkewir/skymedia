@@ -191,6 +191,8 @@ class ChannelController extends Controller
             'push_protocol'         => 'required|in:rtmp,srt',
             'push_url'              => 'required|string|max:500',
             'push_stream_key'       => 'required|string|max:255',
+            'push_username'         => 'nullable|string|max:255',
+            'push_password'         => 'nullable|string|max:255',
             // Video
             'push_video_codec'      => 'required|in:copy,h264,h265,vp8,vp9',
             'push_video_bitrate'    => 'nullable|integer|min:100|max:50000',
