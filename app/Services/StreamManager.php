@@ -38,7 +38,10 @@ class StreamManager
             $channel->refresh();
             $this->log($channel, 'info', 'ingest_started', "Ingest PID {$channel->pid}");
 
-            // 2. Playout and push start once HLS segments exist — monitor handles this
+            // 2. Mark playout as live — no process needed, push reads live.m3u8 directly
+            $this->playout->switchToLive($channel);
+
+            // 3. Push starts once live.m3u8 has segments — monitor handles this
             $channel->update(['stream_status' => 'live']);
             event(new StreamStatusChanged($channel, 'live'));
             return true;
@@ -85,7 +88,7 @@ class StreamManager
         $ok = $this->push->start($channel);
         $this->log($channel, $ok ? 'info' : 'error',
             $ok ? 'push_started' : 'push_failed',
-            $ok ? 'Push started' : 'Push failed — is playout running?');
+            $ok ? 'Push started' : 'Push failed — is live.m3u8 ready?');
         return $ok;
     }
 
@@ -153,19 +156,23 @@ class StreamManager
             'record_status' => 'idle',
         ]);
 
-        // Switch playout to fallback — push keeps running, reading playout.m3u8 uninterrupted
         if ($this->playout->hasFallback($channel)) {
-            if ($this->playout->startFallback($channel->fresh())) {
+            // Start fallback loop process → playout.m3u8
+            if ($this->playout->switchToFallback($channel->fresh())) {
+                // Restart push so it reads playout.m3u8 instead of live.m3u8
+                $this->push->stop($channel->fresh());
+                $this->push->start($channel->fresh());
                 $channel->update(['stream_status' => 'fallback', 'playout_status' => 'fallback']);
-                $this->log($channel, 'info', 'fallback_activated', 'Playout switched to fallback recording');
+                $this->log($channel, 'info', 'fallback_activated', 'Playout on fallback recording, push restarted');
                 event(new StreamStatusChanged($channel, 'fallback'));
             } else {
                 $this->log($channel, 'error', 'fallback_failed', 'Fallback playout failed to start');
                 event(new StreamStatusChanged($channel, 'offline'));
             }
         } else {
+            $this->push->stop($channel->fresh());
             $this->log($channel, 'warning', 'no_fallback',
-                'No recording available yet — push will stall until source recovers');
+                'No recording available yet — push stopped, waiting for source recovery');
             event(new StreamStatusChanged($channel, 'offline'));
         }
     }
@@ -184,15 +191,12 @@ class StreamManager
             return;
         }
 
-        // Switch playout back to live — push keeps running uninterrupted
-        if ($this->playout->startLive($channel->fresh())) {
-            $channel->update(['stream_status' => 'live', 'playout_status' => 'live']);
-            $this->log($channel, 'info', 'playout_switched_live', 'Playout switched back to live');
-        } else {
-            // live.m3u8 not ready yet — monitor will catch on next tick
-            $channel->update(['stream_status' => 'live']);
-        }
+        // Switch playout back to live (stops fallback process), restart push on live.m3u8
+        $this->playout->switchToLive($channel->fresh());
+        $this->push->stop($channel->fresh());
+        // Push watchdog in onSourceStillLive will restart it once live.m3u8 has segments
 
+        $channel->update(['stream_status' => 'live', 'playout_status' => 'live']);
         $channel->resetRetries();
         event(new StreamStatusChanged($channel, 'live'));
     }
@@ -230,25 +234,24 @@ class StreamManager
             }
         }
 
-        // ── Playout watchdog ─────────────────────────────────────────────
-        if (!$this->playout->isRunning($channel)) {
-            $this->log($channel, 'warning', 'playout_died', 'Playout died — restarting live playout');
-            if ($this->playout->startLive($channel)) {
-                $channel->update(['playout_status' => 'live']);
-                $this->log($channel, 'info', 'playout_restarted', 'Playout restarted');
-            } else {
-                $channel->update(['playout_status' => 'error']);
-            }
+        // ── Playout: in live mode there is no process — nothing to watch ─
+        // If somehow playout_status got set to fallback while source is live, fix it
+        if ($channel->playout_status === 'fallback') {
+            $this->playout->switchToLive($channel);
+            $channel->update(['playout_status' => 'live']);
         }
 
         // ── Push watchdog ────────────────────────────────────────────────
         if (!$this->push->isRunning($channel)) {
-            $this->log($channel, 'warning', 'push_died', 'Push died — restarting');
-            if ($this->push->start($channel)) {
-                $channel->update(['push_status' => 'live']);
-                $this->log($channel, 'info', 'push_restarted', 'Push restarted');
-            } else {
-                $channel->update(['push_status' => 'error']);
+            // Only restart if live.m3u8 is ready (has segments)
+            if ($this->ffmpeg->hlsReady($channel, 2)) {
+                $this->log($channel, 'warning', 'push_died', 'Push died — restarting');
+                if ($this->push->start($channel)) {
+                    $channel->update(['push_status' => 'live']);
+                    $this->log($channel, 'info', 'push_restarted', 'Push restarted');
+                } else {
+                    $channel->update(['push_status' => 'error']);
+                }
             }
         }
 
@@ -266,17 +269,19 @@ class StreamManager
 
     protected function onSourceStillDown(Channel $channel): void
     {
-        // ── Playout fallback watchdog ────────────────────────────────────
-        if (!$this->playout->isRunning($channel) && $this->playout->hasFallback($channel)) {
+        // ── Fallback playout watchdog ────────────────────────────────────
+        if ($channel->playout_status === 'fallback' && !$this->playout->isFallbackRunning($channel)) {
             $this->log($channel, 'warning', 'fallback_restart', 'Fallback playout died — restarting');
-            if ($this->playout->startFallback($channel)) {
+            if ($this->playout->switchToFallback($channel)) {
+                $this->push->stop($channel->fresh());
+                $this->push->start($channel->fresh());
                 $channel->update(['playout_status' => 'fallback']);
                 $this->log($channel, 'info', 'fallback_restarted', 'Fallback playout restarted');
             }
         }
 
-        // ── Push watchdog ────────────────────────────────────────────────
-        if (!$this->push->isRunning($channel) && $this->playout->isRunning($channel)) {
+        // ── Push watchdog during fallback ────────────────────────────────
+        if (!$this->push->isRunning($channel) && $this->playout->isFallbackRunning($channel)) {
             $this->log($channel, 'warning', 'push_died_offline', 'Push died during fallback — restarting');
             $this->push->start($channel);
         }

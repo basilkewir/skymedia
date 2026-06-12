@@ -6,23 +6,25 @@ use App\Models\Channel;
 use Illuminate\Support\Facades\Log;
 
 /**
- * PushService — pushes playout.m3u8 to an external RTMP/SRT server.
+ * PushService — pushes the channel output to an external RTMP/SRT server.
  *
- * This service has ONE job: read playout.m3u8 (produced by PlayoutService)
- * and push it to the configured destination.
- *
- * It knows nothing about live vs fallback — that is PlayoutService's concern.
+ * Reads whichever playlist PlayoutService says is current:
+ *   live     → live.m3u8  (direct from ingest, no intermediate process)
+ *   fallback → playout.m3u8 (from the fallback ffmpeg loop)
  */
 class PushService
 {
-    public function __construct(protected FFmpegService $ffmpeg) {}
+    public function __construct(
+        protected FFmpegService $ffmpeg,
+        protected PlayoutService $playout,
+    ) {}
 
     public function start(Channel $channel): bool
     {
-        $playout = $channel->dvr_directory . '/playout.m3u8';
+        $playlist = $this->playout->outputPlaylist($channel);
 
-        if (!file_exists($playout)) {
-            Log::warning("[Push] {$channel->name}: playout.m3u8 not ready yet");
+        if (!file_exists($playlist)) {
+            Log::warning("[Push] {$channel->name}: playlist not ready ({$playlist})");
             return false;
         }
 
@@ -33,7 +35,7 @@ class PushService
 
         try {
             $pid = $this->ffmpeg->startProcess(
-                $this->ffmpeg->buildPushCommand($channel),
+                $this->ffmpeg->buildPushCommand($channel, $playlist),
                 $pidFile,
                 $logFile,
                 8
@@ -45,7 +47,7 @@ class PushService
         }
 
         $channel->update(['push_pid' => $pid, 'push_status' => 'live']);
-        Log::info("[Push] {$channel->name} started — PID {$pid}");
+        Log::info("[Push] {$channel->name} started — PID {$pid} — reading {$playlist}");
         return true;
     }
 

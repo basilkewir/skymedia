@@ -67,19 +67,17 @@ class FFmpegService
     /**
      * PUSH: reads live.m3u8 → encode → RTMP/SRT
      */
-    public function buildPushCommand(Channel $channel): array
+    public function buildPushCommand(Channel $channel, string $playlistPath): array
     {
-        $playout = $channel->dvr_directory . '/playout.m3u8';
-
         return array_merge(
             [
                 $this->ffmpegBin, '-y', '-loglevel', 'warning', '-stats',
                 '-fflags',             '+genpts+igndts+discardcorrupt',
-                '-live_start_index',   '0',
+                '-live_start_index',   '-1',
                 '-allowed_extensions', 'ALL',
                 '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
                 '-timeout',            '10000000',
-                '-i',                  $playout,
+                '-i',                  $playlistPath,
             ],
             $this->videoEncodeFlags($channel),
             $this->audioEncodeFlags($channel),
@@ -194,10 +192,14 @@ class FFmpegService
         if (!is_dir($dvrDir)) mkdir($dvrDir, 0755, true);
 
         $cmd = $this->buildIngestCommand($channel);
-        // Replace 'warning' with 'info' for verbose output
+        // Resolve full binary path for Symfony Process (different PATH from shell_exec)
+        $resolved = trim((string) shell_exec('which ' . escapeshellarg($this->ffmpegBin) . ' 2>/dev/null'))
+                 ?: trim((string) shell_exec('command -v ' . escapeshellarg($this->ffmpegBin) . ' 2>/dev/null'));
+        if ($resolved) {
+            $cmd[0] = $resolved;
+        }
         foreach ($cmd as &$v) { if ($v === 'warning') { $v = 'info'; break; } }
         unset($v);
-        // Stop after 5 s
         array_splice($cmd, -1, 0, ['-t', '5']);
 
         $proc = new Process($cmd);
