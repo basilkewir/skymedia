@@ -74,25 +74,39 @@ class FFmpegService
     }
 
     /**
-     * PUSH: reads live.m3u8 → encode → RTMP/SRT
+     * PUSH: reads the stable output playlist → encode → RTMP/SRT.
+     *
+     * -re ensures real-time pacing so the RTMP server isn't overwhelmed.
+     * For HLS inputs without -re, ffmpeg may buffer and burst data,
+     * causing the server to disconnect with "Broken pipe".
      */
     public function buildPushCommand(Channel $channel, string $playlistPath): array
     {
-        return array_merge(
-            [
-                $this->ffmpegBin, '-y', '-loglevel', 'warning', '-stats',
-                '-fflags',             '+genpts+igndts+discardcorrupt',
-                '-live_start_index',   '-1',
-                '-allowed_extensions', 'ALL',
-                '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
-                '-i',                  $playlistPath,
-            ],
-            $this->videoEncodeFlags($channel),
-            $this->audioEncodeFlags($channel),
-            ['-f', $channel->push_protocol === 'srt' ? 'mpegts' : 'flv'],
-            $channel->push_protocol === 'rtmp' ? ['-flvflags', 'no_duration_filesize'] : [],
-            [$this->pushUrl($channel)]
-        );
+        $cmd = [
+            $this->ffmpegBin, '-y', '-loglevel', 'warning', '-stats',
+            '-re',
+            '-fflags',             '+genpts+igndts+discardcorrupt',
+            '-live_start_index',   '-1',
+            '-allowed_extensions', 'ALL',
+            '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
+            '-i',                  $playlistPath,
+        ];
+
+        $cmd = array_merge($cmd, $this->videoEncodeFlags($channel));
+        $cmd = array_merge($cmd, $this->audioEncodeFlags($channel));
+
+        if ($channel->push_protocol === 'srt') {
+            $cmd[] = '-f';
+            $cmd[] = 'mpegts';
+        } else {
+            $cmd[] = '-f';
+            $cmd[] = 'flv';
+            $cmd[] = '-flvflags';
+            $cmd[] = 'no_duration_filesize';
+        }
+
+        $cmd[] = $this->pushUrl($channel);
+        return $cmd;
     }
 
     /**
