@@ -9,9 +9,15 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('channels', function (Blueprint $table) {
-            $table->integer('push_pid')->nullable()->after('dvr_pid');
-            $table->integer('retry_count')->default(0)->after('push_pid');
-            $table->text('last_error')->nullable()->after('retry_count');
+            if (!Schema::hasColumn('channels', 'push_pid')) {
+                $table->integer('push_pid')->nullable()->after('pid');
+            }
+            if (!Schema::hasColumn('channels', 'retry_count')) {
+                $table->integer('retry_count')->default(0)->after('push_pid');
+            }
+            if (!Schema::hasColumn('channels', 'last_error')) {
+                $table->text('last_error')->nullable()->after('retry_count');
+            }
         });
     }
 

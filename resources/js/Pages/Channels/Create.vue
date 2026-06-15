@@ -209,14 +209,14 @@
                             <div class="flex gap-2">
                                 <input v-model.number="form.record_duration" type="number"
                                        min="0" max="86400" required class="form-input flex-1" />
-                                <select @change="applyRecPreset" v-model="recPreset" class="form-input w-28">
+                                <select @change="applyRecPreset" v-model="recPreset" class="form-input w-32">
                                     <option value="0">Disabled</option>
-                                    <option value="3600">1 hr</option>
-                                    <option value="7200">2 hrs</option>
-                                    <option value="14400">4 hrs</option>
-                                    <option value="21600">6 hrs</option>
-                                    <option value="43200">12 hrs</option>
-                                    <option value="86400">24 hrs</option>
+                                    <option value="3600">1 hour</option>
+                                    <option value="7200">2 hours</option>
+                                    <option value="10800">3 hours</option>
+                                    <option value="18000">5 hours</option>
+                                    <option value="43200">12 hours</option>
+                                    <option value="86400">24 hours</option>
                                 </select>
                             </div>
                             <p class="mt-1 text-xs text-slate-500">
@@ -228,6 +228,18 @@
                                 </template>
                             </p>
                         </FormField>
+                        <FormField label="Keep Recordings" :error="form.errors.keep_recordings">
+                            <select v-model.number="form.keep_recordings" class="form-input">
+                                <option :value="1">1 — current file only</option>
+                                <option :value="3">3 — ~{{ (3 * estimatedRecMb) }} MB total</option>
+                                <option :value="5">5</option>
+                                <option :value="7">7</option>
+                                <option :value="10">10</option>
+                            </select>
+                            <p class="mt-1 text-xs text-slate-500">
+                                Oldest completed recordings are auto-deleted to maintain disk space
+                            </p>
+                        </FormField>
                         <FormField label="Health Check Interval (seconds)" :error="form.errors.check_interval">
                             <input v-model.number="form.check_interval" type="number"
                                    min="1" max="60" required class="form-input" />
@@ -235,6 +247,33 @@
                         <FormField label="Max Retries" :error="form.errors.max_retries">
                             <input v-model.number="form.max_retries" type="number"
                                    min="0" max="20" required class="form-input" />
+                        </FormField>
+                        <FormField label="Channel Timezone" :error="form.errors.timezone">
+                            <select v-model="form.timezone" class="form-input font-mono text-sm">
+                                <option value="UTC">UTC (Coordinated Universal Time)</option>
+                                <option value="America/New_York">America/New York (EST/EDT)</option>
+                                <option value="America/Chicago">America/Chicago (CST/CDT)</option>
+                                <option value="America/Denver">America/Denver (MST/MDT)</option>
+                                <option value="America/Los_Angeles">America/Los Angeles (PST/PDT)</option>
+                                <option value="America/Sao_Paulo">America/São Paulo (BRT)</option>
+                                <option value="Europe/London">Europe/London (GMT/BST)</option>
+                                <option value="Europe/Paris">Europe/Paris (CET/CEST)</option>
+                                <option value="Europe/Moscow">Europe/Moscow (MSK)</option>
+                                <option value="Europe/Berlin">Europe/Berlin (CET/CEST)</option>
+                                <option value="Asia/Dubai">Asia/Dubai (GST)</option>
+                                <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
+                                <option value="Asia/Shanghai">Asia/Shanghai (CST)</option>
+                                <option value="Asia/Tokyo">Asia/Tokyo (JST)</option>
+                                <option value="Asia/Seoul">Asia/Seoul (KST)</option>
+                                <option value="Asia/Singapore">Asia/Singapore (SGT)</option>
+                                <option value="Australia/Sydney">Australia/Sydney (AEST/AEDT)</option>
+                                <option value="Pacific/Auckland">Pacific/Auckland (NZST/NZDT)</option>
+                                <option value="Africa/Cairo">Africa/Cairo (EET)</option>
+                                <option value="Africa/Johannesburg">Africa/Johannesburg (SAST)</option>
+                            </select>
+                            <p class="mt-1 text-xs text-slate-500">
+                                Recording filenames will use this timezone
+                            </p>
                         </FormField>
                     </div>
                 </Section>
@@ -274,12 +313,17 @@ const form = useForm({
     push_audio_codec: 'aac',    push_audio_bitrate: 128,
     push_audio_samplerate: 48000, push_audio_channels: 2,
     dvr_duration: 3600, segment_duration: 4,
-    record_duration: 3600,
+    record_duration: 3600, keep_recordings: 3,
+    timezone: 'UTC', locale: 'en',
     check_interval: 5, max_retries: 3,
 })
 
 function autoSlug() {
-    form.slug = form.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    form.slug = form.name
+        .toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // strip accents
+        .replace(/[^a-z0-9\u4e00-\u9fff\u0600-\u06ff\u0400-\u04ff]+/g, '-')
+        .replace(/^-|-$/g, '')
 }
 function applyDvrPreset() { if (dvrPreset.value !== '') form.dvr_duration = parseInt(dvrPreset.value) }
 function applyRecPreset() { if (recPreset.value !== '') form.record_duration = parseInt(recPreset.value) }

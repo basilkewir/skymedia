@@ -96,9 +96,14 @@ else
 fi
 
 [[ -f "${APP_DIR}/.env" ]] || fail ".env missing after pull — restore from backup"
-SERVER_IP=$(hostname -I | awk '{print $1}')
-sed -i "s|APP_URL=.*|APP_URL=http://${SERVER_IP}|" "${APP_DIR}/.env"
-ok ".env preserved — APP_URL → http://${SERVER_IP}"
+APP_URL_CURRENT=$(get_env APP_URL)
+if [[ -z "${APP_URL_CURRENT}" ]] || [[ "${APP_URL_CURRENT}" == "http://localhost"* ]] || [[ "${APP_URL_CURRENT}" =~ ^http://[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+    SERVER_IP=$(hostname -I | awk '{print $1}')
+    sed -i "s|APP_URL=.*|APP_URL=http://${SERVER_IP}|" "${APP_DIR}/.env"
+    ok ".env APP_URL → http://${SERVER_IP}"
+else
+    ok ".env APP_URL preserved → ${APP_URL_CURRENT}"
+fi
 
 # ── 3. Stop daemons ───────────────────────────────────────────────────────────
 step "3 / 8  Stop daemons"

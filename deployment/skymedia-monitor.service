@@ -1,0 +1,27 @@
+[Unit]
+Description=SkyMedia Stream Monitor Daemon
+After=network.target network-online.target mysql.service redis.service
+Wants=network-online.target mysql.service redis.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/skymedia
+ExecStart=/usr/bin/php artisan streams:monitor
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skymedia-monitor
+
+# Security hardening
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/var/www/skymedia/storage /var/www/skymedia/bootstrap/cache
+ReadOnlyPaths=/var/www/skymedia/vendor /var/www/skymedia/node_modules
+
+[Install]
+WantedBy=multi-user.target

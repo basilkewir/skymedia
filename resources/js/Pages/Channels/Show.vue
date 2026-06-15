@@ -57,6 +57,11 @@
                               class="px-3 py-1.5 text-xs text-slate-300 border border-slate-700 rounded-lg hover:border-slate-500 transition-colors">
                             ✎ Edit
                         </Link>
+                        <Link :href="route('channels.clone', channel.id)" method="post" as="button"
+                              class="px-3 py-1.5 text-xs text-indigo-400 border border-indigo-500/30 rounded-lg hover:bg-indigo-500/10 transition-colors"
+                              title="Duplicate all settings to a new channel">
+                            ⧉ Clone
+                        </Link>
                         <Link :href="route('channels.toggle', channel.id)" method="post" as="button"
                               class="px-4 py-1.5 text-xs font-semibold rounded-lg transition-colors"
                               :class="channel.is_active

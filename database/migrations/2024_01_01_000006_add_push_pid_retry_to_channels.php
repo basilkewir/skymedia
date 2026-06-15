@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::table('channels', function (Blueprint $table) {
             if (!Schema::hasColumn('channels', 'push_pid')) {
-                $table->unsignedInteger('push_pid')->nullable()->after('dvr_pid');
+                $table->unsignedInteger('push_pid')->nullable()->after('pid');
             }
             if (!Schema::hasColumn('channels', 'retry_count')) {
                 $table->unsignedInteger('retry_count')->default(0)->after('push_pid');

@@ -99,6 +99,34 @@ class ChannelController extends Controller
         return redirect()->route('channels.index')->with('success', 'Channel deleted');
     }
 
+    public function clone(Channel $channel): RedirectResponse
+    {
+        $clone = $channel->replicate();
+        $clone->name  = $channel->name . ' (Copy)';
+        $clone->slug  = $channel->slug . '-copy';
+        $clone->is_active = false;
+        $clone->stream_status = 'idle';
+        $clone->playout_status = 'idle';
+        $clone->push_status = 'idle';
+        $clone->dvr_status = 'idle';
+        $clone->record_status = 'idle';
+        $clone->source_live = false;
+        $clone->pid = null;
+        $clone->playout_pid = null;
+        $clone->push_pid = null;
+        $clone->record_pid = null;
+        $clone->retry_count = 0;
+        $clone->last_error = null;
+        $clone->last_live_at = null;
+        $clone->last_check_at = null;
+        $clone->fallback_recording_path = null;
+        $clone->dvr_path = null; // will be auto-assigned based on new id
+        $clone->save();
+
+        return redirect()->route('channels.edit', $clone)
+            ->with('success', "Channel cloned as '{$clone->name}' — edit and activate when ready");
+    }
+
     public function toggle(Channel $channel): RedirectResponse
     {
         if ($channel->is_active) {
@@ -116,18 +144,6 @@ class ChannelController extends Controller
     {
         $this->manager->restartChannel($channel);
         return back()->with('success', 'Channel restarted');
-    }
-
-    public function startPush(Request $request, Channel $channel): RedirectResponse
-    {
-        $this->manager->startPush($channel);
-        return back()->with('success', 'Push started');
-    }
-
-    public function stopPush(Channel $channel): RedirectResponse
-    {
-        $this->manager->stopPush($channel);
-        return back()->with('success', 'Push stopped');
     }
 
     public function purgeDvr(Channel $channel): RedirectResponse
@@ -208,6 +224,10 @@ class ChannelController extends Controller
             'segment_duration'      => 'required|integer|min:2|max:30',
             // Recording
             'record_duration'       => 'required|integer|min:0|max:86400',
+            'keep_recordings'       => 'nullable|integer|min:1|max:10',
+            // Locale
+            'timezone'              => 'nullable|string|max:50',
+            'locale'                => 'nullable|string|max:10',
             // Behaviour
             'check_interval'        => 'required|integer|min:1|max:60',
             'max_retries'           => 'required|integer|min:0|max:20',

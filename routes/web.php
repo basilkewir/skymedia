@@ -5,6 +5,7 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DvrController;
 use App\Http\Controllers\IngestController;
 use App\Http\Controllers\LogController;
+use App\Http\Controllers\PushController;
 use App\Http\Controllers\SettingsController;
 use Illuminate\Support\Facades\Route;
 
@@ -20,11 +21,16 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('channels/{channel}/ingest/restart', [IngestController::class, 'restart'])->name('ingest.restart');
     Route::get('channels/{channel}/ingest/log',      [IngestController::class, 'log'])->name('ingest.log');
 
+    // ── Push (mode-aware) ─────────────────────────────────────────────────────
+    Route::post('channels/{channel}/push/start',   [PushController::class, 'start'])->name('channels.push.start');
+    Route::post('channels/{channel}/push/stop',    [PushController::class, 'stop'])->name('channels.push.stop');
+    Route::post('channels/{channel}/push/restart', [PushController::class, 'restart'])->name('push.restart');
+    Route::get('channels/{channel}/push/log',      [PushController::class, 'log'])->name('push.log');
+
     // ── Channels — specific action routes BEFORE resource (prevents conflicts) ─
     Route::post('channels/{channel}/toggle',     [ChannelController::class, 'toggle'])->name('channels.toggle');
     Route::post('channels/{channel}/restart',    [ChannelController::class, 'restart'])->name('channels.restart');
-    Route::post('channels/{channel}/push/start', [ChannelController::class, 'startPush'])->name('channels.push.start');
-    Route::post('channels/{channel}/push/stop',  [ChannelController::class, 'stopPush'])->name('channels.push.stop');
+    Route::post('channels/{channel}/clone',      [ChannelController::class, 'clone'])->name('channels.clone');
     Route::delete('channels/{channel}/dvr',      [ChannelController::class, 'purgeDvr'])->name('channels.purge-dvr');
     Route::get('channels/{channel}/status',    [ChannelController::class, 'status'])->name('channels.status');
     Route::get('channels/{channel}/probe',      [ChannelController::class, 'probe'])->name('channels.probe');

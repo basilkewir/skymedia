@@ -1,0 +1,25 @@
+[Unit]
+Description=SkyMedia Laravel Queue Worker
+After=network.target network-online.target mysql.service redis.service
+Wants=network-online.target mysql.service redis.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/skymedia
+ExecStart=/usr/bin/php artisan queue:work redis --sleep=3 --tries=3 --max-time=3600
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skymedia-queue
+
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/var/www/skymedia/storage /var/www/skymedia/bootstrap/cache
+
+[Install]
+WantedBy=multi-user.target

@@ -18,15 +18,12 @@ class PushController extends Controller
         protected FFmpegService $ffmpeg,
     ) {}
 
-    /**
-     * Start push.
-     * mode = 'live' → reads live.m3u8 (requires ingest to be running)
-     * mode = 'dvr'  → loops concat.txt (works without ingest)
-     */
     public function start(Request $request, Channel $channel): RedirectResponse
     {
         $mode = $request->input('mode', 'live');
-        $ok   = $this->manager->startPush($channel, $mode);
+        $ok   = $mode === 'live'
+            ? $this->manager->startPush($channel)
+            : $this->push->startDvrPlayback($channel);
 
         return back()->with(
             $ok ? 'success' : 'error',
@@ -46,7 +43,9 @@ class PushController extends Controller
     {
         $mode = $request->input('mode', 'live');
         $this->manager->stopPush($channel);
-        $ok = $this->manager->startPush($channel, $mode);
+        $ok = $mode === 'live'
+            ? $this->manager->startPush($channel)
+            : $this->push->startDvrPlayback($channel);
 
         return back()->with(
             $ok ? 'success' : 'error',

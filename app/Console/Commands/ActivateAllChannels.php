@@ -25,7 +25,7 @@ class ActivateAllChannels extends Command
             $needsStart = in_array($channel->stream_status, ['idle', 'stopped', 'error', 'offline']);
 
             // Also restart channels that appear live but have dead PIDs (after reboot/crash)
-            if (!$needsStart && in_array($channel->stream_status, ['live', 'dvr_playback', 'starting'])) {
+            if (!$needsStart && in_array($channel->stream_status, ['live', 'fallback', 'starting'])) {
                 $ingestAlive = $channel->pid   && $ffmpeg->isRunning($channel->pid);
                 $pushAlive   = $channel->push_pid && $ffmpeg->isRunning($channel->push_pid);
 

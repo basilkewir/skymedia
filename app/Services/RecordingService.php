@@ -1,18 +1,23 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services;
 
+use App\Jobs\FinalizeRecording;
 use App\Models\Channel;
 use App\Models\Recording;
 use Illuminate\Support\Facades\Log;
-use Symfony\Component\Process\Process;
 
 /**
  * RecordingService
  *
- * Records timed MP4 files from the DVR segments already on disk.
- * Reads from local .ts files (concat demuxer) — NOT from live.m3u8.
- * This avoids all HLS/network issues and works on any source type.
+ * Records timed MP4 files by reading the ingest's live.m3u8 playlist
+ * directly — the same HLS playlist that the push process reads.
+ * Uses -live_start_index -1 to capture from the most recent segments,
+ * and -t <record_duration> to limit the output length.
+ * Produces self-contained MP4 files for fallback playback when
+ * the source goes offline.
  */
 class RecordingService
 {
@@ -28,21 +33,16 @@ class RecordingService
             return true;
         }
 
-        $dvrDir   = $channel->dvr_directory;
-        $segments = $this->getSegmentFiles($dvrDir);
+        $dvrDir  = $channel->dvr_directory;
+        $m3u8    = "{$dvrDir}/live.m3u8";
 
-        if (count($segments) < 2) {
-            Log::debug("[Recording] {$channel->name}: need ≥2 segments, have " . count($segments));
+        if (!file_exists($m3u8)) {
+            Log::debug("[Recording] {$channel->name}: live.m3u8 not yet available");
             return false;
         }
 
-        $filename = 'rec_' . now()->format('Ymd_His') . '.mp4';
+        $filename = 'rec_' . now($channel->timezone ?? 'UTC')->format('Ymd_His') . '.mp4';
         $filepath = "{$dvrDir}/{$filename}";
-        $concat   = "{$dvrDir}/rec_concat.txt";
-
-        // Write concat list of current segments
-        $lines = array_map(fn($f) => "file '" . addslashes($f) . "'", $segments);
-        file_put_contents($concat, implode("\n", $lines));
 
         // Create DB record so UI shows it immediately
         $recording = Recording::create([
@@ -55,7 +55,7 @@ class RecordingService
             'started_at'  => now(),
         ]);
 
-        $cmd     = $this->buildCommand($channel, $concat, $filepath);
+        $cmd     = $this->buildCommand($channel, $m3u8, $filepath);
         $pidFile = $this->ffmpeg->pidFile($channel, 'record');
         $logFile = $this->ffmpeg->logFile($channel, 'record');
 
@@ -113,6 +113,10 @@ class RecordingService
         }
 
         $channel->update(['record_pid' => null, 'record_status' => 'idle']);
+
+        // Prune old VOD files to maintain disk space — use channel's retention policy
+        $keep = max(1, (int) ($channel->keep_recordings ?? 3));
+        $this->pruneOld($channel, keep: $keep);
     }
 
     /**
@@ -150,7 +154,8 @@ class RecordingService
 
     public function finish(Channel $channel): void
     {
-        $this->ffmpeg->clearPid($this->ffmpeg->pidFile($channel, 'record'));
+        $pidFile = $this->ffmpeg->pidFile($channel, 'record');
+        $this->ffmpeg->clearPid($pidFile);
 
         $recording = Recording::where('channel_id', $channel->id)
             ->where('status', 'recording')
@@ -162,37 +167,14 @@ class RecordingService
             return;
         }
 
-        $filepath = $recording->filepath;
+        $channel->update(['record_pid' => null, 'record_status' => 'idle']);
 
-        if (file_exists($filepath) && filesize($filepath) > 1024) {
-            $duration = $this->probeDuration($filepath) ?? (float) $channel->record_duration;
-            $filesize = filesize($filepath);
-
-            $recording->update([
-                'status'       => 'completed',
-                'duration'     => $duration,
-                'filesize'     => $filesize,
-                'completed_at' => now(),
-            ]);
-
-            $channel->update([
-                'record_pid'              => null,
-                'record_status'           => 'idle',
-                'fallback_recording_path' => $filepath,
-            ]);
-
-            Log::info(sprintf(
-                "[Recording] %s completed: %s (%.1fs, %.1f MB)",
-                $channel->name, $filepath, $duration, $filesize / 1_048_576
-            ));
-        } else {
-            Log::warning("[Recording] {$channel->name} produced empty file: {$filepath}");
-            $recording->update(['status' => 'failed', 'completed_at' => now()]);
-            $channel->update(['record_pid' => null, 'record_status' => 'idle']);
-        }
-
-        @unlink($channel->dvr_directory . '/rec_concat.txt');
-        $this->pruneOld($channel, keep: 3);
+        // Dispatch async finalization job — handles probing, DB updates, VOD pruning
+        FinalizeRecording::dispatch(
+            $channel->id,
+            $recording->id,
+            $channel->timezone ?? 'UTC'
+        );
     }
 
     public function isRunning(Channel $channel): bool
@@ -221,58 +203,51 @@ class RecordingService
         if ($channel->record_duration <= 0) return false;
         if ($this->isRunning($channel)) return false;
         if ($channel->record_status === 'recording') return false;
-        return count($this->getSegmentFiles($channel->dvr_directory)) >= 2;
+        return $this->ffmpeg->hlsReady($channel, 2);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
 
-    private function buildCommand(Channel $channel, string $concatFile, string $output): array
+    private function buildCommand(Channel $channel, string $inputPath, string $output): array
     {
-        return [
+        $cmd = [
             $this->ffmpeg->getBin(),
             '-y',
-            '-loglevel',  'warning',
+            '-loglevel',           'warning',
             '-stats',
-            '-safe',      '0',
-            '-f',         'concat',
-            '-i',         $concatFile,
-            '-t',         (string) $channel->record_duration,
-            '-c:v',       'copy',
-            '-c:a',       'copy',
-            '-movflags',  '+faststart',
-            '-avoid_negative_ts', 'make_zero',
-            $output,
+            '-fflags',             '+genpts+igndts+discardcorrupt',
+            '-live_start_index',   '-1',
+            '-allowed_extensions', 'ALL',
+            '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
+            '-timeout',            (string) (($channel->record_duration * 1_000_000) + 30_000_000),
+            '-i',                  $inputPath,
         ];
-    }
 
-    private function getSegmentFiles(string $dvrDir): array
-    {
-        $files = glob("{$dvrDir}/seg_*.ts") ?: [];
-        natsort($files);
-        return array_values(array_filter($files, fn($f) => file_exists($f) && filesize($f) > 0));
-    }
-
-    private function probeDuration(string $file): ?float
-    {
-        try {
-            $proc = new Process([
-                config('skymedia.ffprobe_binary', 'ffprobe'),
-                '-v', 'quiet',
-                '-print_format', 'json',
-                '-show_format',
-                $file,
+        // Timecode burn-in overlay for fallback VODs
+        if ($channel->recording_burn_timestamp) {
+            $cmd = array_merge($cmd, [
+                '-vf', "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
+                     . "text='%{pts\:gmtime\:{$channel->timezone}\:%Y-%m-%d %H\\\\:%M\\\\:%S}':"
+                     . "fontsize=18:fontcolor=white:box=1:boxcolor=black@0.5:"
+                     . "x=10:y=h-th-10",
             ]);
-            $proc->setTimeout(8);
-            $proc->run();
-            $data = json_decode($proc->getOutput(), true);
-            return isset($data['format']['duration']) ? (float) $data['format']['duration'] : null;
-        } catch (\Throwable) {
-            return null;
         }
+
+        $cmd = array_merge($cmd, [
+            '-t',                  (string) $channel->record_duration,
+            '-c:v',                $channel->recording_burn_timestamp ? 'libx264' : 'copy',
+            '-c:a',                $channel->recording_burn_timestamp ? 'aac' : 'copy',
+            '-movflags',           '+faststart',
+            '-avoid_negative_ts',  'make_zero',
+            $output,
+        ]);
+
+        return $cmd;
     }
 
     private function pruneOld(Channel $channel, int $keep = 3): void
     {
+        // Delete and unlink old completed recordings beyond keep limit
         Recording::where('channel_id', $channel->id)
             ->where('status', 'completed')
             ->orderByDesc('completed_at')
@@ -283,6 +258,15 @@ class RecordingService
                 if ($rec->filepath !== $channel->fallback_recording_path) {
                     @unlink($rec->filepath);
                 }
+                $rec->delete();
+            });
+
+        // Clean up failed recordings older than 1 hour (keep DB tidy)
+        Recording::where('channel_id', $channel->id)
+            ->where('status', 'failed')
+            ->where('created_at', '<', now()->subHour())
+            ->each(function (Recording $rec) {
+                @unlink($rec->filepath);
                 $rec->delete();
             });
     }

@@ -1,0 +1,17 @@
+parameters:
+  level: 6
+  paths:
+    - app/
+    - config/
+    - database/
+    - routes/
+  excludePaths:
+    - bootstrap/cache/
+    - storage/
+    - vendor/
+  ignoreErrors:
+    - '#Unsafe usage of new static\(\)#'
+    - '#Dynamic call to static method#'
+  reportUnmatchedIgnoredErrors: false
+  checkMissingIterableValueType: false
+  checkGenericClassInNonGenericObjectType: false

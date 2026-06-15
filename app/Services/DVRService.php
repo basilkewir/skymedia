@@ -1,9 +1,12 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services;
 
 use App\Models\Channel;
 use App\Models\DvrSegment;
+use App\Models\Setting;
 use Illuminate\Support\Facades\Log;
 
 class DVRService

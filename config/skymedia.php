@@ -22,4 +22,10 @@ return [
      * SRT latency in ms
      */
     'srt_latency' => env('SKYMEDIA_SRT_LATENCY', 200),
+
+    /*
+     * Alert webhook URL — receives JSON POST on channel state changes.
+     * Leave empty to disable webhook alerts.
+     */
+    'alert_webhook_url' => env('SKYMEDIA_ALERT_WEBHOOK_URL', ''),
 ];

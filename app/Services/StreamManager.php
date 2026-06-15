@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services;
 
 use App\Events\StreamStatusChanged;
@@ -16,6 +18,7 @@ class StreamManager
         protected PushService      $push,
         protected DVRService       $dvr,
         protected RecordingService $recording,
+        protected AlertService     $alert,
     ) {}
 
     // ═══════════════════════════════════════════════════════════════════
@@ -164,15 +167,18 @@ class StreamManager
                 $this->push->start($channel->fresh());
                 $channel->update(['stream_status' => 'fallback', 'playout_status' => 'fallback']);
                 $this->log($channel, 'info', 'fallback_activated', 'Playout on fallback recording, push restarted');
+                $this->alert->sendOfflineAlert($channel->fresh(), 'Source unreachable', true);
                 event(new StreamStatusChanged($channel, 'fallback'));
             } else {
                 $this->log($channel, 'error', 'fallback_failed', 'Fallback playout failed to start');
+                $this->alert->sendOfflineAlert($channel->fresh(), 'Fallback playout failed', false);
                 event(new StreamStatusChanged($channel, 'offline'));
             }
         } else {
             $this->push->stop($channel->fresh());
             $this->log($channel, 'warning', 'no_fallback',
                 'No recording available yet — push stopped, waiting for source recovery');
+            $this->alert->sendOfflineAlert($channel->fresh(), 'No fallback recording available', false);
             event(new StreamStatusChanged($channel, 'offline'));
         }
     }
@@ -198,6 +204,7 @@ class StreamManager
 
         $channel->update(['stream_status' => 'live', 'playout_status' => 'live']);
         $channel->resetRetries();
+        $this->alert->sendRecoveryAlert($channel->fresh());
         event(new StreamStatusChanged($channel, 'live'));
     }
 
@@ -255,6 +262,12 @@ class StreamManager
             }
         }
 
+        // ── Multi-destination watchdog ────────────────────────────────────
+        $playlist = $this->playout->outputPlaylist($channel);
+        if (file_exists($playlist)) {
+            $this->push->watchDestinations($channel, $playlist);
+        }
+
         if ($channel->stream_status !== 'live') {
             $channel->update(['stream_status' => 'live', 'source_live' => true]);
         }
@@ -284,6 +297,12 @@ class StreamManager
         if (!$this->push->isRunning($channel) && $this->playout->isFallbackRunning($channel)) {
             $this->log($channel, 'warning', 'push_died_offline', 'Push died during fallback — restarting');
             $this->push->start($channel);
+        }
+
+        // ── Multi-destination watchdog ────────────────────────────────────
+        $playlist = $this->playout->outputPlaylist($channel);
+        if (file_exists($playlist)) {
+            $this->push->watchDestinations($channel, $playlist);
         }
 
         $channel->incrementRetry('Source offline');

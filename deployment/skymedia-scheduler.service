@@ -1,0 +1,25 @@
+[Unit]
+Description=SkyMedia Scheduler (runs Laravel schedule:run every 60s)
+After=network.target network-online.target mysql.service redis.service
+Wants=network-online.target mysql.service redis.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/skymedia
+ExecStart=/usr/bin/php artisan schedule:work
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skymedia-scheduler
+
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/var/www/skymedia/storage /var/www/skymedia/bootstrap/cache
+
+[Install]
+WantedBy=multi-user.target

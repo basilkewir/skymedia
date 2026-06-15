@@ -20,7 +20,8 @@ class DashboardController extends Controller
         $stats = [
             'total'       => $channels->count(),
             'live'        => $channels->where('stream_status', 'live')->count(),
-            'dvr'         => $channels->whereIn('stream_status', ['dvr_playback', 'fallback'])->count(),
+            'fallback'    => $channels->where('stream_status', 'fallback')->count(),
+            'offline'     => $channels->where('stream_status', 'offline')->count(),
             'error'       => $channels->where('stream_status', 'error')->count(),
             'idle'        => $channels->whereIn('stream_status', ['idle', 'stopped'])->count(),
             'active'      => $channels->where('is_active', true)->count(),

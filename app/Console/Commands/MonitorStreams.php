@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\Channel;
+use App\Models\Setting;
 use App\Services\StreamManager;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
@@ -17,7 +18,7 @@ class MonitorStreams extends Command
     public function handle(StreamManager $manager): void
     {
         $this->info('SkyMedia Monitor started — PID ' . getmypid());
-        $tick = (int) config('skymedia.monitor_tick', 3);
+        $tick = max(1, (int) (Setting::get('monitor_tick') ?? config('skymedia.monitor_tick', 3)));
 
         while (true) {
             try {

@@ -172,8 +172,19 @@
                 <Section title="DVR &amp; Recording">
                     <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
                         <FormField label="DVR Rolling Window (seconds)" :error="form.errors.dvr_duration">
-                            <input v-model.number="form.dvr_duration" type="number"
-                                   min="60" max="86400" required class="form-input" />
+                            <div class="flex gap-2">
+                                <input v-model.number="form.dvr_duration" type="number"
+                                       min="60" max="86400" required class="form-input flex-1" />
+                                <select @change="form.dvr_duration = $event.target.value ? parseInt($event.target.value) : form.dvr_duration" class="form-input w-28">
+                                    <option value="">Custom</option>
+                                    <option value="1800">30 min</option>
+                                    <option value="3600">1 hour</option>
+                                    <option value="10800">3 hours</option>
+                                    <option value="18000">5 hours</option>
+                                    <option value="43200">12 hours</option>
+                                    <option value="86400">24 hours</option>
+                                </select>
+                            </div>
                             <p class="mt-1 text-xs text-slate-500">{{ formatDuration(form.dvr_duration) }}</p>
                         </FormField>
                         <FormField label="Segment Duration (seconds)" :error="form.errors.segment_duration">
@@ -181,11 +192,31 @@
                                    min="2" max="30" required class="form-input" />
                         </FormField>
                         <FormField label="Recording File Length (seconds, 0=disabled)" :error="form.errors.record_duration">
-                            <input v-model.number="form.record_duration" type="number"
-                                   min="0" max="86400" required class="form-input" />
+                            <div class="flex gap-2">
+                                <input v-model.number="form.record_duration" type="number"
+                                       min="0" max="86400" required class="form-input flex-1" />
+                                <select @change="form.record_duration = parseInt($event.target.value)" class="form-input w-32">
+                                    <option value="0">Disabled</option>
+                                    <option value="3600">1 hour</option>
+                                    <option value="7200">2 hours</option>
+                                    <option value="10800">3 hours</option>
+                                    <option value="18000">5 hours</option>
+                                    <option value="43200">12 hours</option>
+                                    <option value="86400">24 hours</option>
+                                </select>
+                            </div>
                             <p class="mt-1 text-xs text-slate-500">
                                 {{ form.record_duration > 0 ? formatDuration(form.record_duration) + ' per file — looped as fallback' : 'Disabled — push will go offline if source drops' }}
                             </p>
+                        </FormField>
+                        <FormField label="Keep Recordings" :error="form.errors.keep_recordings">
+                            <select v-model.number="form.keep_recordings" class="form-input">
+                                <option :value="1">1 — keep only latest</option>
+                                <option :value="3">3</option>
+                                <option :value="5">5</option>
+                                <option :value="7">7</option>
+                                <option :value="10">10</option>
+                            </select>
                         </FormField>
                         <FormField label="Health Check Interval (seconds)" :error="form.errors.check_interval">
                             <input v-model.number="form.check_interval" type="number"
@@ -194,6 +225,27 @@
                         <FormField label="Max Retries" :error="form.errors.max_retries">
                             <input v-model.number="form.max_retries" type="number"
                                    min="0" max="20" required class="form-input" />
+                        </FormField>
+                        <FormField label="Channel Timezone" :error="form.errors.timezone">
+                            <select v-model="form.timezone" class="form-input font-mono text-sm">
+                                <option value="UTC">UTC</option>
+                                <option value="America/New_York">America/New York</option>
+                                <option value="America/Chicago">America/Chicago</option>
+                                <option value="America/Los_Angeles">America/Los Angeles</option>
+                                <option value="America/Sao_Paulo">America/São Paulo</option>
+                                <option value="Europe/London">Europe/London</option>
+                                <option value="Europe/Paris">Europe/Paris</option>
+                                <option value="Europe/Moscow">Europe/Moscow</option>
+                                <option value="Europe/Berlin">Europe/Berlin</option>
+                                <option value="Asia/Dubai">Asia/Dubai</option>
+                                <option value="Asia/Kolkata">Asia/Kolkata</option>
+                                <option value="Asia/Shanghai">Asia/Shanghai</option>
+                                <option value="Asia/Tokyo">Asia/Tokyo</option>
+                                <option value="Asia/Seoul">Asia/Seoul</option>
+                                <option value="Asia/Singapore">Asia/Singapore</option>
+                                <option value="Australia/Sydney">Australia/Sydney</option>
+                                <option value="Africa/Cairo">Africa/Cairo</option>
+                            </select>
                         </FormField>
                     </div>
                 </Section>
@@ -244,6 +296,9 @@ const form = useForm({
     dvr_duration:           props.channel.dvr_duration,
     segment_duration:       props.channel.segment_duration,
     record_duration:        props.channel.record_duration     ?? 3600,
+    keep_recordings:        props.channel.keep_recordings     ?? 3,
+    timezone:               props.channel.timezone            ?? 'UTC',
+    locale:                 props.channel.locale              ?? 'en',
     check_interval:         props.channel.check_interval,
     max_retries:            props.channel.max_retries,
 })

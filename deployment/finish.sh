@@ -39,13 +39,18 @@ ok "Node.js $(${NODE} -v) / npm $(${NPM} -v)"
 
 # ── .env ──────────────────────────────────────────────────────────────────────
 step ".env file"
-SERVER_IP=$(hostname -I | awk '{print $1}')
 if [[ ! -f "${APP_DIR}/.env" ]]; then
     cp "${APP_DIR}/.env.example" "${APP_DIR}/.env"
     ok ".env created from example"
 fi
-sed -i "s|APP_URL=.*|APP_URL=http://${SERVER_IP}|" "${APP_DIR}/.env"
-ok ".env APP_URL → http://${SERVER_IP}"
+APP_URL_CURRENT=$(get_env APP_URL)
+if [[ -z "${APP_URL_CURRENT}" ]] || [[ "${APP_URL_CURRENT}" == "http://localhost"* ]] || [[ "${APP_URL_CURRENT}" =~ ^http://[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+    SERVER_IP=$(hostname -I | awk '{print $1}')
+    sed -i "s|APP_URL=.*|APP_URL=http://${SERVER_IP}|" "${APP_DIR}/.env"
+    ok ".env APP_URL → http://${SERVER_IP}"
+else
+    ok ".env APP_URL preserved → ${APP_URL_CURRENT}"
+fi
 
 # ── Ownership ─────────────────────────────────────────────────────────────────
 step "Ownership"

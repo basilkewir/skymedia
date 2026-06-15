@@ -1,8 +1,11 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services;
 
 use App\Models\Channel;
+use App\Models\Setting;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\Process\Process;
 
@@ -18,6 +21,12 @@ class FFmpegService
     }
 
     public function getBin(): string { return $this->ffmpegBin; }
+
+    protected function srtLatencyMs(): int
+    {
+        return (int) (Setting::get('srt_latency')
+            ?? config('skymedia.srt_latency', 200));
+    }
 
     // ===================================================================
     //  COMMAND BUILDERS
@@ -376,7 +385,7 @@ class FFmpegService
 
             // SRT
             case ($type === 'srt'):
-                $latency = config('skymedia.srt_latency', 200) * 1000;
+                $latency = $this->srtLatencyMs() * 1000;
                 $srtUrl  = 'srt://' . $this->parseSrtUrl($url)
                          . "?timeout=8000000&latency={$latency}";
                 return [
@@ -508,7 +517,7 @@ class FFmpegService
     protected function pushUrl(Channel $channel): string
     {
         if ($channel->push_protocol === 'srt') {
-            $latency = config('skymedia.srt_latency', 200) * 1000;
+            $latency = $this->srtLatencyMs() * 1000;
             $base    = $this->parseSrtUrl($channel->push_target);
             $query   = "latency={$latency}&mode=caller";
             if ($channel->push_username) {

@@ -1,0 +1,18 @@
+[Unit]
+Description=SkyMedia Activate All Channels — Boot Task
+After=network.target network-online.target mysql.service redis.service skymedia-monitor.service
+Wants=network-online.target mysql.service redis.service
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/skymedia
+ExecStart=/usr/bin/php artisan streams:activate-all
+RemainAfterExit=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=skymedia-boot
+
+[Install]
+WantedBy=multi-user.target

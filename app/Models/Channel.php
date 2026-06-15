@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
@@ -20,8 +22,12 @@ class Channel extends Model
         'push_audio_codec', 'push_audio_bitrate', 'push_audio_samplerate', 'push_audio_channels',
         // DVR
         'dvr_duration', 'segment_duration', 'dvr_path',
+        // Locale
+        'timezone', 'locale',
         // Recording / fallback
-        'record_duration', 'fallback_recording_path',
+        'record_duration', 'keep_recordings', 'recording_burn_timestamp', 'fallback_recording_path',
+        // Schedule
+        'schedule_start', 'schedule_stop', 'schedule_days',
         // Runtime state
         'is_active', 'stream_status', 'playout_status', 'push_status', 'dvr_status', 'record_status', 'source_live',
         'pid', 'playout_pid', 'push_pid', 'record_pid',
@@ -36,6 +42,8 @@ class Channel extends Model
         'dvr_duration'           => 'integer',
         'segment_duration'       => 'integer',
         'record_duration'        => 'integer',
+        'keep_recordings'        => 'integer',
+        'recording_burn_timestamp' => 'boolean',
         'check_interval'         => 'integer',
         'max_retries'            => 'integer',
         'retry_count'            => 'integer',
@@ -67,6 +75,11 @@ class Channel extends Model
     public function recordings(): HasMany
     {
         return $this->hasMany(Recording::class)->latest();
+    }
+
+    public function pushDestinations(): HasMany
+    {
+        return $this->hasMany(PushDestination::class);
     }
 
     // ── Computed attributes ───────────────────────────────────────────────────
