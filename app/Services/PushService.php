@@ -34,7 +34,10 @@ class PushService
 
     public function start(Channel $channel): bool
     {
-        if (empty($channel->push_url)) return false;
+        if (empty($channel->push_url)) {
+            Log::warning("[Push] {$channel->name}: push_url is empty");
+            return false;
+        }
 
         $playlist = $this->playout->outputPlaylist($channel);
         if (!file_exists($playlist)) {
@@ -44,14 +47,18 @@ class PushService
 
         $this->stopPrimary($channel);
 
-        $pid = $this->launchPush(
-            $this->ffmpeg->buildPushCommand($channel, $playlist),
-            $channel,
-            'push'
-        );
+        $cmd = $this->ffmpeg->buildPushCommand($channel, $playlist);
+        $pid = $this->launchPush($cmd, $channel, 'push');
 
         if ($pid === null) {
-            $channel->update(['push_pid' => null, 'push_status' => 'error']);
+            // Log the failing command and tail of the log for diagnostics
+            $logTail = $this->ffmpeg->readLogTail($this->ffmpeg->logFile($channel, 'push'), 20);
+            $cmdStr  = implode(' ', $cmd);
+            Log::error("[Push] {$channel->name} failed — command: {$cmdStr}");
+            if ($logTail && !str_starts_with($logTail, '(log not found')) {
+                Log::error("[Push] {$channel->name} log tail:\n{$logTail}");
+            }
+            $channel->update(['push_pid' => null, 'push_status' => 'error', 'last_error' => substr("ffmpeg failed to start\n{$logTail}", 0, 1000)]);
             return false;
         }
 

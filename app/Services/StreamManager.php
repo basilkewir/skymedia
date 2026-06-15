@@ -106,9 +106,13 @@ class StreamManager
     public function startPush(Channel $channel): bool
     {
         $ok = $this->push->start($channel);
-        $this->log($channel, $ok ? 'info' : 'error',
-            $ok ? 'push_started' : 'push_failed',
-            $ok ? 'Push started' : 'Push failed — verify push URL, playlist exists, and target is reachable. View Push Log.');
+        if ($ok) {
+            $this->log($channel, 'info', 'push_started', 'Push started');
+        } else {
+            $ch = $channel->fresh();
+            $reason = $ch->last_error ?: 'Unknown — check push log for details';
+            $this->log($channel, 'error', 'push_failed', "Push failed: {$reason}");
+        }
         return $ok;
     }
 
@@ -278,7 +282,10 @@ class StreamManager
                     $this->log($channel, 'info', 'push_started',
                         $wasPreviouslyLive ? 'Push restarted' : 'Push started');
                 } else {
-                    $channel->update(['push_status' => 'error']);
+                    $ch = $channel->fresh();
+                    $reason = $ch->last_error ?: 'Unknown — check push log';
+                    $channel->update(['push_status' => 'error', 'last_error' => $reason]);
+                    $this->log($channel, 'error', 'push_failed', "Push failed: {$reason}");
                 }
             }
         }
