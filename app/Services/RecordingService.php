@@ -219,7 +219,6 @@ class RecordingService
             '-live_start_index',   '-1',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
-            '-timeout',            (string) (($channel->record_duration * 1_000_000) + 30_000_000),
             '-i',                  $inputPath,
         ];
 
