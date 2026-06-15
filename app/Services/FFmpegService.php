@@ -85,7 +85,6 @@ class FFmpegService
                 '-live_start_index',   '-1',
                 '-allowed_extensions', 'ALL',
                 '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
-                '-timeout',            '10000000',
                 '-i',                  $playlistPath,
             ],
             $this->videoEncodeFlags($channel),
