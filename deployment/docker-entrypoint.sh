@@ -21,6 +21,7 @@ sed -i 's|DB_PASSWORD=.*|DB_PASSWORD=|' .env
 sed -i 's|CACHE_DRIVER=.*|CACHE_DRIVER=file|' .env
 sed -i 's|SESSION_DRIVER=.*|SESSION_DRIVER=file|' .env
 sed -i 's|REDIS_HOST=.*|REDIS_HOST=|' .env
+sed -i 's|QUEUE_CONNECTION=.*|QUEUE_CONNECTION=sync|' .env
 
 # ── Permissions ────────────────────────────────────────────────────
 mkdir -p storage/framework/{cache,sessions,testing,views}

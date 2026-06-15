@@ -39,6 +39,13 @@ class PushService
             return false;
         }
 
+        // If already running, do nothing — push reads output.m3u8 which
+        // the playout module swaps underneath. Never restart push for
+        // playlist changes.
+        if ($this->isRunning($channel)) {
+            return true;
+        }
+
         $playlist = $this->playout->outputPlaylist($channel);
         if (!file_exists($playlist)) {
             Log::warning("[Push] {$channel->name}: playlist not ready ({$playlist})");
