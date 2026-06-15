@@ -44,7 +44,9 @@ class StreamManager
             // 2. Mark playout as live — no process needed, push reads live.m3u8 directly
             $this->playout->switchToLive($channel);
 
-            // 3. Push starts once live.m3u8 has segments — monitor handles this
+            // 3. Start push immediately if playlist is ready — monitor will retry if not
+            $this->startPushIfReady($channel);
+
             $channel->update(['stream_status' => 'live']);
             event(new StreamStatusChanged($channel, 'live'));
             return true;
@@ -57,6 +59,21 @@ class StreamManager
             $this->log($channel, 'error', 'stream_start_failed', $e->getMessage());
             Log::error("[Channel {$channel->id}] startChannel: {$e->getMessage()}");
             return false;
+        }
+    }
+
+    private function startPushIfReady(Channel $channel): void
+    {
+        if (empty($channel->push_url)) return;
+
+        // The playlist may not exist yet (ingest just started) — the monitor
+        // will pick it up on the next tick. We try now as a fast path.
+        $playlist = $this->playout->outputPlaylist($channel);
+        if (!file_exists($playlist)) return;
+
+        if ($this->ffmpeg->hlsReady($channel, 2)) {
+            $this->push->start($channel);
+            $this->log($channel, 'info', 'push_started', 'Push started');
         }
     }
 
@@ -91,7 +108,7 @@ class StreamManager
         $ok = $this->push->start($channel);
         $this->log($channel, $ok ? 'info' : 'error',
             $ok ? 'push_started' : 'push_failed',
-            $ok ? 'Push started' : 'Push failed — is live.m3u8 ready?');
+            $ok ? 'Push started' : 'Push failed — verify push URL, playlist exists, and target is reachable. View Push Log.');
         return $ok;
     }
 
@@ -250,12 +267,16 @@ class StreamManager
 
         // ── Push watchdog ────────────────────────────────────────────────
         if (!$this->push->isRunning($channel)) {
-            // Only restart if live.m3u8 is ready (has segments)
+            // Only start/restart if live.m3u8 is ready (has segments)
             if ($this->ffmpeg->hlsReady($channel, 2)) {
-                $this->log($channel, 'warning', 'push_died', 'Push died — restarting');
+                $wasPreviouslyLive = $channel->push_status === 'live';
+                $this->log($channel, 'warning',
+                    $wasPreviouslyLive ? 'push_died' : 'push_not_running',
+                    $wasPreviouslyLive ? 'Push died — restarting' : 'Push not running — starting');
                 if ($this->push->start($channel)) {
                     $channel->update(['push_status' => 'live']);
-                    $this->log($channel, 'info', 'push_restarted', 'Push restarted');
+                    $this->log($channel, 'info', 'push_started',
+                        $wasPreviouslyLive ? 'Push restarted' : 'Push started');
                 } else {
                     $channel->update(['push_status' => 'error']);
                 }
@@ -295,7 +316,10 @@ class StreamManager
 
         // ── Push watchdog during fallback ────────────────────────────────
         if (!$this->push->isRunning($channel) && $this->playout->isFallbackRunning($channel)) {
-            $this->log($channel, 'warning', 'push_died_offline', 'Push died during fallback — restarting');
+            $wasPreviouslyLive = $channel->push_status === 'live';
+            $this->log($channel, 'warning',
+                $wasPreviouslyLive ? 'push_died_offline' : 'push_not_running_fallback',
+                $wasPreviouslyLive ? 'Push died during fallback — restarting' : 'Push not running during fallback — starting');
             $this->push->start($channel);
         }
 

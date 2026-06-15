@@ -115,13 +115,18 @@
                         <StatusBadge :status="state.push_status" :pulse="false" />
                         <span v-if="state.push_pid" class="text-xs text-slate-500 font-mono">PID {{ state.push_pid }}</span>
                         <Link :href="route('channels.push.start', channel.id)" method="post" as="button"
-                              class="px-3 py-1.5 text-xs bg-green-600/20 text-green-400 border border-green-500/30 rounded-lg hover:bg-green-600/30 transition-colors">
+                               class="px-3 py-1.5 text-xs bg-green-600/20 text-green-400 border border-green-500/30 rounded-lg hover:bg-green-600/30 transition-colors">
                             ▶ Start Push
                         </Link>
                         <Link :href="route('channels.push.stop', channel.id)" method="post" as="button"
-                              class="px-3 py-1.5 text-xs bg-red-600/20 text-red-400 border border-red-500/30 rounded-lg hover:bg-red-600/30 transition-colors">
+                               class="px-3 py-1.5 text-xs bg-red-600/20 text-red-400 border border-red-500/30 rounded-lg hover:bg-red-600/30 transition-colors">
                             ■ Stop Push
                         </Link>
+                        <button @click="togglePushLog"
+                                class="px-3 py-1.5 text-xs text-slate-300 border border-slate-700 rounded-lg hover:border-slate-500 transition-colors"
+                                :class="{ 'border-indigo-500 text-indigo-400': showPushLog }">
+                            {{ showPushLog ? '✕ Hide Push Log' : '📋 Push Log' }}
+                        </button>
                     </div>
 
                 </div>
@@ -131,6 +136,17 @@
                 <p v-else class="mt-3 text-xs text-yellow-500">
                     ⚠ No fallback recording yet — recording starts automatically when channel is live.
                 </p>
+            </div>
+
+            <!-- Push log viewer -->
+            <div v-if="showPushLog" class="bg-slate-900 border border-indigo-500/30 rounded-xl p-6">
+                <div class="flex items-center justify-between mb-3">
+                    <h2 class="text-sm font-semibold text-indigo-400">📋 Push Output Log</h2>
+                    <span class="text-xs text-slate-500">ffmpeg stderr/stdout — last 80 lines</span>
+                </div>
+                <pre v-if="pushLog" class="bg-slate-950 rounded-lg p-3 text-xs text-slate-300 font-mono whitespace-pre-wrap overflow-auto max-h-96 border border-slate-800">{{ pushLog }}</pre>
+                <p v-else-if="pushLogLoading" class="text-xs text-slate-500">Loading…</p>
+                <p v-else class="text-xs text-slate-500">No log available</p>
             </div>
 
             <!-- DVR progress -->
@@ -317,6 +333,9 @@ const probing      = ref(false)
 const probeData    = ref(null)
 const diagnosing   = ref(false)
 const diagnoseData = ref(null)
+const showPushLog  = ref(false)
+const pushLog      = ref('')
+const pushLogLoading = ref(false)
 let timer = null
 
 async function poll() {
@@ -381,6 +400,23 @@ async function diagnoseIngest() {
 
 onMounted(() => { poll(); timer = setInterval(poll, 4000) })
 onUnmounted(() => clearInterval(timer))
+
+async function togglePushLog() {
+    showPushLog.value = !showPushLog.value
+    if (showPushLog.value) {
+        pushLogLoading.value = true
+        pushLog.value = ''
+        try {
+            const res = await fetch(route('push.log', props.channel.id))
+            const data = await res.json()
+            pushLog.value = data.log || '(empty)'
+        } catch (e) {
+            pushLog.value = 'Failed to load push log: ' + e.message
+        } finally {
+            pushLogLoading.value = false
+        }
+    }
+}
 
 function formatDuration(s) {
     if (!s || s <= 0) return '0s'

@@ -94,7 +94,7 @@ class FinalizeRecording implements ShouldQueue
         Recording::where('channel_id', $channel->id)
             ->where('status', 'completed')
             ->orderByDesc('completed_at')
-            ->skip(3)
+            ->skip($keep)
             ->take(1000)
             ->get()
             ->each(function (Recording $rec) use ($channel) {

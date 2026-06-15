@@ -21,14 +21,19 @@ class PushController extends Controller
     public function start(Request $request, Channel $channel): RedirectResponse
     {
         $mode = $request->input('mode', 'live');
-        $ok   = $mode === 'live'
+
+        if (empty($channel->push_url)) {
+            return back()->with('error', 'Push URL is not configured — edit the channel and set a push URL and stream key');
+        }
+
+        $ok = $mode === 'live'
             ? $this->manager->startPush($channel)
             : $this->push->startDvrPlayback($channel);
 
         return back()->with(
             $ok ? 'success' : 'error',
             $ok ? "Push started ({$mode})" : ($mode === 'live'
-                ? 'Push failed — make sure ingest is running and has recorded at least 2 segments'
+                ? 'Push failed — playlist not ready. Wait for ingest to record at least 2 segments, then try again. View Push Log for details.'
                 : 'Push failed — no DVR segments available')
         );
     }
