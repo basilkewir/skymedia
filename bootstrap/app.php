@@ -33,10 +33,11 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withExceptions(function (Exceptions $exceptions) {
         $exceptions->render(function (\Throwable $e, \Illuminate\Http\Request $request) {
             if ($request->expectsJson()) {
+                $status = method_exists($e, 'getStatusCode') ? $e->getStatusCode() : 500;
                 return response()->json([
                     'error'   => $e->getMessage(),
-                    'code'    => method_exists($e, 'getStatusCode') ? $e->getStatusCode() : 500,
-                ], 500);
+                    'code'    => $status,
+                ], $status);
             }
         });
     })->create();

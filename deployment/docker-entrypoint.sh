@@ -26,8 +26,7 @@ sed -i 's|REDIS_HOST=.*|REDIS_HOST=|' .env
 mkdir -p storage/framework/{cache,sessions,testing,views}
 mkdir -p storage/logs/streams
 mkdir -p storage/app/{pids,dvr}
-chown -R www-data:www-data storage bootstrap/cache database 2>/dev/null || true
-chmod -R 775 storage bootstrap/cache 2>/dev/null || true
+chmod -R 777 storage bootstrap/cache database 2>/dev/null || true
 
 # ── NPM build (only if not already built) ──────────────────────────
 if [ ! -f public/build/manifest.json ] || [ ! -d public/build ]; then
@@ -40,8 +39,11 @@ if [ ! -f public/build/manifest.json ] || [ ! -d public/build ]; then
 fi
 
 # ── Database ────────────────────────────────────────────────────────
+mkdir -p database
 touch database/database.sqlite
-chmod 664 database/database.sqlite
+chown www-data:www-data database database/database.sqlite 2>/dev/null || true
+chmod -R 775 database 2>/dev/null || true
+chmod 664 database/database.sqlite 2>/dev/null || true
 
 php artisan migrate --force --quiet 2>&1 || php artisan migrate --force
 

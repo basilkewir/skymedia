@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Channel;
+use App\Models\Recording;
 use App\Services\DVRService;
 use App\Services\FFmpegService;
 use App\Services\StreamManager;
@@ -193,6 +194,64 @@ class ChannelController extends Controller
     {
         $logs = $channel->streamLogs()->latest()->limit(50)->get();
         return response()->json($logs);
+    }
+
+    /**
+     * Stream a recording file for VOD playback.
+     * Uses range requests for seeking in the browser video player.
+     */
+    public function playRecording(\App\Models\Recording $recording): \Symfony\Component\HttpFoundation\StreamedResponse|\Illuminate\Http\Response
+    {
+        $filepath = $recording->filepath;
+
+        if (!file_exists($filepath) || filesize($filepath) < 1024) {
+            return response('Recording file not found', 404);
+        }
+
+        $size = filesize($filepath);
+        $mime = 'video/mp4';
+
+        // Range request support (browser seeks)
+        $range = request()->header('Range');
+        if ($range) {
+            $parts = explode('-', str_replace('bytes=', '', $range));
+            $start = (int) ($parts[0] ?? 0);
+            $end   = isset($parts[1]) && $parts[1] !== '' ? (int) $parts[1] : $size - 1;
+            $length = $end - $start + 1;
+
+            return response()->stream(function () use ($filepath, $start, $length) {
+                $handle = fopen($filepath, 'rb');
+                fseek($handle, $start);
+                $remaining = $length;
+                while ($remaining > 0 && !feof($handle)) {
+                    $chunk = fread($handle, min(8192, $remaining));
+                    echo $chunk;
+                    $remaining -= strlen($chunk);
+                    flush();
+                }
+                fclose($handle);
+            }, 206, [
+                'Content-Type'        => $mime,
+                'Content-Length'      => $length,
+                'Content-Range'       => "bytes {$start}-{$end}/{$size}",
+                'Accept-Ranges'       => 'bytes',
+                'Cache-Control'       => 'no-cache',
+            ]);
+        }
+
+        return response()->stream(function () use ($filepath) {
+            $handle = fopen($filepath, 'rb');
+            while (!feof($handle)) {
+                echo fread($handle, 8192);
+                flush();
+            }
+            fclose($handle);
+        }, 200, [
+            'Content-Type'   => $mime,
+            'Content-Length' => $size,
+            'Accept-Ranges'  => 'bytes',
+            'Cache-Control'  => 'no-cache',
+        ]);
     }
 
     // ── Validation rules ──────────────────────────────────────────────────────

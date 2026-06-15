@@ -20,8 +20,10 @@ COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 
 # ── Nginx config ────────────────────────────────────────────────────
 COPY deployment/nginx-docker.conf /etc/nginx/sites-enabled/skymedia
-RUN rm -f /etc/nginx/sites-enabled/default 2>/dev/null; \
-    mkdir -p /run/php && chown www-data:www-data /run/php
+RUN rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/*default* 2>/dev/null; \
+    mkdir -p /run/php && chown www-data:www-data /run/php; \
+    sed -i 's/^user = www-data/user = root/' /etc/php/8.2/fpm/pool.d/www.conf; \
+    sed -i 's/^group = www-data/group = root/' /etc/php/8.2/fpm/pool.d/www.conf
 
 # ── Supervisor ─────────────────────────────────────────────────────
 COPY deployment/supervisord-docker.conf /etc/supervisor/conf.d/skymedia.conf

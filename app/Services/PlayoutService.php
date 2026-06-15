@@ -10,31 +10,52 @@ use Illuminate\Support\Facades\Log;
 /**
  * PlayoutService — manages the channel output playlist.
  *
- * LIVE mode:
- *   No ffmpeg process needed. push reads live.m3u8 directly from ingest.
- *   playout_status = 'live', playout_pid = null.
+ * Push ALWAYS reads output.m3u8 (a stable path that never changes).
+ * This service manages what output.m3u8 points to via a symlink:
  *
- * FALLBACK mode:
- *   Runs one ffmpeg process that loops a recording → playout.m3u8.
- *   Push reads playout.m3u8.
- *   playout_status = 'fallback', playout_pid = <pid>.
+ *   LIVE mode:
+ *     output.m3u8 → live.m3u8  (written by ingest — no ffmpeg process)
+ *     playout_status = 'live', playout_pid = null
  *
- * The public method outputPlaylist() returns the path push should read.
+ *   FALLBACK mode:
+ *     output.m3u8 → playout.m3u8  (written by ffmpeg looping a recording)
+ *     playout_status = 'fallback', playout_pid = <pid>
+ *
+ * The symlink is swapped atomically. Push never restarts — ffmpeg's HLS
+ * demuxer picks up the new playlist content on its next refresh cycle
+ * (typically within one segment duration).
  */
 class PlayoutService
 {
     public function __construct(protected FFmpegService $ffmpeg) {}
 
-    // ── Switch to live (no process needed, kill any fallback loop) ────────────
+    /**
+     * Returns the stable playlist path that push always reads.
+     * This path NEVER changes — only its symlink target does.
+     */
+    public function outputPlaylist(Channel $channel): string
+    {
+        return $channel->dvr_directory . '/output.m3u8';
+    }
+
+    // ── Switch to live (symlink → live.m3u8, kill any fallback loop) ──
 
     public function switchToLive(Channel $channel): void
     {
+        $link  = $this->outputPlaylist($channel);
+        $live  = $channel->dvr_directory . '/live.m3u8';
+
+        @unlink($link);
+        if (file_exists($live)) {
+            symlink('live.m3u8', $link);
+        }
+
         $this->stopFallbackProcess($channel);
         $channel->update(['playout_pid' => null, 'playout_status' => 'live']);
-        Log::info("[Playout] {$channel->name} switched to live");
+        Log::info("[Playout] {$channel->name} switched to live → output.m3u8");
     }
 
-    // ── Switch to fallback (start ffmpeg loop) ────────────────────────────────
+    // ── Switch to fallback (start ffmpeg loop, symlink → playout.m3u8) ──
 
     public function switchToFallback(Channel $channel): bool
     {
@@ -62,25 +83,30 @@ class PlayoutService
             return false;
         }
 
+        // Atomically swap the symlink — push picks up playout.m3u8 on next refresh
+        $link = $this->outputPlaylist($channel);
+        @unlink($link);
+        symlink('playout.m3u8', $link);
+
         $channel->update(['playout_pid' => $pid, 'playout_status' => 'fallback']);
         Log::info("[Playout] {$channel->name} fallback started — PID {$pid} — {$file}");
         return true;
     }
 
-    // ── Stop everything ───────────────────────────────────────────────────────
+    // ── Stop everything ─────────────────────────────────────────────────
 
     public function stop(Channel $channel): void
     {
         $this->stopFallbackProcess($channel);
+        @unlink($this->outputPlaylist($channel));
         @unlink($channel->dvr_directory . '/playout.m3u8');
-        // Clean up playout segments
         foreach (glob($channel->dvr_directory . '/playout_*.ts') ?: [] as $f) {
             @unlink($f);
         }
         $channel->update(['playout_pid' => null, 'playout_status' => 'stopped']);
     }
 
-    // ── State ─────────────────────────────────────────────────────────────────
+    // ── State ───────────────────────────────────────────────────────────
 
     public function isFallbackRunning(Channel $channel): bool
     {
@@ -93,20 +119,7 @@ class PlayoutService
         return $this->resolveFallbackFile($channel) !== null;
     }
 
-    /**
-     * Returns the playlist path that PushService should read.
-     * Live  → live.m3u8  (written by ingest)
-     * Fallback → playout.m3u8 (written by fallback ffmpeg loop)
-     */
-    public function outputPlaylist(Channel $channel): string
-    {
-        if ($channel->playout_status === 'fallback') {
-            return $channel->dvr_directory . '/playout.m3u8';
-        }
-        return $channel->dvr_directory . '/live.m3u8';
-    }
-
-    // ── Internal ──────────────────────────────────────────────────────────────
+    // ── Internal ────────────────────────────────────────────────────────
 
     private function stopFallbackProcess(Channel $channel): void
     {

@@ -194,6 +194,7 @@
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Size</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Status</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Completed</th>
+                            <th class="px-6 py-3"></th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-800/50">
@@ -224,9 +225,17 @@
                             <td class="px-6 py-3 text-xs text-slate-500">
                                 {{ rec.completed_at ? new Date(rec.completed_at).toLocaleString() : '—' }}
                             </td>
+                            <td class="px-6 py-3">
+                                <a v-if="rec.status === 'completed'"
+                                   :href="route('recordings.play', rec.id)"
+                                   target="_blank"
+                                   class="px-2 py-1 text-xs bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded hover:bg-indigo-600/30 transition-colors">
+                                    ▶ Play
+                                </a>
+                            </td>
                         </tr>
                         <tr v-if="!state.recordings?.length">
-                            <td colspan="5" class="px-6 py-10 text-center text-slate-500 text-sm">
+                            <td colspan="6" class="px-6 py-10 text-center text-slate-500 text-sm">
                                 No recordings yet. Start the channel to begin recording.
                             </td>
                         </tr>

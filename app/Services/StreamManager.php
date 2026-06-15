@@ -181,13 +181,13 @@ class StreamManager
         ]);
 
         if ($this->playout->hasFallback($channel)) {
-            // Start fallback loop process → playout.m3u8
+            // Start fallback loop → symlinks output.m3u8 → playout.m3u8
+            // Push keeps running — ffmpeg HLS demuxer picks up the new
+            // playlist content on its next refresh (within segment_duration).
             if ($this->playout->switchToFallback($channel->fresh())) {
-                // Restart push so it reads playout.m3u8 instead of live.m3u8
-                $this->push->stop($channel->fresh());
-                $this->push->start($channel->fresh());
                 $channel->update(['stream_status' => 'fallback', 'playout_status' => 'fallback']);
-                $this->log($channel, 'info', 'fallback_activated', 'Playout on fallback recording, push restarted');
+                $this->log($channel, 'info', 'fallback_activated',
+                    'Playout on fallback — push continues uninterrupted via output.m3u8 symlink');
                 $this->alert->sendOfflineAlert($channel->fresh(), 'Source unreachable', true);
                 event(new StreamStatusChanged($channel, 'fallback'));
             } else {
@@ -218,10 +218,16 @@ class StreamManager
             return;
         }
 
-        // Switch playout back to live (stops fallback process), restart push on live.m3u8
+        // Wait for live.m3u8 to have segments, then swap the symlink.
+        // Push keeps running — ffmpeg picks up live.m3u8 on next refresh.
+        $start = time();
+        while (time() - $start < 10) {
+            if ($this->ffmpeg->hlsReady($channel->fresh(), 2)) break;
+            usleep(250_000);
+        }
+
+        // Atomically symlink output.m3u8 → live.m3u8, stop fallback loop
         $this->playout->switchToLive($channel->fresh());
-        $this->push->stop($channel->fresh());
-        // Push watchdog in onSourceStillLive will restart it once live.m3u8 has segments
 
         $channel->update(['stream_status' => 'live', 'playout_status' => 'live']);
         $channel->resetRetries();
@@ -270,9 +276,11 @@ class StreamManager
         }
 
         // ── Push watchdog ────────────────────────────────────────────────
+        // Push reads output.m3u8 (stable path). It only needs restart
+        // if the ffmpeg process has died unexpectedly.
         if (!$this->push->isRunning($channel)) {
-            // Only start/restart if live.m3u8 is ready (has segments)
-            if ($this->ffmpeg->hlsReady($channel, 2)) {
+            $playlist = $this->playout->outputPlaylist($channel);
+            if (file_exists($playlist) && $this->ffmpeg->hlsReady($channel, 2)) {
                 $wasPreviouslyLive = $channel->push_status === 'live';
                 $this->log($channel, 'warning',
                     $wasPreviouslyLive ? 'push_died' : 'push_not_running',
@@ -314,20 +322,18 @@ class StreamManager
         if ($channel->playout_status === 'fallback' && !$this->playout->isFallbackRunning($channel)) {
             $this->log($channel, 'warning', 'fallback_restart', 'Fallback playout died — restarting');
             if ($this->playout->switchToFallback($channel)) {
-                $this->push->stop($channel->fresh());
-                $this->push->start($channel->fresh());
                 $channel->update(['playout_status' => 'fallback']);
                 $this->log($channel, 'info', 'fallback_restarted', 'Fallback playout restarted');
             }
         }
 
-        // ── Push watchdog during fallback ────────────────────────────────
-        if (!$this->push->isRunning($channel) && $this->playout->isFallbackRunning($channel)) {
-            $wasPreviouslyLive = $channel->push_status === 'live';
-            $this->log($channel, 'warning',
-                $wasPreviouslyLive ? 'push_died_offline' : 'push_not_running_fallback',
-                $wasPreviouslyLive ? 'Push died during fallback — restarting' : 'Push not running during fallback — starting');
-            $this->push->start($channel);
+        // ── Push watchdog — only if the process died (symlink handles content switch) ──
+        if (!$this->push->isRunning($channel)) {
+            $playlist = $this->playout->outputPlaylist($channel);
+            if (file_exists($playlist)) {
+                $this->log($channel, 'warning', 'push_died_offline', 'Push died during fallback — restarting');
+                $this->push->start($channel);
+            }
         }
 
         // ── Multi-destination watchdog ────────────────────────────────────

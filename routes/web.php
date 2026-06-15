@@ -52,4 +52,7 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     // ── Settings ──────────────────────────────────────────────────────────────
     Route::get('settings', [SettingsController::class, 'index'])->name('settings.index');
     Route::put('settings', [SettingsController::class, 'update'])->name('settings.update');
+
+    // ── VOD playback ─────────────────────────────────────────────────────────
+    Route::get('recordings/{recording}/play', [ChannelController::class, 'playRecording'])->name('recordings.play');
 });
