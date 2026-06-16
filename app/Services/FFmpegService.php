@@ -297,11 +297,24 @@ class FFmpegService
     //  HLS READINESS
     // ===================================================================
 
+    /**
+     * Check if the current output playlist has enough segments.
+     * Reads output.m3u8 (symlink) and checks the corresponding segment files.
+     */
     public function hlsReady(Channel $channel, int $minSegments = 2): bool
     {
-        $m3u8 = $channel->dvr_directory . '/live.m3u8';
-        if (!file_exists($m3u8)) return false;
-        return count(glob($channel->dvr_directory . '/seg_*.ts') ?: []) >= $minSegments;
+        $dvrDir = $channel->dvr_directory;
+        $m3u8   = $dvrDir . '/output.m3u8';
+
+        // output.m3u8 is a symlink — resolve the target playlist
+        $target = is_link($m3u8) ? readlink($m3u8) : 'live.m3u8';
+        $playlist = $dvrDir . '/' . $target;
+
+        if (!file_exists($playlist)) return false;
+
+        // Check the right segment pattern based on playlist
+        $segPattern = str_contains($target, 'playout') ? 'playout_*.ts' : 'seg_*.ts';
+        return count(glob($dvrDir . '/' . $segPattern) ?: []) >= $minSegments;
     }
 
     // ===================================================================

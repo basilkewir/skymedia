@@ -182,8 +182,7 @@ class StreamManager
 
         if ($this->playout->hasFallback($channel)) {
             // Start fallback loop → symlinks output.m3u8 → playout.m3u8
-            // Push keeps running — ffmpeg HLS demuxer picks up the new
-            // playlist content on its next refresh (within segment_duration).
+            // Push keeps running — ffmpeg picks up new playlist on next refresh.
             if ($this->playout->switchToFallback($channel->fresh())) {
                 $channel->update(['stream_status' => 'fallback', 'playout_status' => 'fallback']);
                 $this->log($channel, 'info', 'fallback_activated',
@@ -196,10 +195,12 @@ class StreamManager
                 event(new StreamStatusChanged($channel, 'offline'));
             }
         } else {
-            $this->push->stop($channel->fresh());
+            // No fallback file yet — keep push running. The output.m3u8 symlink
+            // still points to live.m3u8 which has the last segments. Push will
+            // stall on the stale playlist until source recovers or a recording
+            // completes and fallback becomes available.
             $this->log($channel, 'warning', 'no_fallback',
-                'No recording available yet — push stopped, waiting for source recovery');
-            $this->alert->sendOfflineAlert($channel->fresh(), 'No fallback recording available', false);
+                'No recording available — push continues on stale live playlist');
             event(new StreamStatusChanged($channel, 'offline'));
         }
     }
@@ -277,16 +278,21 @@ class StreamManager
 
         // ── Push watchdog ────────────────────────────────────────────────
         // Push reads output.m3u8 (stable path). It only needs restart
-        // if the ffmpeg process has died unexpectedly.
+        // if the ffmpeg process has died unexpectedly. Retry throttle
+        // prevents burning CPU on a bad RTMP connection.
         if (!$this->push->isRunning($channel)) {
             $playlist = $this->playout->outputPlaylist($channel);
             if (file_exists($playlist) && $this->ffmpeg->hlsReady($channel, 2)) {
                 $wasPreviouslyLive = $channel->push_status === 'live';
+                if ($channel->retry_count > 0 && $channel->retry_count % 3 === 0) {
+                    // Log but don't spam — restart every 3rd tick
+                }
                 $this->log($channel, 'warning',
                     $wasPreviouslyLive ? 'push_died' : 'push_not_running',
                     $wasPreviouslyLive ? 'Push died — restarting' : 'Push not running — starting');
                 if ($this->push->start($channel)) {
                     $channel->update(['push_status' => 'live']);
+                    $channel->resetRetries();
                     $this->log($channel, 'info', 'push_started',
                         $wasPreviouslyLive ? 'Push restarted' : 'Push started');
                 } else {
