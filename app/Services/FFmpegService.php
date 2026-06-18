@@ -91,6 +91,10 @@ class FFmpegService
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
             '-timeout',            '10000000',
+            '-reconnect',          '1',
+            '-reconnect_at_eof',   '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max','5',
             '-i',                  $playlistPath,
         ];
 
@@ -382,12 +386,17 @@ class FFmpegService
             case ($type === 'hls' && !$isHttpMpegts):
                 return [
                     '-re',
-                    '-fflags',             '+genpts',
+                    '-fflags',             '+genpts+discardcorrupt',
                     '-probesize',          $probesize,
                     '-analyzeduration',    $analyze,
-                    '-allowed_extensions', 'ALL',   // HLS ONLY
+                    '-allowed_extensions', 'ALL',
                     '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
                     '-timeout',            '15000000',
+                    '-reconnect',          '1',
+                    '-reconnect_at_eof',   '1',
+                    '-reconnect_streamed', '1',
+                    '-reconnect_delay_max','5',
+                    '-live_start_index',   '-3',
                     '-i',                  $url,
                 ];
 
