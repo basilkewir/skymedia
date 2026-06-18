@@ -180,27 +180,23 @@ class StreamManager
             'record_status' => 'idle',
         ]);
 
-        if ($this->playout->hasFallback($channel)) {
-            // Start fallback loop → symlinks output.m3u8 → playout.m3u8
-            // Push keeps running — ffmpeg picks up new playlist on next refresh.
+        $this->alert->sendOfflineAlert($channel->fresh(), 'Source unreachable', $this->playout->hasFallback($channel));
+
+        if ($this->playout->hasFallback($channel->fresh())) {
             if ($this->playout->switchToFallback($channel->fresh())) {
                 $channel->update(['stream_status' => 'fallback', 'playout_status' => 'fallback']);
-                $this->log($channel, 'info', 'fallback_activated',
-                    'Playout on fallback — push continues uninterrupted via output.m3u8 symlink');
-                $this->alert->sendOfflineAlert($channel->fresh(), 'Source unreachable', true);
+                $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
                 event(new StreamStatusChanged($channel, 'fallback'));
+                // Ensure push is running to serve the fallback
+                if (!$this->push->isRunning($channel->fresh())) {
+                    $this->push->start($channel->fresh());
+                }
             } else {
                 $this->log($channel, 'error', 'fallback_failed', 'Fallback playout failed to start');
-                $this->alert->sendOfflineAlert($channel->fresh(), 'Fallback playout failed', false);
                 event(new StreamStatusChanged($channel, 'offline'));
             }
         } else {
-            // No fallback file yet — keep push running. The output.m3u8 symlink
-            // still points to live.m3u8 which has the last segments. Push will
-            // stall on the stale playlist until source recovers or a recording
-            // completes and fallback becomes available.
-            $this->log($channel, 'warning', 'no_fallback',
-                'No recording available — push continues on stale live playlist');
+            $this->log($channel, 'warning', 'no_fallback', 'No recording yet — will retry fallback each tick');
             event(new StreamStatusChanged($channel, 'offline'));
         }
     }
@@ -324,16 +320,26 @@ class StreamManager
 
     protected function onSourceStillDown(Channel $channel): void
     {
-        // ── Fallback playout watchdog ────────────────────────────────────
-        if ($channel->playout_status === 'fallback' && !$this->playout->isFallbackRunning($channel)) {
-            $this->log($channel, 'warning', 'fallback_restart', 'Fallback playout died — restarting');
+        // ── If no fallback was available when source dropped, keep trying ──
+        if ($channel->playout_status !== 'fallback' && $this->playout->hasFallback($channel)) {
+            $this->log($channel, 'info', 'fallback_now_available', 'Recording ready — switching to VOD loop');
             if ($this->playout->switchToFallback($channel)) {
-                $channel->update(['playout_status' => 'fallback']);
-                $this->log($channel, 'info', 'fallback_restarted', 'Fallback playout restarted');
+                $channel->update(['stream_status' => 'fallback', 'playout_status' => 'fallback']);
+                $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
+                event(new StreamStatusChanged($channel, 'fallback'));
             }
         }
 
-        // ── Push watchdog — only if the process died (symlink handles content switch) ──
+        // ── Fallback watchdog — restart loop if it died ──────────────────
+        if ($channel->playout_status === 'fallback' && !$this->playout->isFallbackRunning($channel)) {
+            $this->log($channel, 'warning', 'fallback_restart', 'Fallback loop died — restarting');
+            if ($this->playout->switchToFallback($channel)) {
+                $channel->update(['playout_status' => 'fallback']);
+                $this->log($channel, 'info', 'fallback_restarted', 'Fallback loop restarted');
+            }
+        }
+
+        // ── Push watchdog ────────────────────────────────────────────────
         if (!$this->push->isRunning($channel)) {
             $playlist = $this->playout->outputPlaylist($channel);
             if (file_exists($playlist)) {

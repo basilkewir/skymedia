@@ -149,7 +149,7 @@ class PlayoutService
             '-f',                    'hls',
             '-hls_time',             (string) $segDur,
             '-hls_list_size',        '10',
-            '-hls_flags',            'delete_segments+omit_endlist',
+            '-hls_flags',            'delete_segments+append_list',
             '-hls_delete_threshold', '2',
             '-hls_segment_type',     'mpegts',
             '-hls_segment_filename', $segPattern,
