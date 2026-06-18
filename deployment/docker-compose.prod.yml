@@ -1,0 +1,60 @@
+services:
+
+  app:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    environment:
+      SKYMEDIA_PROD: "true"
+      APP_URL: "${APP_URL:-http://localhost}"
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_DATABASE: skymedia
+      DB_USERNAME: skymedia
+      DB_PASSWORD: "${DB_PASSWORD}"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - storage_data:/var/www/skymedia/storage
+      - dvr_data:/var/skymedia/dvr
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: skymedia
+      MYSQL_USER: skymedia
+      MYSQL_PASSWORD: "${DB_PASSWORD}"
+      MYSQL_ROOT_PASSWORD: "${DB_ROOT_PASSWORD}"
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "skymedia", "-p${DB_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  db_data:
+  redis_data:
+  storage_data:
+  dvr_data:
