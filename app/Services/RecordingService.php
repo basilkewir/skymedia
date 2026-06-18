@@ -103,10 +103,8 @@ class RecordingService
                     'filesize'     => filesize($recording->filepath),
                     'completed_at' => now(),
                 ]);
-                // Promote to fallback if no fallback exists yet
-                if (!$channel->fallback_recording_path) {
-                    $channel->update(['fallback_recording_path' => $recording->filepath]);
-                }
+                // Always promote latest completed recording as fallback
+                $channel->update(['fallback_recording_path' => $recording->filepath]);
             } else {
                 $recording->update(['status' => 'failed', 'completed_at' => now()]);
             }
@@ -200,16 +198,25 @@ class RecordingService
 
     public function shouldRecord(Channel $channel): bool
     {
-        if ($channel->record_duration <= 0) return false;
         if ($this->isRunning($channel)) return false;
         if ($channel->record_status === 'recording') return false;
-        return $this->ffmpeg->hlsReady($channel, 2);
+        if (!$this->ffmpeg->hlsReady($channel, 2)) return false;
+
+        // Continuous mode: always record when live (splits into rolling files)
+        if ($channel->record_duration <= 0) {
+            return true;
+        }
+
+        return true;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
 
     private function buildCommand(Channel $channel, string $inputPath, string $output): array
     {
+        // Segment duration: use record_duration if set, otherwise default to 1 hour
+        $segmentDuration = $channel->record_duration > 0 ? $channel->record_duration : 3600;
+
         $cmd = [
             $this->ffmpeg->getBin(),
             '-y',
@@ -233,7 +240,7 @@ class RecordingService
         }
 
         $cmd = array_merge($cmd, [
-            '-t',                  (string) $channel->record_duration,
+            '-t',                  (string) $segmentDuration,
             '-c:v',                $channel->recording_burn_timestamp ? 'libx264' : 'copy',
             '-c:a',                $channel->recording_burn_timestamp ? 'aac' : 'copy',
             '-movflags',           '+faststart',
