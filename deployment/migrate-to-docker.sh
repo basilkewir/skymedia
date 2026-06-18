@@ -53,11 +53,15 @@ step "1 / 6  Backup database"
 mkdir -p "${BACKUP_DIR}"
 
 if [[ "${DB_CONN}" == "mysql" ]] && command -v mysqldump &>/dev/null; then
-    BACKUP_FILE="${BACKUP_DIR}/skymedia_premigration_${TIMESTAMP}.sql.gz"
-    mysqldump -h"${DB_HOST}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" \
-        --single-transaction --add-drop-table "${DB_DATABASE}" \
-        | gzip > "${BACKUP_FILE}"
-    ok "MySQL backup → ${BACKUP_FILE}"
+    if mysqladmin -h"${DB_HOST}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" ping --connect-timeout=5 &>/dev/null; then
+        BACKUP_FILE="${BACKUP_DIR}/skymedia_premigration_${TIMESTAMP}.sql.gz"
+        mysqldump -h"${DB_HOST}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" \
+            --single-transaction --add-drop-table "${DB_DATABASE}" \
+            | gzip > "${BACKUP_FILE}"
+        ok "MySQL backup → ${BACKUP_FILE}"
+    else
+        warn "MySQL not reachable — skipping backup (fresh Docker MySQL will be used)"
+    fi
 elif [[ "${DB_CONN}" == "sqlite" ]]; then
     DB_FILE="${DB_DATABASE}"
     [[ "${DB_FILE}" != /* ]] && DB_FILE="${APP_DIR}/${DB_FILE:-database/database.sqlite}"
