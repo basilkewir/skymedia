@@ -59,20 +59,21 @@ class PlayoutService
 
     public function switchToFallback(Channel $channel): bool
     {
-        $file = $this->resolveFallbackFile($channel);
-        if (!$file) {
-            Log::warning("[Playout] {$channel->name}: no fallback file available");
+        $files = $this->resolveFallbackFiles($channel);
+        if (empty($files)) {
+            Log::warning("[Playout] {$channel->name}: no fallback files available");
             return false;
         }
 
         $this->stopFallbackProcess($channel);
 
-        $pidFile = $this->ffmpeg->pidFile($channel, 'playout');
-        $logFile = $this->ffmpeg->logFile($channel, 'playout');
+        $concatFile = $this->buildConcatList($channel, $files);
+        $pidFile    = $this->ffmpeg->pidFile($channel, 'playout');
+        $logFile    = $this->ffmpeg->logFile($channel, 'playout');
 
         try {
             $pid = $this->ffmpeg->startProcess(
-                $this->buildFallbackCommand($channel, $file),
+                $this->buildFallbackCommand($channel, $concatFile),
                 $pidFile,
                 $logFile,
                 6
@@ -83,13 +84,13 @@ class PlayoutService
             return false;
         }
 
-        // Atomically swap the symlink — push picks up playout.m3u8 on next refresh
         $link = $this->outputPlaylist($channel);
         @unlink($link);
         symlink('playout.m3u8', $link);
 
+        $fileList = implode(', ', array_map('basename', $files));
         $channel->update(['playout_pid' => $pid, 'playout_status' => 'fallback']);
-        Log::info("[Playout] {$channel->name} fallback started — PID {$pid} — {$file}");
+        Log::info("[Playout] {$channel->name} fallback loop started — PID {$pid} — [{$fileList}]");
         return true;
     }
 
@@ -116,7 +117,7 @@ class PlayoutService
 
     public function hasFallback(Channel $channel): bool
     {
-        return $this->resolveFallbackFile($channel) !== null;
+        return !empty($this->resolveFallbackFiles($channel));
     }
 
     // ── Internal ────────────────────────────────────────────────────────
@@ -131,7 +132,7 @@ class PlayoutService
         $this->ffmpeg->clearPid($pidFile);
     }
 
-    private function buildFallbackCommand(Channel $channel, string $file): array
+    private function buildFallbackCommand(Channel $channel, string $concatFile): array
     {
         $dvrDir     = $channel->dvr_directory;
         $segPattern = "{$dvrDir}/playout_%05d.ts";
@@ -141,9 +142,11 @@ class PlayoutService
         return [
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
-            '-stream_loop', '-1',
+            '-stream_loop', '-1',   // loop the entire concat list indefinitely
             '-re',
-            '-i', $file,
+            '-safe',  '0',
+            '-f',     'concat',
+            '-i',     $concatFile,
             '-c:v', 'copy',
             '-c:a', 'copy',
             '-f',                    'hls',
@@ -158,33 +161,48 @@ class PlayoutService
         ];
     }
 
-    private function resolveFallbackFile(Channel $channel): ?string
+    /**
+     * Write a concat list file: recordings oldest-first, then slate if available.
+     * Returns the path to the concat file.
+     */
+    private function buildConcatList(Channel $channel, array $files): string
     {
-        // 1. Latest completed recording
-        if ($channel->fallback_recording_path
-            && file_exists($channel->fallback_recording_path)
-            && filesize($channel->fallback_recording_path) > 1024) {
-            return $channel->fallback_recording_path;
-        }
+        $path  = $channel->dvr_directory . '/playout_concat.txt';
+        $lines = array_map(fn($f) => "file '" . str_replace("'", "'\\''", $f) . "'", $files);
+        file_put_contents($path, implode("\n", $lines));
+        return $path;
+    }
 
-        // 2. Any rec_*.mp4 on disk
-        $files = glob($channel->dvr_directory . '/rec_*.mp4') ?: [];
-        if (!empty($files)) {
-            usort($files, fn($a, $b) => filemtime($b) - filemtime($a));
-            if (filesize($files[0]) > 1024) return $files[0];
-        }
+    /**
+     * Returns ordered list of files to loop: recordings oldest→newest, then slate.
+     * Falls back to slate-only if no recordings exist.
+     */
+    private function resolveFallbackFiles(Channel $channel): array
+    {
+        $files = [];
 
-        // 3. Slate ("be back soon") — generate on demand if missing
-        $slate = $channel->dvr_directory . '/slate.mp4';
-        if (!file_exists($slate) || filesize($slate) < 1024) {
-            try {
-                $generator = app(\App\Console\Commands\GenerateSlate::class);
-                $generator->generateSlate($channel);
-            } catch (\Throwable $e) {
-                Log::error("[Playout] Slate generation failed for {$channel->name}: {$e->getMessage()}");
+        // Collect all completed recordings, oldest first
+        $recs = glob($channel->dvr_directory . '/rec_*.mp4') ?: [];
+        usort($recs, fn($a, $b) => filemtime($a) - filemtime($b)); // oldest first
+        foreach ($recs as $f) {
+            if (file_exists($f) && filesize($f) > 1024) {
+                $files[] = $f;
             }
         }
 
-        return (file_exists($slate) && filesize($slate) > 1024) ? $slate : null;
+        // Always append slate as final entry so there is always something to show
+        $slate = $channel->dvr_directory . '/slate.mp4';
+        if (!file_exists($slate) || filesize($slate) < 1024) {
+            try {
+                app(\App\Console\Commands\GenerateSlate::class)->generateSlate($channel);
+            } catch (\Throwable $e) {
+                Log::error("[Playout] Slate generation failed: {$e->getMessage()}");
+            }
+        }
+        if (file_exists($slate) && filesize($slate) > 1024) {
+            $files[] = $slate;
+        }
+
+        return $files;
     }
 }
