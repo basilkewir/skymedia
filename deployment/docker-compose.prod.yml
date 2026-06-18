@@ -6,7 +6,7 @@ services:
       dockerfile: deployment/Dockerfile
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "8080:80"
     environment:
       SKYMEDIA_PROD: "true"
       APP_URL: "${APP_URL:-http://localhost}"
