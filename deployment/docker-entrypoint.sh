@@ -85,6 +85,9 @@ fi
 php artisan config:clear --quiet 2>/dev/null || true
 php artisan route:clear --quiet 2>/dev/null || true
 
+# ── Generate slates for all channels ────────────────────────────────
+php artisan channels:generate-slate 2>/dev/null || true
+
 echo "=== Ready ==="
 
 exec /usr/bin/supervisord -n -c /etc/supervisor/supervisord.conf

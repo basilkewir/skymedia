@@ -160,19 +160,31 @@ class PlayoutService
 
     private function resolveFallbackFile(Channel $channel): ?string
     {
+        // 1. Latest completed recording
         if ($channel->fallback_recording_path
             && file_exists($channel->fallback_recording_path)
             && filesize($channel->fallback_recording_path) > 1024) {
             return $channel->fallback_recording_path;
         }
 
+        // 2. Any rec_*.mp4 on disk
         $files = glob($channel->dvr_directory . '/rec_*.mp4') ?: [];
-        if (empty($files)) {
-            return null;
+        if (!empty($files)) {
+            usort($files, fn($a, $b) => filemtime($b) - filemtime($a));
+            if (filesize($files[0]) > 1024) return $files[0];
         }
 
-        usort($files, fn($a, $b) => filemtime($b) - filemtime($a));
-        $file = $files[0];
-        return (filesize($file) > 1024) ? $file : null;
+        // 3. Slate ("be back soon") — generate on demand if missing
+        $slate = $channel->dvr_directory . '/slate.mp4';
+        if (!file_exists($slate) || filesize($slate) < 1024) {
+            try {
+                $generator = app(\App\Console\Commands\GenerateSlate::class);
+                $generator->generateSlate($channel);
+            } catch (\Throwable $e) {
+                Log::error("[Playout] Slate generation failed for {$channel->name}: {$e->getMessage()}");
+            }
+        }
+
+        return (file_exists($slate) && filesize($slate) > 1024) ? $slate : null;
     }
 }

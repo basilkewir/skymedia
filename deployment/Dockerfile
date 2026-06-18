@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     php8.2-xml php8.2-curl php8.2-bcmath php8.2-zip php8.2-gd \
     php8.2-intl php8.2-redis php8.2-mysql \
     nginx supervisor ffmpeg git unzip sqlite3 \
-    nodejs npm \
+    nodejs npm fonts-dejavu-core fonts-noto \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── Composer ───────────────────────────────────────────────────────
