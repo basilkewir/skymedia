@@ -141,6 +141,11 @@ supervisorctl tail -f skymedia-monitor
 ## Artisan Commands
 
 ```bash
+# Reset admin password (auto-generates password if --password is omitted)
+php artisan admin:reset-password
+php artisan admin:reset-password --email=admin@example.com
+php artisan admin:reset-password --email=admin@example.com --password=mynewpassword
+
 # Start all active channels
 php artisan streams:activate-all
 
