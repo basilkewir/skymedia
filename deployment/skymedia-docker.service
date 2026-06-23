@@ -1,0 +1,17 @@
+[Unit]
+Description=SkyMedia Docker Compose Stack
+Requires=docker.service
+After=docker.service network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/var/www/skymedia
+ExecStart=/usr/bin/docker compose -f deployment/docker-compose.prod.yml up -d
+ExecStop=/usr/bin/docker compose -f deployment/docker-compose.prod.yml down
+ExecReload=/usr/bin/docker compose -f deployment/docker-compose.prod.yml up -d --build
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
