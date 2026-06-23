@@ -38,6 +38,9 @@ COPY . .
 # ── PHP deps ────────────────────────────────────────────────────────
 RUN composer install --no-interaction --prefer-dist --optimize-autoloader --no-dev
 
+# ── Frontend assets ─────────────────────────────────────────────────
+RUN npm install && npm run build
+
 # ── Entrypoint ──────────────────────────────────────────────────────
 COPY deployment/docker-entrypoint.sh /usr/local/bin/entrypoint
 RUN chmod +x /usr/local/bin/entrypoint
