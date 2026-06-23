@@ -45,7 +45,8 @@ fi
 mkdir -p storage/framework/{cache,sessions,testing,views}
 mkdir -p storage/logs/streams
 mkdir -p storage/app/{pids,dvr}
-chmod -R 777 storage bootstrap/cache database 2>/dev/null || true
+mkdir -p "${DVR_BASE_PATH:-/var/skymedia/dvr}"
+chmod -R 777 storage bootstrap/cache database "${DVR_BASE_PATH:-/var/skymedia/dvr}" 2>/dev/null || true
 
 # ── NPM build (only if not already built) ──────────────────────────
 if [ ! -f public/build/manifest.json ] || [ ! -d public/build ]; then

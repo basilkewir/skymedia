@@ -9,41 +9,60 @@ use App\Models\PushDestination;
 use App\Services\FFmpegService;
 use App\Services\PlayoutService;
 use App\Services\PushService;
+use Illuminate\Support\Facades\File;
 use Mockery;
+use Mockery\MockInterface;
 use Tests\TestCase;
 
 class PushServiceTest extends TestCase
 {
     private PushService $push;
-    private \Mockery\MockInterface $ffmpeg;
-    private \Mockery\MockInterface $playout;
+
+    private MockInterface $ffmpeg;
+
+    private MockInterface $playout;
+
     private Channel $channel;
+
+    private string $dvrBase;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $this->ffmpeg  = Mockery::mock(FFmpegService::class);
+        $this->dvrBase = sys_get_temp_dir() . '/skymedia_push_test_' . uniqid();
+        config(['skymedia.dvr_base_path' => $this->dvrBase]);
+
+        $this->ffmpeg = Mockery::mock(FFmpegService::class);
         $this->playout = Mockery::mock(PlayoutService::class);
 
         $this->push = new PushService($this->ffmpeg, $this->playout);
 
         $this->channel = Channel::create([
-            'name'             => 'PushTest',
-            'slug'             => 'push-test-' . fake()->randomNumber(4),
-            'source_type'      => 'hls',
-            'source_url'       => 'https://example.com/stream.m3u8',
-            'push_protocol'    => 'rtmp',
-            'push_url'         => 'rtmp://live.example.com/live',
-            'push_stream_key'  => 'key123',
+            'name' => 'PushTest',
+            'slug' => 'push-test-' . fake()->randomNumber(4),
+            'source_type' => 'hls',
+            'source_url' => 'https://example.com/stream.m3u8',
+            'push_protocol' => 'rtmp',
+            'push_url' => 'rtmp://live.example.com/live',
+            'push_stream_key' => 'key123',
             'push_video_codec' => 'copy',
             'push_audio_codec' => 'aac',
-            'dvr_duration'     => 3600,
+            'dvr_duration' => 3600,
             'segment_duration' => 6,
-            'record_duration'  => 0,
-            'check_interval'   => 5,
-            'max_retries'      => 3,
+            'record_duration' => 0,
+            'check_interval' => 5,
+            'max_retries' => 3,
         ]);
+    }
+
+    protected function tearDown(): void
+    {
+        if (is_dir($this->dvrBase)) {
+            File::deleteDirectory($this->dvrBase);
+        }
+
+        parent::tearDown();
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -53,12 +72,13 @@ class PushServiceTest extends TestCase
     /** @test */
     public function it_starts_push_when_playlist_exists(): void
     {
-        $playlist = '/tmp/test-dvr/live.m3u8';
-        $command  = ['ffmpeg', '-i', $playlist, 'rtmp://live.example.com/live/key123'];
+        $dvrDir = $this->channel->dvr_directory;
+        $playlist = $dvrDir . '/live.m3u8';
+        $command = ['ffmpeg', '-i', $playlist, 'rtmp://live.example.com/live/key123'];
 
         $this->playout->shouldReceive('outputPlaylist')->once()->andReturn($playlist);
-        $this->ffmpeg->shouldReceive('pidFile')->twice()->andReturn('/tmp/pid', '/tmp/pid');
-        $this->ffmpeg->shouldReceive('readPid')->once()->andReturn(0);
+        $this->ffmpeg->shouldReceive('pidFile')->times(3)->andReturn('/tmp/pid');
+        $this->ffmpeg->shouldReceive('readPid')->twice()->andReturn(0);
         $this->ffmpeg->shouldReceive('buildPushCommand')->once()->andReturn($command);
         $this->ffmpeg->shouldReceive('logFile')->once()->andReturn('/tmp/log');
         $this->ffmpeg->shouldReceive('startProcess')->once()->andReturn(9999);
@@ -66,8 +86,9 @@ class PushServiceTest extends TestCase
         $this->ffmpeg->shouldReceive('stopProcess')->never();
 
         // Setup playlist file
-        $dvrDir = $this->channel->dvr_directory;
-        if (!is_dir($dvrDir)) mkdir($dvrDir, 0755, true);
+        if (! is_dir($dvrDir)) {
+            mkdir($dvrDir, 0755, true);
+        }
         file_put_contents($playlist, '#EXTM3U');
 
         $result = $this->push->start($this->channel);
@@ -77,15 +98,16 @@ class PushServiceTest extends TestCase
         $this->assertSame(9999, $this->channel->fresh()->push_pid);
 
         unlink($playlist);
-        rmdir($dvrDir);
+        
     }
 
     /** @test */
     public function it_fails_when_push_url_is_empty(): void
     {
-        $this->channel->update(['push_url' => '']);
+        $this->channel->push_url = '';
+        $this->channel->save();
 
-        $result = $this->push->start($this->channel);
+        $result = $this->push->start($this->channel->fresh());
 
         $this->assertFalse($result);
     }
@@ -96,6 +118,8 @@ class PushServiceTest extends TestCase
         $playlist = '/nonexistent/live.m3u8';
 
         $this->playout->shouldReceive('outputPlaylist')->once()->andReturn($playlist);
+        $this->ffmpeg->shouldReceive('pidFile')->once()->andReturn('/tmp/pid');
+        $this->ffmpeg->shouldReceive('readPid')->once()->andReturn(0);
 
         $result = $this->push->start($this->channel);
 
@@ -105,19 +129,22 @@ class PushServiceTest extends TestCase
     /** @test */
     public function it_fails_and_sets_error_when_ffmpeg_crashes(): void
     {
-        $playlist = '/tmp/test-dvr/live.m3u8';
-        $command  = ['ffmpeg', '-i', $playlist, 'rtmp://live.example.com/live/key123'];
+        $dvrDir = $this->channel->dvr_directory;
+        $playlist = $dvrDir . '/live.m3u8';
+        $command = ['ffmpeg', '-i', $playlist, 'rtmp://live.example.com/live/key123'];
 
         $this->playout->shouldReceive('outputPlaylist')->once()->andReturn($playlist);
-        $this->ffmpeg->shouldReceive('pidFile')->twice()->andReturn('/tmp/pid');
-        $this->ffmpeg->shouldReceive('readPid')->once()->andReturn(0);
+        $this->ffmpeg->shouldReceive('pidFile')->times(3)->andReturn('/tmp/pid');
+        $this->ffmpeg->shouldReceive('readPid')->twice()->andReturn(0);
         $this->ffmpeg->shouldReceive('buildPushCommand')->once()->andReturn($command);
-        $this->ffmpeg->shouldReceive('logFile')->once()->andReturn('/tmp/log');
+        $this->ffmpeg->shouldReceive('logFile')->twice()->andReturn('/tmp/log');
         $this->ffmpeg->shouldReceive('startProcess')->once()->andThrow(new \RuntimeException('ffmpeg not found'));
+        $this->ffmpeg->shouldReceive('readLogTail')->once()->andReturn('(log not found)');
         $this->ffmpeg->shouldReceive('clearPid')->once();
 
-        $dvrDir = $this->channel->dvr_directory;
-        if (!is_dir($dvrDir)) mkdir($dvrDir, 0755, true);
+        if (! is_dir($dvrDir)) {
+            mkdir($dvrDir, 0755, true);
+        }
         file_put_contents($playlist, '#EXTM3U');
 
         $result = $this->push->start($this->channel);
@@ -126,27 +153,29 @@ class PushServiceTest extends TestCase
         $this->assertSame('error', $this->channel->fresh()->push_status);
 
         unlink($playlist);
-        rmdir($dvrDir);
+        
     }
 
     /** @test */
     public function it_stops_existing_push_before_starting_new_one(): void
     {
-        $playlist = '/tmp/test-dvr/live.m3u8';
-        $command  = ['ffmpeg', '-i', $playlist, 'rtmp://live.example.com/live/key123'];
-        $oldPid   = 8888;
+        $dvrDir = $this->channel->dvr_directory;
+        $playlist = $dvrDir . '/live.m3u8';
+        $command = ['ffmpeg', '-i', $playlist, 'rtmp://live.example.com/live/key123'];
+        $oldPid = 8888;
 
         $this->playout->shouldReceive('outputPlaylist')->once()->andReturn($playlist);
-        $this->ffmpeg->shouldReceive('pidFile')->times(4)->andReturn('/tmp/pid');
-        $this->ffmpeg->shouldReceive('readPid')->once()->andReturn($oldPid);
+        $this->ffmpeg->shouldReceive('pidFile')->times(3)->andReturn('/tmp/pid');
+        $this->ffmpeg->shouldReceive('readPid')->twice()->andReturn(0, $oldPid);
         $this->ffmpeg->shouldReceive('stopProcess')->once()->with($oldPid);
-        $this->ffmpeg->shouldReceive('clearPid')->twice();
+        $this->ffmpeg->shouldReceive('clearPid')->once();
         $this->ffmpeg->shouldReceive('buildPushCommand')->once()->andReturn($command);
         $this->ffmpeg->shouldReceive('logFile')->once()->andReturn('/tmp/log');
         $this->ffmpeg->shouldReceive('startProcess')->once()->andReturn(9999);
 
-        $dvrDir = $this->channel->dvr_directory;
-        if (!is_dir($dvrDir)) mkdir($dvrDir, 0755, true);
+        if (! is_dir($dvrDir)) {
+            mkdir($dvrDir, 0755, true);
+        }
         file_put_contents($playlist, '#EXTM3U');
 
         $result = $this->push->start($this->channel);
@@ -154,7 +183,7 @@ class PushServiceTest extends TestCase
         $this->assertTrue($result);
 
         unlink($playlist);
-        rmdir($dvrDir);
+        
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -165,7 +194,7 @@ class PushServiceTest extends TestCase
     public function it_stops_push_and_sets_status_to_stopped(): void
     {
         $pidFile = '/tmp/pid';
-        $pid     = 9999;
+        $pid = 9999;
 
         $this->ffmpeg->shouldReceive('pidFile')->once()->andReturn($pidFile);
         $this->ffmpeg->shouldReceive('readPid')->once()->andReturn($pid);
@@ -211,7 +240,7 @@ class PushServiceTest extends TestCase
     public function it_delegates_is_running_to_ffmpeg(): void
     {
         $pidFile = '/tmp/pid';
-        $pid     = 9999;
+        $pid = 9999;
 
         $this->ffmpeg->shouldReceive('pidFile')->once()->andReturn($pidFile);
         $this->ffmpeg->shouldReceive('readPid')->once()->andReturn($pid);
@@ -230,7 +259,9 @@ class PushServiceTest extends TestCase
     public function it_starts_dvr_playback_when_concat_exists(): void
     {
         $dvrDir = $this->channel->dvr_directory;
-        if (!is_dir($dvrDir)) mkdir($dvrDir, 0755, true);
+        if (! is_dir($dvrDir)) {
+            mkdir($dvrDir, 0755, true);
+        }
         file_put_contents("{$dvrDir}/concat.txt", "file 'seg_00001.ts'");
 
         $this->ffmpeg->shouldReceive('pidFile')->twice()->andReturn('/tmp/pid');
@@ -246,7 +277,7 @@ class PushServiceTest extends TestCase
         $this->assertSame('dvr_playback', $this->channel->fresh()->push_status);
 
         unlink("{$dvrDir}/concat.txt");
-        rmdir($dvrDir);
+        
     }
 
     /** @test */
@@ -264,18 +295,19 @@ class PushServiceTest extends TestCase
     /** @test */
     public function it_starts_enabled_destinations(): void
     {
-        $playlist = '/tmp/test-dvr/live.m3u8';
-        $command  = ['ffmpeg', '-i', $playlist, 'rtmp://primary/live/key123'];
+        $dvrDir = $this->channel->dvr_directory;
+        $playlist = $dvrDir . '/live.m3u8';
+        $command = ['ffmpeg', '-i', $playlist, 'rtmp://primary/live/key123'];
 
         $this->playout->shouldReceive('outputPlaylist')->once()->andReturn($playlist);
 
         $dest = PushDestination::create([
             'channel_id' => $this->channel->id,
-            'name'       => 'Backup',
-            'url'        => 'rtmp://backup.example.com/live',
+            'name' => 'Backup',
+            'url' => 'rtmp://backup.example.com/live',
             'stream_key' => 'bk123',
-            'protocol'   => 'rtmp',
-            'enabled'    => true,
+            'protocol' => 'rtmp',
+            'enabled' => true,
         ]);
 
         $this->ffmpeg->shouldReceive('pidFile')->times(4)->andReturn('/tmp/pid');
@@ -283,10 +315,11 @@ class PushServiceTest extends TestCase
         $this->ffmpeg->shouldReceive('buildPushCommand')->twice()->andReturn($command);
         $this->ffmpeg->shouldReceive('logFile')->twice()->andReturn('/tmp/log');
         $this->ffmpeg->shouldReceive('startProcess')->twice()->andReturn(9999, 8888);
-        $this->ffmpeg->shouldReceive('clearPid')->twice();
+        $this->ffmpeg->shouldReceive('clearPid')->once();
 
-        $dvrDir = $this->channel->dvr_directory;
-        if (!is_dir($dvrDir)) mkdir($dvrDir, 0755, true);
+        if (! is_dir($dvrDir)) {
+            mkdir($dvrDir, 0755, true);
+        }
         file_put_contents($playlist, '#EXTM3U');
 
         $result = $this->push->start($this->channel);
@@ -296,39 +329,41 @@ class PushServiceTest extends TestCase
         $this->assertSame('live', $dest->status);
 
         unlink($playlist);
-        rmdir($dvrDir);
+        
     }
 
     /** @test */
     public function it_skips_already_running_destinations(): void
     {
-        $playlist = '/tmp/test-dvr/live.m3u8';
-        $command  = ['ffmpeg', '-i', $playlist, 'rtmp://primary/live/key123'];
+        $dvrDir = $this->channel->dvr_directory;
+        $playlist = $dvrDir . '/live.m3u8';
+        $command = ['ffmpeg', '-i', $playlist, 'rtmp://primary/live/key123'];
 
         $this->playout->shouldReceive('outputPlaylist')->once()->andReturn($playlist);
 
-        $dest = PushDestination::create([
+        PushDestination::create([
             'channel_id' => $this->channel->id,
-            'name'       => 'Backup',
-            'url'        => 'rtmp://backup.example.com/live',
+            'name' => 'Backup',
+            'url' => 'rtmp://backup.example.com/live',
             'stream_key' => 'bk123',
-            'protocol'   => 'rtmp',
-            'enabled'    => true,
-            'pid'        => 5555,
+            'protocol' => 'rtmp',
+            'enabled' => true,
+            'pid' => 5555,
         ]);
 
         $this->ffmpeg->shouldReceive('isRunning')->once()->with(5555)->andReturn(true);
 
         // Primary push mocks
-        $this->ffmpeg->shouldReceive('pidFile')->times(2)->andReturn('/tmp/pid');
-        $this->ffmpeg->shouldReceive('readPid')->once()->andReturn(0);
+        $this->ffmpeg->shouldReceive('pidFile')->times(3)->andReturn('/tmp/pid');
+        $this->ffmpeg->shouldReceive('readPid')->twice()->andReturn(0);
         $this->ffmpeg->shouldReceive('buildPushCommand')->once()->andReturn($command);
         $this->ffmpeg->shouldReceive('logFile')->once()->andReturn('/tmp/log');
         $this->ffmpeg->shouldReceive('startProcess')->once()->andReturn(9999);
         $this->ffmpeg->shouldReceive('clearPid')->once();
 
-        $dvrDir = $this->channel->dvr_directory;
-        if (!is_dir($dvrDir)) mkdir($dvrDir, 0755, true);
+        if (! is_dir($dvrDir)) {
+            mkdir($dvrDir, 0755, true);
+        }
         file_put_contents($playlist, '#EXTM3U');
 
         $result = $this->push->start($this->channel);
@@ -336,7 +371,7 @@ class PushServiceTest extends TestCase
         $this->assertTrue($result);
 
         unlink($playlist);
-        rmdir($dvrDir);
+        
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -348,11 +383,11 @@ class PushServiceTest extends TestCase
     {
         // Use reflection to test private method
         $dest = new PushDestination([
-            'url'        => 'rtmp://example.com/live',
+            'url' => 'rtmp://example.com/live',
             'stream_key' => 'key123',
-            'protocol'   => 'rtmp',
-            'username'   => 'user',
-            'password'   => 'pass',
+            'protocol' => 'rtmp',
+            'username' => 'user',
+            'password' => 'pass',
         ]);
 
         $reflection = new \ReflectionClass($this->push);
@@ -368,11 +403,11 @@ class PushServiceTest extends TestCase
     public function it_builds_srt_destination_url(): void
     {
         $dest = new PushDestination([
-            'url'        => 'srt://example.com:9000',
+            'url' => 'srt://example.com:9000',
             'stream_key' => 'stream',
-            'protocol'   => 'srt',
-            'username'   => 'srtuser',
-            'password'   => 'srtpass',
+            'protocol' => 'srt',
+            'username' => 'srtuser',
+            'password' => 'srtpass',
         ]);
 
         $reflection = new \ReflectionClass($this->push);
@@ -384,5 +419,44 @@ class PushServiceTest extends TestCase
         $this->assertStringContainsString('mode=caller', $url);
         $this->assertStringContainsString('username=srtuser', $url);
         $this->assertStringContainsString('passphrase=srtpass', $url);
+    }
+
+    /** @test */
+    public function it_builds_hls_destination_url_with_local_path(): void
+    {
+        $dvrDir = sys_get_temp_dir() . '/skymedia_hls_dest_test_' . uniqid();
+
+        $dest = new PushDestination([
+            'url' => $dvrDir,
+            'stream_key' => 'channel1',
+            'protocol' => 'hls',
+        ]);
+
+        $reflection = new \ReflectionClass($this->push);
+        $method = $reflection->getMethod('buildDestinationUrl');
+
+        $url = $method->invoke($this->push, $dest);
+
+        $this->assertStringContainsString("{$dvrDir}/channel1/index.m3u8", $url);
+
+        @rmdir("{$dvrDir}/channel1");
+        @rmdir($dvrDir);
+    }
+
+    /** @test */
+    public function it_builds_hls_destination_url_with_http_target(): void
+    {
+        $dest = new PushDestination([
+            'url' => 'https://cdn.example.com/hls',
+            'stream_key' => 'channel1',
+            'protocol' => 'hls',
+        ]);
+
+        $reflection = new \ReflectionClass($this->push);
+        $method = $reflection->getMethod('buildDestinationUrl');
+
+        $url = $method->invoke($this->push, $dest);
+
+        $this->assertSame('https://cdn.example.com/hls/channel1/index.m3u8', $url);
     }
 }

@@ -6,6 +6,7 @@ namespace App\Jobs;
 
 use App\Models\Channel;
 use App\Models\Recording;
+use App\Services\FFmpegService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -37,13 +38,16 @@ class FinalizeRecording implements ShouldQueue
 
         $filepath = $recording->filepath;
 
-        if (!file_exists($filepath) || filesize($filepath) <= 1024) {
+        $ffmpeg = app(FFmpegService::class);
+
+        if (! $ffmpeg->isPlayableFile($filepath)) {
             $recording->update([
                 'status'       => 'failed',
                 'completed_at' => now(),
             ]);
             $channel->update(['record_pid' => null, 'record_status' => 'idle']);
-            Log::warning("[FinalizeRecording] {$channel->name}: empty or missing file {$filepath}");
+            @unlink($filepath);
+            Log::warning("[FinalizeRecording] {$channel->name}: file not playable {$filepath}");
             return;
         }
 
@@ -91,13 +95,19 @@ class FinalizeRecording implements ShouldQueue
 
     private function pruneOld(Channel $channel, int $keep = 3): void
     {
+        $minRetentionHours = max(1, (int) config('skymedia.min_recording_retention_hours', 24));
+        $retentionCutoff = now()->subHours($minRetentionHours);
+
         Recording::where('channel_id', $channel->id)
             ->where('status', 'completed')
             ->orderByDesc('completed_at')
             ->skip($keep)
             ->take(1000)
             ->get()
-            ->each(function (Recording $rec) use ($channel) {
+            ->each(function (Recording $rec) use ($channel, $retentionCutoff) {
+                if ($rec->completed_at !== null && $rec->completed_at->gt($retentionCutoff)) {
+                    return;
+                }
                 if ($rec->filepath !== $channel->fallback_recording_path) {
                     @unlink($rec->filepath);
                 }
@@ -106,7 +116,7 @@ class FinalizeRecording implements ShouldQueue
 
         Recording::where('channel_id', $channel->id)
             ->where('status', 'failed')
-            ->where('created_at', '<', now()->subHour())
+            ->where('created_at', '<', $retentionCutoff)
             ->each(function (Recording $rec) {
                 @unlink($rec->filepath);
                 $rec->delete();

@@ -36,6 +36,7 @@ class PushService
     {
         if (empty($channel->push_url)) {
             Log::warning("[Push] {$channel->name}: push_url is empty");
+
             return false;
         }
 
@@ -47,8 +48,9 @@ class PushService
         }
 
         $playlist = $this->playout->outputPlaylist($channel);
-        if (!file_exists($playlist)) {
+        if (! file_exists($playlist)) {
             Log::warning("[Push] {$channel->name}: playlist not ready ({$playlist})");
+
             return false;
         }
 
@@ -60,12 +62,13 @@ class PushService
         if ($pid === null) {
             // Log the failing command and tail of the log for diagnostics
             $logTail = $this->ffmpeg->readLogTail($this->ffmpeg->logFile($channel, 'push'), 20);
-            $cmdStr  = implode(' ', $cmd);
+            $cmdStr = implode(' ', $cmd);
             Log::error("[Push] {$channel->name} failed — command: {$cmdStr}");
-            if ($logTail && !str_starts_with($logTail, '(log not found')) {
+            if ($logTail && ! str_starts_with($logTail, '(log not found')) {
                 Log::error("[Push] {$channel->name} log tail:\n{$logTail}");
             }
             $channel->update(['push_pid' => null, 'push_status' => 'error', 'last_error' => substr("ffmpeg failed to start\n{$logTail}", 0, 1000)]);
+
             return false;
         }
 
@@ -88,14 +91,16 @@ class PushService
     public function isRunning(Channel $channel): bool
     {
         $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'push'));
+
         return $pid > 0 && $this->ffmpeg->isRunning($pid);
     }
 
     public function startDvrPlayback(Channel $channel): bool
     {
         $concat = $channel->dvr_directory . '/concat.txt';
-        if (!file_exists($concat)) {
+        if (! file_exists($concat)) {
             Log::warning("[Push] {$channel->name}: concat.txt not available");
+
             return false;
         }
 
@@ -109,11 +114,13 @@ class PushService
 
         if ($pid === null) {
             $channel->update(['push_pid' => null, 'push_status' => 'error']);
+
             return false;
         }
 
         $channel->update(['push_pid' => $pid, 'push_status' => 'dvr_playback']);
         Log::info("[Push] {$channel->name} DVR playback started — PID {$pid}");
+
         return true;
     }
 
@@ -124,16 +131,16 @@ class PushService
     public function startDestinations(Channel $channel, ?string $playlist = null): void
     {
         $playlist ??= $this->playout->outputPlaylist($channel);
-        if (!file_exists($playlist)) return;
+        if (! file_exists($playlist)) {
+            return;
+        }
 
         foreach ($channel->pushDestinations()->where('enabled', true)->get() as $dest) {
-            if ($dest->pid && $this->ffmpeg->isRunning((int) $dest->pid)) continue;
+            if ($dest->pid && $this->ffmpeg->isRunning((int) $dest->pid)) {
+                continue;
+            }
 
-            $pushUrl = $this->buildDestinationUrl($dest);
-            $cmd = $this->ffmpeg->buildPushCommand($channel, $playlist);
-
-            // Replace the URL in the command with the destination's URL
-            $cmd[count($cmd) - 1] = $pushUrl;
+            $cmd = $this->ffmpeg->buildPushCommand($channel, $playlist, $dest->protocol, $dest);
 
             $pid = $this->launchPush($cmd, $channel, "push_dest_{$dest->id}");
             if ($pid !== null) {
@@ -160,11 +167,9 @@ class PushService
     public function watchDestinations(Channel $channel, string $playlist): void
     {
         foreach ($channel->pushDestinations()->where('enabled', true)->get() as $dest) {
-            if ($dest->pid && !$this->ffmpeg->isRunning((int) $dest->pid)) {
+            if ($dest->pid && ! $this->ffmpeg->isRunning((int) $dest->pid)) {
                 Log::warning("[Push] {$channel->name} → {$dest->name} died — restarting");
-                $pushUrl = $this->buildDestinationUrl($dest);
-                $cmd = $this->ffmpeg->buildPushCommand($channel, $playlist);
-                $cmd[count($cmd) - 1] = $pushUrl;
+                $cmd = $this->ffmpeg->buildPushCommand($channel, $playlist, $dest->protocol, $dest);
 
                 $pid = $this->launchPush($cmd, $channel, "push_dest_{$dest->id}");
                 if ($pid !== null) {
@@ -189,6 +194,7 @@ class PushService
             return $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 8);
         } catch (\Throwable $e) {
             Log::error("[Push] {$channel->name} {$type} failed: {$e->getMessage()}");
+
             return null;
         }
     }
@@ -196,22 +202,44 @@ class PushService
     private function stopPrimary(Channel $channel): void
     {
         $pidFile = $this->ffmpeg->pidFile($channel, 'push');
-        $pid     = $this->ffmpeg->readPid($pidFile);
-        if ($pid > 0) $this->ffmpeg->stopProcess($pid);
+        $pid = $this->ffmpeg->readPid($pidFile);
+        if ($pid > 0) {
+            $this->ffmpeg->stopProcess($pid);
+        }
         $this->ffmpeg->clearPid($pidFile);
         $channel->update(['push_pid' => null]);
     }
 
     private function buildDestinationUrl(PushDestination $dest): string
     {
-        $target = rtrim($dest->url, '/') . '/' . $dest->stream_key;
+        $baseUrl = rtrim($dest->url, '/');
+        $prefix = $dest->stream_key ? trim($dest->stream_key, '/') . '/' : '';
+
+        if ($dest->protocol === 'hls') {
+            if (str_starts_with($baseUrl, 'http://') || str_starts_with($baseUrl, 'https://')) {
+                return "{$baseUrl}/{$prefix}index.m3u8";
+            }
+            $dir = "{$baseUrl}/{$prefix}";
+            if (! is_dir($dir)) {
+                mkdir($dir, 0755, true);
+            }
+
+            return "{$dir}index.m3u8";
+        }
+
+        $target = $baseUrl . '/' . $dest->stream_key;
 
         if ($dest->protocol === 'srt') {
             $latency = config('skymedia.srt_latency', 200) * 1000;
-            $base    = preg_replace('#^srt://#', '', $target);
-            $query   = "latency={$latency}&mode=caller";
-            if ($dest->username) $query .= '&username=' . urlencode($dest->username);
-            if ($dest->password) $query .= '&passphrase=' . urlencode($dest->password);
+            $base = preg_replace('#^srt://#', '', $target);
+            $query = "latency={$latency}&mode=caller";
+            if ($dest->username) {
+                $query .= '&username=' . urlencode($dest->username);
+            }
+            if ($dest->password) {
+                $query .= '&passphrase=' . urlencode($dest->password);
+            }
+
             return "srt://{$base}?{$query}";
         }
 

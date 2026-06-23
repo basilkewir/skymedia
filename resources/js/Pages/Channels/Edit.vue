@@ -56,20 +56,31 @@
                             <select v-model="form.push_protocol" class="form-input">
                                 <option value="rtmp">RTMP</option>
                                 <option value="srt">SRT</option>
+                                <option value="hls">HLS</option>
                             </select>
                         </FormField>
                         <FormField label="Push Server URL" :error="form.errors.push_url">
                             <input v-model="form.push_url" type="text" required class="form-input font-mono text-sm" />
                         </FormField>
-                        <FormField label="Stream Key" :error="form.errors.push_stream_key">
+                        <FormField label="Stream Key / Sub-path" :error="form.errors.push_stream_key">
                             <input v-model="form.push_stream_key" type="text" required class="form-input font-mono text-sm" />
                         </FormField>
-                        <FormField label="Username" :error="form.errors.push_username">
+                        <template v-if="form.push_protocol === 'hls'">
+                            <FormField label="HLS Segment Duration" :error="form.errors.push_hls_segment_duration">
+                                <input v-model.number="form.push_hls_segment_duration" type="number"
+                                       min="1" max="30" class="form-input" />
+                            </FormField>
+                            <FormField label="HLS Playlist Size" :error="form.errors.push_hls_list_size">
+                                <input v-model.number="form.push_hls_list_size" type="number"
+                                       min="0" max="1000" class="form-input" />
+                            </FormField>
+                        </template>
+                        <FormField v-if="form.push_protocol !== 'hls'" label="Username" :error="form.errors.push_username">
                             <input v-model="form.push_username" type="text"
                                    placeholder="Optional — leave blank if no auth required"
                                    class="form-input" />
                         </FormField>
-                        <FormField label="Password" :error="form.errors.push_password">
+                        <FormField v-if="form.push_protocol !== 'hls'" label="Password" :error="form.errors.push_password">
                             <input v-model="form.push_password" type="password"
                                    placeholder="Optional — leave blank if no auth required"
                                    class="form-input" />
@@ -285,6 +296,8 @@ const form = useForm({
     push_stream_key:        props.channel.push_stream_key,
     push_username:          props.channel.push_username      ?? '',
     push_password:          props.channel.push_password      ?? '',
+    push_hls_segment_duration: props.channel.push_hls_segment_duration ?? null,
+    push_hls_list_size:     props.channel.push_hls_list_size ?? null,
     push_video_codec:       props.channel.push_video_codec    ?? 'copy',
     push_video_bitrate:     props.channel.push_video_bitrate  ?? null,
     push_resolution:        props.channel.push_resolution     ?? '',
@@ -303,9 +316,14 @@ const form = useForm({
     max_retries:            props.channel.max_retries,
 })
 
-const pushTarget = computed(() =>
-    !form.push_url ? '—' : `${form.push_url.replace(/\/$/, '')}/${form.push_stream_key || 'key'}`
-)
+const pushTarget = computed(() => {
+    if (!form.push_url) return '—'
+    const base = form.push_url.replace(/\/$/, '')
+    const key = form.push_stream_key || 'key'
+    if (form.push_protocol === 'hls') return `${base}/${key}/index.m3u8`
+    return `${base}/${key}`
+})
+
 
 function formatDuration(s) {
     if (!s) return 'Disabled'

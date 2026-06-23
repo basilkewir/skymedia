@@ -20,8 +20,8 @@ php artisan view:cache
 php artisan event:cache
 
 echo "[5/6] Setting permissions..."
-chown -R www-data:www-data storage bootstrap/cache
-chmod -R 775 storage bootstrap/cache
+chown -R www-data:www-data storage bootstrap/cache database 2>/dev/null || true
+chmod -R 777 storage bootstrap/cache database 2>/dev/null || true
 
 echo "[6/6] Restarting services..."
 supervisorctl restart skymedia-monitor skymedia-queue skymedia-scheduler

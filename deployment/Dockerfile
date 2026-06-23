@@ -1,4 +1,4 @@
-FROM ubuntu:22.04
+FROM jrottenberg/ffmpeg:7-ubuntu
 
 ENV DEBIAN_FRONTEND=noninteractive \
     APP_DIR=/var/www/skymedia
@@ -7,12 +7,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl gnupg lsb-release software-properties-common \
     && add-apt-repository -y ppa:ondrej/php \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
     && apt-get update && apt-get install -y --no-install-recommends \
     php8.2-cli php8.2-fpm php8.2-sqlite3 php8.2-mbstring \
     php8.2-xml php8.2-curl php8.2-bcmath php8.2-zip php8.2-gd \
     php8.2-intl php8.2-redis php8.2-mysql \
-    nginx supervisor ffmpeg git unzip sqlite3 \
-    nodejs npm fonts-dejavu-core fonts-noto \
+    nginx supervisor git unzip sqlite3 \
+    nodejs fonts-dejavu-core fonts-noto \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── Composer ───────────────────────────────────────────────────────

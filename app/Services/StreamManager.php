@@ -146,9 +146,20 @@ class StreamManager
         if (!$channel->is_active) return;
 
         $channel->update(['last_check_at' => now()]);
-        $sourceLive = $this->ffmpeg->checkSourceHealth($channel);
 
-        if ($sourceLive && !$channel->source_live) {
+        // Primary health signal: is the ingest process running and writing fresh segments?
+        $ingestRunning = $this->ingest->isRunning($channel);
+        $recentSegments = $this->ffmpeg->hasRecentSegments($channel, 20);
+        $probeHealthy = $this->ffmpeg->checkSourceHealth($channel);
+
+        $sourceLive = ($ingestRunning && $recentSegments) || $probeHealthy;
+
+        // Recover only when the source actually answers health probes.
+        // Recent segments alone can be stale for ~20 s after a source outage,
+        // so relying on them causes a false "recovered" bounce.
+        $sourceRecovered = $probeHealthy;
+
+        if ($sourceRecovered && !$channel->source_live) {
             $this->onSourceRecovered($channel->fresh());
         } elseif (!$sourceLive && $channel->source_live) {
             $this->onSourceLost($channel->fresh());
@@ -184,9 +195,9 @@ class StreamManager
 
         if ($this->playout->hasFallback($channel->fresh())) {
             if ($this->playout->switchToFallback($channel->fresh())) {
-                $channel->update(['stream_status' => 'fallback', 'playout_status' => 'fallback']);
+                $channel->update(['playout_status' => 'fallback']);
                 $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
-                event(new StreamStatusChanged($channel, 'fallback'));
+                event(new StreamStatusChanged($channel, 'offline'));
                 // Ensure push is running to serve the fallback
                 if (!$this->push->isRunning($channel->fresh())) {
                     $this->push->start($channel->fresh());
@@ -243,6 +254,7 @@ class StreamManager
         }
 
         $this->recording->refreshProgress($channel);
+        $this->recording->abortIfDiskFull($channel);
 
         if ($this->recording->shouldRecord($channel)) {
             if ($this->recording->start($channel)) {
@@ -265,11 +277,11 @@ class StreamManager
             }
         }
 
-        // ── Playout: in live mode there is no process — nothing to watch ─
-        // If somehow playout_status got set to fallback while source is live, fix it
-        if ($channel->playout_status === 'fallback') {
+        // ── Playout: always make sure output.m3u8 points to live.m3u8 when source is live ─
+        if (!$this->playout->isLiveOutput($channel)) {
             $this->playout->switchToLive($channel);
-            $channel->update(['playout_status' => 'live']);
+            $this->log($channel, 'info', 'playout_forced_live',
+                'output.m3u8 was not pointing to live — corrected');
         }
 
         // ── Push watchdog ────────────────────────────────────────────────
@@ -324,9 +336,9 @@ class StreamManager
         if ($channel->playout_status !== 'fallback' && $this->playout->hasFallback($channel)) {
             $this->log($channel, 'info', 'fallback_now_available', 'Recording ready — switching to VOD loop');
             if ($this->playout->switchToFallback($channel)) {
-                $channel->update(['stream_status' => 'fallback', 'playout_status' => 'fallback']);
+                $channel->update(['playout_status' => 'fallback']);
                 $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
-                event(new StreamStatusChanged($channel, 'fallback'));
+                event(new StreamStatusChanged($channel, 'offline'));
             }
         }
 

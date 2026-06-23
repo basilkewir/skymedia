@@ -4,18 +4,20 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Channel extends Model
 {
-    use SoftDeletes;
+    use HasFactory, SoftDeletes;
 
     protected $fillable = [
         'name', 'slug', 'notes',
         'source_type', 'source_url',
         'push_protocol', 'push_url', 'push_stream_key', 'push_username', 'push_password',
+        'push_hls_segment_duration', 'push_hls_list_size',
         // Video encoding
         'push_video_codec', 'push_video_bitrate', 'push_resolution', 'push_framerate',
         // Audio encoding
@@ -37,27 +39,29 @@ class Channel extends Model
     ];
 
     protected $casts = [
-        'is_active'              => 'boolean',
-        'source_live'            => 'boolean',
-        'dvr_duration'           => 'integer',
-        'segment_duration'       => 'integer',
-        'record_duration'        => 'integer',
-        'keep_recordings'        => 'integer',
+        'is_active' => 'boolean',
+        'source_live' => 'boolean',
+        'dvr_duration' => 'integer',
+        'segment_duration' => 'integer',
+        'record_duration' => 'integer',
+        'keep_recordings' => 'integer',
         'recording_burn_timestamp' => 'boolean',
-        'check_interval'         => 'integer',
-        'max_retries'            => 'integer',
-        'retry_count'            => 'integer',
-        'pid'                    => 'integer',
-        'playout_pid'            => 'integer',
-        'push_pid'               => 'integer',
-        'record_pid'             => 'integer',
-        'push_video_bitrate'     => 'integer',
-        'push_framerate'         => 'integer',
-        'push_audio_bitrate'     => 'integer',
-        'push_audio_samplerate'  => 'integer',
-        'push_audio_channels'    => 'integer',
-        'last_live_at'           => 'datetime',
-        'last_check_at'          => 'datetime',
+        'check_interval' => 'integer',
+        'max_retries' => 'integer',
+        'retry_count' => 'integer',
+        'pid' => 'integer',
+        'playout_pid' => 'integer',
+        'push_pid' => 'integer',
+        'record_pid' => 'integer',
+        'push_video_bitrate' => 'integer',
+        'push_framerate' => 'integer',
+        'push_hls_segment_duration' => 'integer',
+        'push_hls_list_size' => 'integer',
+        'push_audio_bitrate' => 'integer',
+        'push_audio_samplerate' => 'integer',
+        'push_audio_channels' => 'integer',
+        'last_live_at' => 'datetime',
+        'last_check_at' => 'datetime',
     ];
 
     // ── Relationships ─────────────────────────────────────────────────────────
@@ -99,14 +103,18 @@ class Channel extends Model
     {
         $h = intdiv($this->dvr_duration, 3600);
         $m = intdiv($this->dvr_duration % 3600, 60);
+
         return $h > 0 ? "{$h}h {$m}m" : "{$m}m";
     }
 
     public function getRecordDurationLabelAttribute(): string
     {
-        if (!$this->record_duration) return 'Disabled';
+        if (! $this->record_duration) {
+            return 'Disabled';
+        }
         $h = intdiv($this->record_duration, 3600);
         $m = intdiv($this->record_duration % 3600, 60);
+
         return $h > 0 ? "{$h}h {$m}m per file" : "{$m}m per file";
     }
 
@@ -128,6 +136,7 @@ class Channel extends Model
         if ($error) {
             $this->update(['last_error' => substr($error, 0, 500)]);
         }
+
         return $this->fresh()->retry_count >= $this->max_retries;
     }
 }

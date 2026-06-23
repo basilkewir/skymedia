@@ -56,22 +56,35 @@
                             <select v-model="form.push_protocol" class="form-input">
                                 <option value="rtmp">RTMP (Wowza / nginx-rtmp / SRS)</option>
                                 <option value="srt">SRT</option>
+                                <option value="hls">HLS (HTTP Live Streaming push)</option>
                             </select>
                         </FormField>
                         <FormField label="Push Server URL" :error="form.errors.push_url">
                             <input v-model="form.push_url" type="text" required
-                                   placeholder="rtmp://your-server/live" class="form-input font-mono text-sm" />
+                                   :placeholder="pushUrlPlaceholder" class="form-input font-mono text-sm" />
                         </FormField>
-                        <FormField label="Stream Key" :error="form.errors.push_stream_key">
+                        <FormField label="Stream Key / Sub-path" :error="form.errors.push_stream_key">
                             <input v-model="form.push_stream_key" type="text" required
-                                   placeholder="channel1" class="form-input font-mono text-sm" />
+                                   :placeholder="pushStreamKeyPlaceholder" class="form-input font-mono text-sm" />
                         </FormField>
-                        <FormField label="Username" :error="form.errors.push_username">
+                        <template v-if="form.push_protocol === 'hls'">
+                            <FormField label="HLS Segment Duration" :error="form.errors.push_hls_segment_duration">
+                                <input v-model.number="form.push_hls_segment_duration" type="number"
+                                       min="1" max="30" class="form-input" />
+                                <p class="mt-1 text-xs text-slate-500">Leave blank to use the DVR segment duration.</p>
+                            </FormField>
+                            <FormField label="HLS Playlist Size" :error="form.errors.push_hls_list_size">
+                                <input v-model.number="form.push_hls_list_size" type="number"
+                                       min="0" max="1000" class="form-input" />
+                                <p class="mt-1 text-xs text-slate-500">Number of segments in the pushed playlist (0 = keep all).</p>
+                            </FormField>
+                        </template>
+                        <FormField v-if="form.push_protocol !== 'hls'" label="Username" :error="form.errors.push_username">
                             <input v-model="form.push_username" type="text"
                                    placeholder="Optional — only if server requires auth"
                                    class="form-input" />
                         </FormField>
-                        <FormField label="Password" :error="form.errors.push_password">
+                        <FormField v-if="form.push_protocol !== 'hls'" label="Password" :error="form.errors.push_password">
                             <input v-model="form.push_password" type="password"
                                    placeholder="Optional — only if server requires auth"
                                    class="form-input" />
@@ -308,12 +321,13 @@ const form = useForm({
     source_type: 'hls', source_url: '',
     push_protocol: 'rtmp', push_url: '', push_stream_key: '',
     push_username: '', push_password: '',
+    push_hls_segment_duration: null, push_hls_list_size: null,
     push_video_codec: 'copy',   push_video_bitrate: null,
     push_resolution: '',        push_framerate: null,
     push_audio_codec: 'aac',    push_audio_bitrate: 128,
     push_audio_samplerate: 48000, push_audio_channels: 2,
     dvr_duration: 3600, segment_duration: 4,
-    record_duration: 3600, keep_recordings: 3,
+    record_duration: 3600, keep_recordings: 24,
     timezone: 'UTC', locale: 'en',
     check_interval: 5, max_retries: 3,
 })
@@ -340,7 +354,19 @@ const sourceHints = {
 }
 const sourcePlaceholder = computed(() => sourcePlaceholders[form.source_type] ?? '')
 const sourceHint        = computed(() => sourceHints[form.source_type] ?? '')
-const pushTarget        = computed(() => !form.push_url ? 'rtmp://server/live/key' : `${form.push_url.replace(/\/$/, '')}/${form.push_stream_key || 'key'}`)
+const pushUrlPlaceholder = computed(() =>
+    form.push_protocol === 'hls' ? '/var/www/hls or https://cdn.example.com/hls' : 'rtmp://your-server/live'
+)
+const pushStreamKeyPlaceholder = computed(() =>
+    form.push_protocol === 'hls' ? 'channel1 (sub-directory)' : 'channel1'
+)
+const pushTarget = computed(() => {
+    if (!form.push_url) return form.push_protocol === 'hls' ? '/var/www/hls/channel1/index.m3u8' : 'rtmp://server/live/key'
+    const base = form.push_url.replace(/\/$/, '')
+    const key = form.push_stream_key || 'key'
+    if (form.push_protocol === 'hls') return `${base}/${key}/index.m3u8`
+    return `${base}/${key}`
+})
 
 // Storage estimates at 3 Mbps average
 const estimatedDvrMb = computed(() => Math.round(form.dvr_duration * 3_000_000 / 8 / 1_048_576))

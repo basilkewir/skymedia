@@ -157,13 +157,15 @@ systemctl restart "php${PHP_VER}-fpm" 2>/dev/null || true
 "${PHP}" artisan event:cache --quiet
 ok "All caches warm"
 
-chown -R www-data:www-data "${APP_DIR}/storage" "${APP_DIR}/bootstrap/cache"
-chmod -R 775 "${APP_DIR}/storage" "${APP_DIR}/bootstrap/cache"
+chown -R www-data:www-data "${APP_DIR}/storage" "${APP_DIR}/bootstrap/cache" "${APP_DIR}/database" 2>/dev/null || true
+chmod -R 777 "${APP_DIR}/storage" "${APP_DIR}/bootstrap/cache" "${APP_DIR}/database" 2>/dev/null || true
 [[ ! -L "${APP_DIR}/public/storage" ]] && "${PHP}" artisan storage:link --quiet
 ok "Permissions set"
 
 # ── 8. Restart services ───────────────────────────────────────────────────────
 step "8 / 8  Restart services"
+systemctl enable supervisor --quiet 2>/dev/null || true
+systemctl start supervisor --quiet 2>/dev/null || true
 cp "${APP_DIR}/deployment/supervisord.conf" /etc/supervisor/conf.d/skymedia.conf
 supervisorctl reread >/dev/null 2>&1 || true
 supervisorctl update >/dev/null 2>&1 || true

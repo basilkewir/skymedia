@@ -5,27 +5,197 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Models\Channel;
+use App\Models\PushDestination;
 use App\Models\Setting;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\Process\Process;
 
 class FFmpegService
 {
     protected string $ffmpegBin;
+
     protected string $ffprobeBin;
 
     public function __construct()
     {
-        $this->ffmpegBin  = config('skymedia.ffmpeg_binary', 'ffmpeg');
+        $this->ffmpegBin = config('skymedia.ffmpeg_binary', 'ffmpeg');
         $this->ffprobeBin = config('skymedia.ffprobe_binary', 'ffprobe');
     }
 
-    public function getBin(): string { return $this->ffmpegBin; }
+    public function getBin(): string
+    {
+        return $this->ffmpegBin;
+    }
 
     protected function srtLatencyMs(): int
     {
         return (int) (Setting::get('srt_latency')
             ?? config('skymedia.srt_latency', 200));
+    }
+
+    /**
+     * Browser-like User-Agent for HTTP(S) sources. Many CDNs/IPTV providers
+     * block the default FFmpeg UA or require a common browser UA.
+     */
+    protected function httpUserAgent(): ?string
+    {
+        $ua = trim((string) config('skymedia.http_user_agent', ''));
+
+        return $ua !== '' ? $ua : null;
+    }
+
+    /**
+     * True when the URL uses HTTP(S).
+     */
+    protected function isHttpUrl(string $url): bool
+    {
+        return str_starts_with(strtolower($url), 'http://')
+            || str_starts_with(strtolower($url), 'https://');
+    }
+
+    /**
+     * Resolve an HLS master playlist to a concrete variant playlist URL.
+     *
+     * Some HLS endpoints serve a master playlist that FFmpeg probes by opening
+     * every variant at once. That behaviour can trigger rate limiting or session
+     * errors on certain CDNs (e.g. Nimble Streamer). By resolving the master
+     * playlist ourselves and handing FFmpeg a single media playlist, ingest
+     * becomes far more reliable.
+     *
+     * Returns the original URL if it is already a media playlist or if the
+     * master playlist cannot be parsed.
+     */
+    public function resolveHlsUrl(string $url): string
+    {
+        if (! $this->isHttpUrl($url)) {
+            return $url;
+        }
+
+        try {
+            $options = ['allow_redirects' => true];
+            if (config('skymedia.hls_tls_verify', false) === false) {
+                $options['verify'] = false;
+            }
+
+            $request = Http::timeout(15)
+                ->withOptions($options);
+
+            $ua = $this->httpUserAgent();
+            if ($ua) {
+                $request = $request->withUserAgent($ua);
+            }
+
+            $response = $request->get($url);
+
+            if (! $response->successful()) {
+                return $url;
+            }
+
+            $body = trim($response->body());
+
+            // Not a master playlist — leave it alone
+            if (! str_contains($body, '#EXT-X-STREAM-INF')) {
+                return $url;
+            }
+
+            $baseUrl = $url;
+            $variants = [];
+            $lines = explode("\n", $body);
+            $currentBandwidth = 0;
+
+            foreach ($lines as $line) {
+                $line = trim($line);
+
+                if (str_starts_with($line, '#EXT-X-STREAM-INF')) {
+                    preg_match('/BANDWIDTH=(\d+)/', $line, $m);
+                    $currentBandwidth = (int) ($m[1] ?? 0);
+                } elseif ($line !== '' && ! str_starts_with($line, '#')) {
+                    $variants[] = [
+                        'url' => $this->resolveUrl($line, $baseUrl),
+                        'bandwidth' => $currentBandwidth,
+                    ];
+                    $currentBandwidth = 0;
+                }
+            }
+
+            if ($variants === []) {
+                return $url;
+            }
+
+            // Pick the highest bandwidth variant. If bandwidth is missing for all,
+            // usort keeps the original order, so the first variant is used.
+            usort($variants, fn ($a, $b) => $b['bandwidth'] <=> $a['bandwidth']);
+
+            $resolved = $variants[0]['url'];
+            Log::debug("Resolved HLS master playlist [{$url}] -> [{$resolved}]");
+
+            return $resolved;
+        } catch (\Throwable $e) {
+            Log::debug("HLS master playlist resolution failed [{$url}]: {$e->getMessage()}");
+
+            return $url;
+        }
+    }
+
+    /**
+     * Returns -tls_verify 0 when TLS verification is disabled in config.
+     * This is needed for many IPTV/HLS endpoints with non-standard certs.
+     * Only applied to HTTPS inputs; plain HTTP has no TLS context and FFmpeg
+     * reports "Option tls_verify not found" if the flag is used there.
+     */
+    protected function tlsVerifyFlag(Channel $channel): array
+    {
+        if ($channel->source_type === 'hls'
+            && str_starts_with(strtolower($channel->source_url), 'https://')
+            && config('skymedia.hls_tls_verify', false) === false) {
+            return ['-tls_verify', '0'];
+        }
+
+        return [];
+    }
+
+    /**
+     * Return the URL that FFmpeg should actually read: master HLS playlists
+     * are resolved to a single variant, everything else passes through.
+     */
+    protected function effectiveSourceUrl(Channel $channel): string
+    {
+        $url = $channel->source_url;
+
+        if ($channel->source_type === 'hls' && $this->isHttpUrl($url)) {
+            return $this->resolveHlsUrl($url);
+        }
+
+        return $url;
+    }
+
+    /**
+     * Resolve a possibly-relative URL against a base URL.
+     */
+    protected function resolveUrl(string $url, string $base): string
+    {
+        if (str_starts_with($url, 'http://') || str_starts_with($url, 'https://')) {
+            return $url;
+        }
+
+        $baseInfo = parse_url($base);
+        if ($baseInfo === false) {
+            return $url;
+        }
+
+        $scheme = $baseInfo['scheme'] ?? 'https';
+        $host = $baseInfo['host'] ?? '';
+        $port = isset($baseInfo['port']) ? ':' . $baseInfo['port'] : '';
+
+        if (str_starts_with($url, '/')) {
+            return "{$scheme}://{$host}{$port}{$url}";
+        }
+
+        $path = $baseInfo['path'] ?? '/';
+        $dir = str_contains($path, '/') ? substr($path, 0, strrpos($path, '/') + 1) : '/';
+
+        return "{$scheme}://{$host}{$port}{$dir}{$url}";
     }
 
     // ===================================================================
@@ -44,8 +214,8 @@ class FFmpegService
      */
     public function buildIngestCommand(Channel $channel): array
     {
-        $dvrDir     = $channel->dvr_directory;
-        $m3u8       = "{$dvrDir}/live.m3u8";
+        $dvrDir = $channel->dvr_directory;
+        $m3u8 = "{$dvrDir}/live.m3u8";
         $segPattern = "{$dvrDir}/seg_%05d.ts";
 
         return array_merge(
@@ -80,38 +250,38 @@ class FFmpegService
      * For HLS inputs without -re, ffmpeg may buffer and burst data,
      * causing the server to disconnect with "Broken pipe".
      */
-    public function buildPushCommand(Channel $channel, string $playlistPath): array
+    public function buildPushCommand(Channel $channel, string $playlistPath, ?string $protocol = null, ?PushDestination $destination = null): array
     {
+        $protocol ??= $channel->push_protocol;
+
         $cmd = [
             $this->ffmpegBin, '-y', '-loglevel', 'warning', '-stats',
             '-re',
             '-fflags',             '+genpts+igndts+discardcorrupt',
             '-live_start_index',   '-3',
-            '-hls_start_number_source', 'epoch',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
-            '-timeout',            '10000000',
-            '-reconnect',          '1',
-            '-reconnect_at_eof',   '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max','5',
             '-i',                  $playlistPath,
         ];
 
         $cmd = array_merge($cmd, $this->videoEncodeFlags($channel));
         $cmd = array_merge($cmd, $this->audioEncodeFlags($channel));
 
-        if ($channel->push_protocol === 'srt') {
+        if ($protocol === 'srt') {
             $cmd[] = '-f';
             $cmd[] = 'mpegts';
+            $cmd[] = $destination ? $this->buildDestinationPushUrl($destination) : $this->pushUrl($channel);
+        } elseif ($protocol === 'hls') {
+            $cmd = array_merge($cmd, $this->hlsOutputFlags($channel, $destination));
+            $cmd[] = $destination ? $this->buildDestinationPushUrl($destination) : $this->pushUrl($channel);
         } else {
             $cmd[] = '-f';
             $cmd[] = 'flv';
             $cmd[] = '-flvflags';
             $cmd[] = 'no_duration_filesize';
+            $cmd[] = $destination ? $this->buildDestinationPushUrl($destination) : $this->pushUrl($channel);
         }
 
-        $cmd[] = $this->pushUrl($channel);
         return $cmd;
     }
 
@@ -149,7 +319,9 @@ class FFmpegService
     public function startProcess(array $command, string $pidFile, string $logFile, int $stabiliseSeconds = 3): int
     {
         foreach ([dirname($logFile), dirname($pidFile)] as $dir) {
-            if (!is_dir($dir)) mkdir($dir, 0755, true);
+            if (! is_dir($dir)) {
+                mkdir($dir, 0755, true);
+            }
         }
 
         // Rotate log when it exceeds 200 KB
@@ -158,9 +330,9 @@ class FFmpegService
         }
 
         $escaped = implode(' ', array_map('escapeshellarg', $command));
-        $path    = '/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin';
-        $shell   = "export PATH={$path}:\$PATH; nohup {$escaped} >> "
-                 . escapeshellarg($logFile) . " 2>&1 & echo \$!";
+        $path = '/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin';
+        $shell = "export PATH={$path}:\$PATH; nohup {$escaped} >> "
+                 . escapeshellarg($logFile) . ' 2>&1 & echo $!';
 
         $pid = (int) trim((string) shell_exec($shell));
 
@@ -172,16 +344,21 @@ class FFmpegService
         file_put_contents($pidFile, $pid);
 
         // Wait up to $stabiliseSeconds for process to stabilise
-        $checks   = $stabiliseSeconds * 2; // 500ms per check
+        $checks = $stabiliseSeconds * 2; // 500ms per check
         $minAlive = max(2, (int) ($stabiliseSeconds * 0.6)); // must survive 60% of window
-        $alive    = false;
+        $alive = false;
         for ($i = 0; $i < $checks; $i++) {
             usleep(500_000);
-            if (!$this->isRunning($pid)) break;
-            if ($i >= $minAlive) { $alive = true; break; }
+            if (! $this->isRunning($pid)) {
+                break;
+            }
+            if ($i >= $minAlive) {
+                $alive = true;
+                break;
+            }
         }
 
-        if (!$alive) {
+        if (! $alive) {
             $this->clearPid($pidFile);
             $error = $this->readLogTail($logFile, 40);
             throw new \RuntimeException("ffmpeg exited immediately.\n{$error}");
@@ -190,21 +367,33 @@ class FFmpegService
         return $pid;
     }
 
-    public function stopProcess(int $pid): void
+    public function stopProcess(int $pid, int $timeoutSeconds = 6): void
     {
-        if ($pid <= 0) return;
+        if ($pid <= 0) {
+            return;
+        }
         exec("kill -TERM {$pid} 2>/dev/null");
+        $maxWaits = $timeoutSeconds * 10; // 100 ms per check
         $w = 0;
-        while ($this->isRunning($pid) && $w++ < 60) usleep(100_000);
-        if ($this->isRunning($pid)) exec("kill -KILL {$pid} 2>/dev/null");
+        while ($this->isRunning($pid) && $w++ < $maxWaits) {
+            usleep(100_000);
+        }
+        if ($this->isRunning($pid)) {
+            exec("kill -KILL {$pid} 2>/dev/null");
+        }
     }
 
     public function isRunning(int $pid): bool
     {
-        if ($pid <= 0) return false;
-        if (is_dir("/proc/{$pid}")) return true;
+        if ($pid <= 0) {
+            return false;
+        }
+        if (is_dir("/proc/{$pid}")) {
+            return true;
+        }
         exec("ps -p {$pid} -o pid= 2>/dev/null", $out, $code);
-        return $code === 0 && !empty(trim(implode('', $out)));
+
+        return $code === 0 && ! empty(trim(implode('', $out)));
     }
 
     // ===================================================================
@@ -217,7 +406,9 @@ class FFmpegService
     public function diagnoseIngest(Channel $channel): array
     {
         $dvrDir = $channel->dvr_directory;
-        if (!is_dir($dvrDir)) mkdir($dvrDir, 0755, true);
+        if (! is_dir($dvrDir)) {
+            mkdir($dvrDir, 0755, true);
+        }
 
         $cmd = $this->buildIngestCommand($channel);
         // Resolve full binary path for Symfony Process (different PATH from shell_exec)
@@ -226,7 +417,12 @@ class FFmpegService
         if ($resolved) {
             $cmd[0] = $resolved;
         }
-        foreach ($cmd as &$v) { if ($v === 'warning') { $v = 'info'; break; } }
+        foreach ($cmd as &$v) {
+            if ($v === 'warning') {
+                $v = 'info';
+                break;
+            }
+        }
         unset($v);
         array_splice($cmd, -1, 0, ['-t', '5']);
 
@@ -235,11 +431,11 @@ class FFmpegService
         $proc->run();
 
         return [
-            'command'   => implode(' ', $cmd),
+            'command' => implode(' ', $cmd),
             'exit_code' => $proc->getExitCode(),
-            'stdout'    => $proc->getOutput(),
-            'stderr'    => $proc->getErrorOutput(),
-            'success'   => $proc->isSuccessful(),
+            'stdout' => $proc->getOutput(),
+            'stderr' => $proc->getErrorOutput(),
+            'success' => $proc->isSuccessful(),
         ];
     }
 
@@ -250,34 +446,45 @@ class FFmpegService
     public function checkSourceHealth(Channel $channel): bool
     {
         try {
+            $url = $this->effectiveSourceUrl($channel);
+
             $args = [
                 $this->ffprobeBin,
                 '-v', 'quiet',
                 '-print_format', 'json',
                 '-show_streams',
-                '-timeout', '6000000',
+                '-timeout', '10000000',
             ];
 
             // Add source-type specific flags
             $this->addProbeInputFlags($args, $channel);
 
-            $args[] = $channel->source_url;
+            $args[] = $url;
 
             $proc = new Process($args);
-            $proc->setTimeout(10);
+            $proc->setTimeout(15);
             $proc->run();
 
-            if (!$proc->isSuccessful()) return false;
+            if (! $proc->isSuccessful()) {
+                return false;
+            }
             $data = json_decode($proc->getOutput(), true);
-            return !empty($data['streams']);
+
+            return ! empty($data['streams']);
         } catch (\Throwable $e) {
             Log::debug("Health check [{$channel->name}]: {$e->getMessage()}");
+
             return false;
         }
     }
 
-    public function probeStream(Channel $channel): array
+    /**
+     * Build the ffprobe command for a channel.
+     */
+    public function buildProbeCommand(Channel $channel): array
     {
+        $url = $this->effectiveSourceUrl($channel);
+
         $args = [
             $this->ffprobeBin,
             '-v', 'quiet',
@@ -287,15 +494,21 @@ class FFmpegService
         ];
 
         $this->addProbeInputFlags($args, $channel);
-        $args[] = $channel->source_url;
+        $args[] = $url;
 
-        $proc = new Process($args);
+        return $args;
+    }
+
+    public function probeStream(Channel $channel): array
+    {
+        $proc = new Process($this->buildProbeCommand($channel));
         $proc->setTimeout(15);
         $proc->run();
 
-        if (!$proc->isSuccessful()) {
+        if (! $proc->isSuccessful()) {
             return ['error' => $proc->getErrorOutput()];
         }
+
         return json_decode($proc->getOutput(), true) ?? [];
     }
 
@@ -310,17 +523,39 @@ class FFmpegService
     public function hlsReady(Channel $channel, int $minSegments = 2): bool
     {
         $dvrDir = $channel->dvr_directory;
-        $m3u8   = $dvrDir . '/output.m3u8';
+        $m3u8 = $dvrDir . '/output.m3u8';
 
         // output.m3u8 is a symlink — resolve the target playlist
         $target = is_link($m3u8) ? readlink($m3u8) : 'live.m3u8';
         $playlist = $dvrDir . '/' . $target;
 
-        if (!file_exists($playlist)) return false;
+        if (! file_exists($playlist)) {
+            return false;
+        }
 
         // Check the right segment pattern based on playlist
         $segPattern = str_contains($target, 'playout') ? 'playout_*.ts' : 'seg_*.ts';
+
         return count(glob($dvrDir . '/' . $segPattern) ?: []) >= $minSegments;
+    }
+
+    /**
+     * True when the DVR has segments written within the last $seconds seconds.
+     * This is used as a secondary health signal when ffprobe-based health
+     * checks fail for streams that are actually ingesting fine.
+     */
+    public function hasRecentSegments(Channel $channel, int $seconds = 15): bool
+    {
+        $dvrDir = $channel->dvr_directory;
+        $cutoff = time() - $seconds;
+
+        foreach (glob($dvrDir . '/seg_*.ts') ?: [] as $seg) {
+            if (filemtime($seg) >= $cutoff) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // ===================================================================
@@ -330,31 +565,82 @@ class FFmpegService
     public function pidFile(Channel $channel, string $type = 'ingest'): string
     {
         $dir = storage_path('app/pids');
-        if (!is_dir($dir)) mkdir($dir, 0755, true);
+        if (! is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+
         return "{$dir}/{$type}_{$channel->id}.pid";
     }
 
     public function logFile(Channel $channel, string $type = 'ingest'): string
     {
         $dir = config('skymedia.log_base_path', storage_path('logs/streams'));
-        if (!is_dir($dir)) mkdir($dir, 0755, true);
+        if (! is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+
         return "{$dir}/{$type}_{$channel->id}.log";
     }
 
     public function readPid(string $pidFile): int
     {
-        if (!file_exists($pidFile)) return 0;
+        if (! file_exists($pidFile)) {
+            return 0;
+        }
+
         return (int) trim((string) file_get_contents($pidFile));
     }
 
-    public function clearPid(string $pidFile): void { @unlink($pidFile); }
+    public function clearPid(string $pidFile): void
+    {
+        @unlink($pidFile);
+    }
 
     public function readLogTail(string $logFile, int $lines = 50): string
     {
-        if (!file_exists($logFile)) return "(log not found: {$logFile})";
+        if (! file_exists($logFile)) {
+            return "(log not found: {$logFile})";
+        }
         $out = [];
-        exec("tail -n {$lines} " . escapeshellarg($logFile) . " 2>/dev/null", $out);
+        exec("tail -n {$lines} " . escapeshellarg($logFile) . ' 2>/dev/null', $out);
+
         return implode("\n", $out);
+    }
+
+    /**
+     * Quick validity check for a media file. Retries a few times because a
+     * recording that has just been stopped may still be writing its moov atom.
+     */
+    public function isPlayableFile(string $path, int $retries = 3): bool
+    {
+        if (! file_exists($path) || filesize($path) < 1024) {
+            return false;
+        }
+
+        $attempt = 0;
+        while ($attempt <= $retries) {
+            $proc = new Process([
+                $this->ffprobeBin,
+                '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                $path,
+            ]);
+            $proc->setTimeout(15);
+            $proc->run();
+
+            $out = trim($proc->getOutput());
+            if ($proc->isSuccessful() && is_numeric($out) && (float) $out > 0) {
+                return true;
+            }
+
+            $attempt++;
+            if ($attempt <= $retries) {
+                sleep(1);
+            }
+        }
+
+        return false;
     }
 
     // ===================================================================
@@ -372,10 +658,10 @@ class FFmpegService
      */
     protected function inputFlags(Channel $channel): array
     {
-        $url       = $channel->source_url;
-        $type      = $channel->source_type;
+        $url = $channel->source_url;
+        $type = $channel->source_type;
         $probesize = '5000000';
-        $analyze   = '3000000';
+        $analyze = '3000000';
 
         // Detect HTTP MPEG-TS: http(s) URL but NOT an HLS playlist
         $isHttpMpegts = $this->isHttpMpegts($url, $type);
@@ -383,25 +669,65 @@ class FFmpegService
         switch (true) {
 
             // HLS: http/https URLs ending in .m3u8/.m3u OR explicitly set to hls
-            case ($type === 'hls' && !$isHttpMpegts):
-                return [
+            case $type === 'hls' && ! $isHttpMpegts:
+                // Master playlists can make FFmpeg probe every variant at once,
+                // which breaks on some CDNs. Resolve to a single media playlist.
+                $inputUrl = $this->resolveHlsUrl($url);
+                $isFile = str_starts_with($inputUrl, 'file://');
+
+                $flags = [
                     '-re',
-                    '-fflags',             '+genpts+discardcorrupt',
-                    '-probesize',          $probesize,
-                    '-analyzeduration',    $analyze,
+                    '-fflags', '+genpts+discardcorrupt',
+                    '-probesize', $probesize,
+                    '-analyzeduration', $analyze,
                     '-allowed_extensions', 'ALL',
                     '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
-                    '-timeout',            '15000000',
-                    '-reconnect',          '1',
-                    '-reconnect_at_eof',   '1',
-                    '-reconnect_streamed', '1',
-                    '-reconnect_delay_max','5',
-                    '-live_start_index',   '-3',
-                    '-i',                  $url,
+                    '-live_start_index', '-3',
                 ];
 
-            // HTTP MPEG-TS (IPTV streams: http://host/user/pass/channel_id)
+                // Network-specific options are invalid for local file:// playlists
+                if (! $isFile) {
+                    $ua = $this->httpUserAgent();
+                    if ($ua) {
+                        $flags[] = '-user_agent';
+                        $flags[] = $ua;
+                    }
+
+                    $flags = array_merge($flags, $this->tlsVerifyFlag($channel), [
+                        '-timeout', '15000000',
+                        '-reconnect', '1',
+                        '-reconnect_streamed', '1',
+                        '-reconnect_delay_max', '30',
+                    ]);
+                }
+
+                $flags[] = '-i';
+                $flags[] = $inputUrl;
+
+                return $flags;
+
+                // HTTP MPEG-TS (IPTV streams: http://host/user/pass/channel_id)
             case $isHttpMpegts:
+                $flags = [
+                    '-fflags',          '+genpts+discardcorrupt',
+                    '-probesize',       $probesize,
+                    '-analyzeduration', $analyze,
+                    '-timeout',         '10000000',
+                ];
+
+                $ua = $this->httpUserAgent();
+                if ($ua) {
+                    $flags[] = '-user_agent';
+                    $flags[] = $ua;
+                }
+
+                $flags[] = '-i';
+                $flags[] = $url;
+
+                return $flags;
+
+                // UDP multicast / MPEG-TS over UDP
+            case $type === 'udp' || $type === 'mpegts':
                 return [
                     '-fflags',          '+genpts+discardcorrupt',
                     '-probesize',       $probesize,
@@ -410,21 +736,12 @@ class FFmpegService
                     '-i',               $url,
                 ];
 
-            // UDP multicast / MPEG-TS over UDP
-            case ($type === 'udp' || $type === 'mpegts'):
-                return [
-                    '-fflags',          '+genpts+discardcorrupt',
-                    '-probesize',       $probesize,
-                    '-analyzeduration', $analyze,
-                    '-timeout',         '10000000',
-                    '-i',               $url,
-                ];
-
-            // SRT
-            case ($type === 'srt'):
+                // SRT
+            case $type === 'srt':
                 $latency = $this->srtLatencyMs() * 1000;
-                $srtUrl  = 'srt://' . $this->parseSrtUrl($url)
+                $srtUrl = 'srt://' . $this->parseSrtUrl($url)
                          . "?timeout=8000000&latency={$latency}";
+
                 return [
                     '-fflags',          '+genpts+discardcorrupt',
                     '-probesize',       $probesize,
@@ -432,7 +749,7 @@ class FFmpegService
                     '-i',               $srtUrl,
                 ];
 
-            // RTMP and anything else
+                // RTMP and anything else
             default:
                 return [
                     '-fflags',          '+genpts+discardcorrupt',
@@ -452,15 +769,21 @@ class FFmpegService
     protected function isHttpMpegts(string $url, string $type): bool
     {
         $isHttp = str_starts_with($url, 'http://') || str_starts_with($url, 'https://');
-        if (!$isHttp) return false;
+        if (! $isHttp) {
+            return false;
+        }
 
         // Explicit non-HLS types over HTTP
-        if (in_array($type, ['mpegts', 'udp', 'rtmp'])) return true;
+        if (in_array($type, ['mpegts', 'udp', 'rtmp'])) {
+            return true;
+        }
 
         // HLS type but URL has no playlist extension = IPTV MPEG-TS
         $path = parse_url($url, PHP_URL_PATH) ?? '';
         $hasPlaylistExt = preg_match('/\.(m3u8?|ts)([\?#]|$)/i', $path);
-        if ($type === 'hls' && !$hasPlaylistExt) return true;
+        if ($type === 'hls' && ! $hasPlaylistExt) {
+            return true;
+        }
 
         return false;
     }
@@ -471,10 +794,22 @@ class FFmpegService
     protected function addProbeInputFlags(array &$args, Channel $channel): void
     {
         $type = $channel->source_type;
-        $url  = $channel->source_url;
+        $url = $channel->source_url;
 
-        if ($type === 'hls' && !$this->isHttpMpegts($url, $type)) {
+        if ($this->isHttpUrl($url)) {
+            $ua = $this->httpUserAgent();
+            if ($ua) {
+                array_push($args, '-user_agent', $ua);
+            }
+        }
+
+        if ($type === 'hls' && ! $this->isHttpMpegts($url, $type)) {
             array_push($args, '-allowed_extensions', 'ALL');
+
+            if (str_starts_with(strtolower($url), 'https://')
+                && config('skymedia.hls_tls_verify', false) === false) {
+                array_push($args, '-tls_verify', '0');
+            }
         }
 
         if (in_array($type, ['udp', 'mpegts', 'srt'])) {
@@ -489,26 +824,28 @@ class FFmpegService
     protected function videoEncodeFlags(Channel $channel): array
     {
         $codec = $channel->push_video_codec ?? 'copy';
-        if ($codec === 'copy') return ['-c:v', 'copy'];
+        if ($codec === 'copy') {
+            return ['-c:v', 'copy'];
+        }
 
         $ffCodec = match ($codec) {
             'h264' => 'libx264', 'h265' => 'libx265',
-            'vp8'  => 'libvpx',  'vp9'  => 'libvpx-vp9',
+            'vp8' => 'libvpx',  'vp9' => 'libvpx-vp9',
             default => 'libx264',
         };
 
         $flags = ['-c:v', $ffCodec];
 
         if ($channel->push_video_bitrate) {
-            $kbps  = (int) $channel->push_video_bitrate;
+            $kbps = (int) $channel->push_video_bitrate;
             $flags = array_merge($flags, [
                 '-b:v', "{$kbps}k",
-                '-maxrate', (int)($kbps * 1.2) . 'k',
+                '-maxrate', (int) ($kbps * 1.2) . 'k',
                 '-bufsize', ($kbps * 2) . 'k',
             ]);
         }
 
-        if (!empty($channel->push_resolution)) {
+        if (! empty($channel->push_resolution)) {
             $flags = array_merge($flags, ['-vf', "scale={$channel->push_resolution}"]);
         }
 
@@ -517,10 +854,10 @@ class FFmpegService
         }
 
         if (in_array($codec, ['h264', 'h265'])) {
-            $fps   = $channel->push_framerate ?? 25;
+            $fps = $channel->push_framerate ?? 25;
             $flags = array_merge($flags, [
                 '-preset', 'veryfast', '-tune', 'zerolatency',
-                '-g', (string)($fps * 2), '-keyint_min', (string)$fps,
+                '-g', (string) ($fps * 2), '-keyint_min', (string) $fps,
                 '-sc_threshold', '0',
             ]);
         }
@@ -531,19 +868,21 @@ class FFmpegService
     protected function audioEncodeFlags(Channel $channel): array
     {
         $codec = $channel->push_audio_codec ?? 'aac';
-        if ($codec === 'copy') return ['-c:a', 'copy'];
+        if ($codec === 'copy') {
+            return ['-c:a', 'copy'];
+        }
 
         $ffCodec = match ($codec) {
-            'aac'  => 'aac', 'mp3' => 'libmp3lame',
+            'aac' => 'aac', 'mp3' => 'libmp3lame',
             'opus' => 'libopus', 'ac3' => 'ac3',
             default => 'aac',
         };
 
         return [
             '-c:a', $ffCodec,
-            '-b:a', ((int)($channel->push_audio_bitrate ?? 128)) . 'k',
-            '-ar',  (string)(int)($channel->push_audio_samplerate ?? 48000),
-            '-ac',  (string)(int)($channel->push_audio_channels ?? 2),
+            '-b:a', ((int) ($channel->push_audio_bitrate ?? 128)) . 'k',
+            '-ar',  (string) (int) ($channel->push_audio_samplerate ?? 48000),
+            '-ac',  (string) (int) ($channel->push_audio_channels ?? 2),
         ];
     }
 
@@ -551,18 +890,109 @@ class FFmpegService
     //  INTERNAL — PUSH URL
     // ===================================================================
 
+    protected function hlsOutputFlags(Channel $channel, ?PushDestination $destination = null): array
+    {
+        $baseUrl = rtrim($destination?->url ?? $channel->push_url ?? '', '/');
+        $segDuration = max(1, (int) ($channel->push_hls_segment_duration ?? $channel->segment_duration ?? 4));
+        $listSize = (int) ($channel->push_hls_list_size ?? 10);
+
+        // Segments live next to the playlist. If a stream_key is provided, treat it as
+        // a sub-directory / path prefix so multiple channels can share one base URL.
+        $prefix = ($destination?->stream_key ?? $channel->push_stream_key) ? trim($destination?->stream_key ?? $channel->push_stream_key, '/') . '/' : '';
+        $segPattern = "{$baseUrl}/{$prefix}seg_%05d.ts";
+
+        $flags = [
+            '-f',                    'hls',
+            '-hls_time',             (string) $segDuration,
+            '-hls_list_size',        (string) $listSize,
+            '-hls_flags',            'delete_segments+omit_endlist+append_list',
+            '-hls_delete_threshold', '2',
+            '-hls_segment_type',     'mpegts',
+            '-hls_segment_filename', $segPattern,
+            '-hls_allow_cache',      '0',
+        ];
+
+        // If the target is an HTTP(S) endpoint, tell ffmpeg to PUT the files.
+        if (str_starts_with($baseUrl, 'http://') || str_starts_with($baseUrl, 'https://')) {
+            $flags[] = '-method';
+            $flags[] = 'PUT';
+        }
+
+        return $flags;
+    }
+
+    protected function buildDestinationPushUrl(PushDestination $dest): string
+    {
+        $baseUrl = rtrim($dest->url, '/');
+        $prefix = $dest->stream_key ? trim($dest->stream_key, '/') . '/' : '';
+
+        if ($dest->protocol === 'hls') {
+            if (str_starts_with($baseUrl, 'http://') || str_starts_with($baseUrl, 'https://')) {
+                return "{$baseUrl}/{$prefix}index.m3u8";
+            }
+            $dir = "{$baseUrl}/{$prefix}";
+            if (! is_dir($dir)) {
+                mkdir($dir, 0755, true);
+            }
+
+            return "{$dir}index.m3u8";
+        }
+
+        if ($dest->protocol === 'srt') {
+            $latency = $this->srtLatencyMs() * 1000;
+            $base = preg_replace('#^srt://#', '', $baseUrl);
+            $query = "latency={$latency}&mode=caller";
+            if ($dest->username) {
+                $query .= '&username=' . urlencode($dest->username);
+            }
+            if ($dest->password) {
+                $query .= '&passphrase=' . urlencode($dest->password);
+            }
+
+            return "srt://{$base}/{$dest->stream_key}?{$query}";
+        }
+
+        // RTMP
+        $target = "{$baseUrl}/{$dest->stream_key}";
+        if ($dest->username || $dest->password) {
+            $user = urlencode($dest->username ?? '');
+            $pass = urlencode($dest->password ?? '');
+            $target = preg_replace('#^(rtmps?://)#', "$1{$user}:{$pass}@", $target);
+        }
+
+        return $target;
+    }
+
     protected function pushUrl(Channel $channel): string
     {
+        if ($channel->push_protocol === 'hls') {
+            $baseUrl = rtrim($channel->push_url ?? '', '/');
+            $prefix = $channel->push_stream_key ? trim($channel->push_stream_key, '/') . '/' : '';
+
+            if (str_starts_with($baseUrl, 'http://') || str_starts_with($baseUrl, 'https://')) {
+                return "{$baseUrl}/{$prefix}index.m3u8";
+            }
+
+            // Local/network path: ensure directory exists.
+            $dir = "{$baseUrl}/{$prefix}";
+            if (! is_dir($dir)) {
+                mkdir($dir, 0755, true);
+            }
+
+            return "{$dir}index.m3u8";
+        }
+
         if ($channel->push_protocol === 'srt') {
             $latency = $this->srtLatencyMs() * 1000;
-            $base    = $this->parseSrtUrl($channel->push_target);
-            $query   = "latency={$latency}&mode=caller";
+            $base = $this->parseSrtUrl($channel->push_target);
+            $query = "latency={$latency}&mode=caller";
             if ($channel->push_username) {
                 $query .= '&username=' . urlencode($channel->push_username);
             }
             if ($channel->push_password) {
                 $query .= '&passphrase=' . urlencode($channel->push_password);
             }
+
             return "srt://{$base}?{$query}";
         }
 
@@ -578,6 +1008,7 @@ class FFmpegService
                 $target
             );
         }
+
         return $target;
     }
 

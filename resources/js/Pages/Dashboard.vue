@@ -15,6 +15,49 @@
             <StatCard title="DVR Store"  :value="formatBytes(stats.dvr_storage)" color="blue" />
         </div>
 
+        <!-- System resources -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="text-sm font-semibold text-white">System Resources</h2>
+                <span class="text-xs text-slate-500">refreshes every 5s</span>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div class="bg-slate-800/50 rounded-lg p-3">
+                    <div class="text-xs text-slate-500 mb-1">CPU Usage</div>
+                    <div class="flex items-end gap-2">
+                        <span class="text-2xl font-bold text-white">{{ system.cpu_percent ?? 0 }}%</span>
+                        <span class="text-xs text-slate-400 mb-1">/ {{ system.cpu_cores ?? 1 }} cores</span>
+                    </div>
+                    <div class="text-xs text-slate-500 mt-1">
+                        Load: {{ system.load_average_1m ?? 0 }} / {{ system.load_average_5m ?? 0 }} / {{ system.load_average_15m ?? 0 }}
+                    </div>
+                </div>
+                <div class="bg-slate-800/50 rounded-lg p-3">
+                    <div class="text-xs text-slate-500 mb-1">Memory</div>
+                    <div class="flex items-end gap-2">
+                        <span class="text-2xl font-bold text-white">{{ system.memory?.used_percent ?? 0 }}%</span>
+                        <span class="text-xs text-slate-400 mb-1">
+                            {{ system.memory?.used_mb ?? 0 }} / {{ system.memory?.total_mb ?? 0 }} MB
+                        </span>
+                    </div>
+                    <div class="text-xs text-slate-500 mt-1">
+                        {{ system.memory?.free_mb ?? 0 }} MB free
+                    </div>
+                </div>
+                <div class="bg-slate-800/50 rounded-lg p-3">
+                    <div class="text-xs text-slate-500 mb-1">DVR Disk</div>
+                    <div class="flex items-end gap-2">
+                        <span class="text-2xl font-bold"
+                              :class="diskPct > 90 ? 'text-red-400' : diskPct > 70 ? 'text-yellow-400' : 'text-green-400'">
+                            {{ diskPct }}%
+                        </span>
+                        <span class="text-xs text-slate-400 mb-1">used</span>
+                    </div>
+                    <div class="text-xs text-slate-500 mt-1">{{ formatBytes(dvrUsed) }} / {{ formatBytes(dvrTotal) }}</div>
+                </div>
+            </div>
+        </div>
+
         <!-- Channel grid -->
         <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden mb-6">
             <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
@@ -118,7 +161,7 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref, reactive } from 'vue'
+import { onMounted, onUnmounted, ref, reactive, computed } from 'vue'
 import { Link } from '@inertiajs/vue3'
 import AppLayout from '@/Layouts/AppLayout.vue'
 import StatusBadge from '@/Components/StatusBadge.vue'
@@ -138,6 +181,18 @@ const counts = reactive({
     error:    props.stats.error,
     idle:     props.stats.idle,
 })
+
+const system = reactive({
+    cpu_percent: 0,
+    cpu_cores: 1,
+    load_average_1m: 0,
+    load_average_5m: 0,
+    load_average_15m: 0,
+    memory: { total_mb: 0, free_mb: 0, used_mb: 0, used_percent: 0 },
+})
+
+const dvrUsed = ref(props.stats.dvr_storage ?? 0)
+const dvrTotal = ref(0)
 
 let timer = null
 
@@ -160,8 +215,20 @@ async function pollStatus() {
         counts.fallback = data.channels.filter(c => ['fallback', 'dvr_playback'].includes(c.stream_status)).length
         counts.error    = data.channels.filter(c => c.stream_status === 'error').length
         counts.idle     = data.channels.filter(c => ['idle', 'stopped', 'offline'].includes(c.stream_status)).length
+
+        if (data.system) {
+            Object.assign(system, data.system)
+        }
+        if (data.disk) {
+            dvrUsed.value = data.disk.used ?? 0
+            dvrTotal.value = data.disk.total ?? 0
+        }
     } catch {}
 }
+
+const diskPct = computed(() => {
+    return dvrTotal.value > 0 ? Math.round((dvrUsed.value / dvrTotal.value) * 100) : 0
+})
 
 onMounted(() => { timer = setInterval(pollStatus, 5000) })
 onUnmounted(() => clearInterval(timer))

@@ -7,13 +7,10 @@ namespace Tests\Feature;
 use App\Models\Channel;
 use App\Models\Setting;
 use App\Models\User;
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class HealthCheckTest extends TestCase
 {
-    use RefreshDatabase;
-
     /** @test */
     public function health_endpoint_returns_ok(): void
     {
@@ -36,8 +33,6 @@ class HealthCheckTest extends TestCase
 
 class ChannelApiTest extends TestCase
 {
-    use RefreshDatabase;
-
     private User $user;
 
     protected function setUp(): void
@@ -109,14 +104,18 @@ class ChannelApiTest extends TestCase
     /** @test */
     public function health_endpoint_does_not_require_auth(): void
     {
-        $this->getJson('/api/health')->assertStatus(200);
+        $response = $this->getJson('/api/health');
+
+        // The endpoint must not require authentication. Its status depends on
+        // whether ffmpeg is installed in the current environment (200 = healthy,
+        // 503 = degraded). Both are valid as long as we are not rejected as 401.
+        $this->assertNotSame(401, $response->getStatusCode());
+        $response->assertJsonStructure(['status', 'timestamp', 'checks']);
     }
 }
 
 class SettingsTest extends TestCase
 {
-    use RefreshDatabase;
-
     /** @test */
     public function it_stores_and_retrieves_typed_setting_values(): void
     {

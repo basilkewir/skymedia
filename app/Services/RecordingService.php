@@ -33,11 +33,12 @@ class RecordingService
             return true;
         }
 
-        $dvrDir  = $channel->dvr_directory;
-        $m3u8    = "{$dvrDir}/live.m3u8";
+        $dvrDir = $channel->dvr_directory;
+        $m3u8 = "{$dvrDir}/live.m3u8";
 
-        if (!file_exists($m3u8)) {
+        if (! file_exists($m3u8)) {
             Log::debug("[Recording] {$channel->name}: live.m3u8 not yet available");
+
             return false;
         }
 
@@ -46,16 +47,16 @@ class RecordingService
 
         // Create DB record so UI shows it immediately
         $recording = Recording::create([
-            'channel_id'  => $channel->id,
-            'filepath'    => $filepath,
-            'filename'    => $filename,
-            'status'      => 'recording',
-            'filesize'    => 0,
-            'duration'    => 0,
-            'started_at'  => now(),
+            'channel_id' => $channel->id,
+            'filepath' => $filepath,
+            'filename' => $filename,
+            'status' => 'recording',
+            'filesize' => 0,
+            'duration' => 0,
+            'started_at' => now(),
         ]);
 
-        $cmd     = $this->buildCommand($channel, $m3u8, $filepath);
+        $cmd = $this->buildCommand($channel, $m3u8, $filepath);
         $pidFile = $this->ffmpeg->pidFile($channel, 'record');
         $logFile = $this->ffmpeg->logFile($channel, 'record');
 
@@ -63,17 +64,19 @@ class RecordingService
             $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile);
 
             $channel->update([
-                'record_pid'    => $pid,
+                'record_pid' => $pid,
                 'record_status' => 'recording',
             ]);
 
             Log::info("[Recording] {$channel->name} started — PID {$pid} → {$filename}");
+
             return true;
 
         } catch (\Throwable $e) {
             $recording->update(['status' => 'failed', 'completed_at' => now()]);
             $channel->update(['record_pid' => null, 'record_status' => 'idle']);
             Log::error("[Recording] {$channel->name} failed: {$e->getMessage()}");
+
             return false;
         }
     }
@@ -81,10 +84,12 @@ class RecordingService
     public function stop(Channel $channel): void
     {
         $pidFile = $this->ffmpeg->pidFile($channel, 'record');
-        $pid     = $this->ffmpeg->readPid($pidFile);
+        $pid = $this->ffmpeg->readPid($pidFile);
 
         if ($pid > 0) {
-            $this->ffmpeg->stopProcess($pid);
+            // Give recordings plenty of time to finalise the MP4 moov atom.
+            // A SIGKILL before ffmpeg writes the trailer leaves an unplayable file.
+            $this->ffmpeg->stopProcess($pid, 20);
         }
 
         $this->ffmpeg->clearPid($pidFile);
@@ -97,16 +102,18 @@ class RecordingService
             ->first();
 
         if ($recording) {
-            if (file_exists($recording->filepath) && filesize($recording->filepath) > 1024) {
+            $isPlayable = $this->ffmpeg->isPlayableFile($recording->filepath);
+            if ($isPlayable) {
                 $recording->update([
-                    'status'       => 'completed',
-                    'filesize'     => filesize($recording->filepath),
+                    'status' => 'completed',
+                    'filesize' => filesize($recording->filepath),
                     'completed_at' => now(),
                 ]);
                 // Always promote latest completed recording as fallback
                 $channel->update(['fallback_recording_path' => $recording->filepath]);
             } else {
                 $recording->update(['status' => 'failed', 'completed_at' => now()]);
+                @unlink($recording->filepath);
             }
         }
 
@@ -123,7 +130,7 @@ class RecordingService
      */
     public function refreshProgress(Channel $channel): void
     {
-        if (!$channel->record_pid || $channel->record_status !== 'recording') {
+        if (! $channel->record_pid || $channel->record_status !== 'recording') {
             return;
         }
 
@@ -132,11 +139,11 @@ class RecordingService
             ->latest('started_at')
             ->first();
 
-        if (!$recording) {
+        if (! $recording) {
             return;
         }
 
-        $size    = file_exists($recording->filepath) ? (filesize($recording->filepath) ?: 0) : 0;
+        $size = file_exists($recording->filepath) ? (filesize($recording->filepath) ?: 0) : 0;
         $elapsed = (int) now()->diffInSeconds($recording->started_at);
 
         $recording->update(['filesize' => $size, 'duration' => $elapsed]);
@@ -144,10 +151,11 @@ class RecordingService
 
     public function justFinished(Channel $channel): bool
     {
-        if (!$channel->record_pid || $channel->record_pid <= 0) {
+        if (! $channel->record_pid || $channel->record_pid <= 0) {
             return false;
         }
-        return !$this->ffmpeg->isRunning((int) $channel->record_pid);
+
+        return ! $this->ffmpeg->isRunning((int) $channel->record_pid);
     }
 
     public function finish(Channel $channel): void
@@ -160,8 +168,9 @@ class RecordingService
             ->latest('started_at')
             ->first();
 
-        if (!$recording) {
+        if (! $recording) {
             $channel->update(['record_pid' => null, 'record_status' => 'idle']);
+
             return;
         }
 
@@ -178,6 +187,7 @@ class RecordingService
     public function isRunning(Channel $channel): bool
     {
         $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'record'));
+
         return $pid > 0 && $this->ffmpeg->isRunning($pid);
     }
 
@@ -198,13 +208,65 @@ class RecordingService
 
     public function shouldRecord(Channel $channel): bool
     {
-        if ($this->isRunning($channel)) return false;
-        if ($channel->record_status === 'recording') return false;
-        if (!$this->ffmpeg->hlsReady($channel, 2)) return false;
-
-        // Continuous mode: always record when live (splits into rolling files)
+        // 0 = disabled; positive value = length of each recording file in seconds
         if ($channel->record_duration <= 0) {
-            return true;
+            return false;
+        }
+        if ($this->isRunning($channel)) {
+            return false;
+        }
+        if ($channel->record_status === 'recording') {
+            return false;
+        }
+        if (! $this->ffmpeg->hlsReady($channel, 2)) {
+            return false;
+        }
+        if (! $this->hasEnoughDiskSpace($channel)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Abort an active recording if the disk is too full. Called every monitor tick.
+     */
+    public function abortIfDiskFull(Channel $channel): bool
+    {
+        if (! $this->isRunning($channel)) {
+            return false;
+        }
+
+        if ($this->hasEnoughDiskSpace($channel)) {
+            return false;
+        }
+
+        Log::error("[Recording] {$channel->name} stopped — disk space below safe threshold");
+        $this->stop($channel);
+        $channel->update(['last_error' => 'Recording stopped: insufficient disk space']);
+
+        return true;
+    }
+
+    private function hasEnoughDiskSpace(Channel $channel): bool
+    {
+        $dvrDir = $channel->dvr_directory;
+        if (! is_dir($dvrDir)) {
+            mkdir($dvrDir, 0755, true);
+        }
+
+        $free = disk_free_space($dvrDir);
+        if ($free === false) {
+            Log::warning("[Recording] {$channel->name}: unable to determine free disk space");
+
+            return false;
+        }
+
+        $minimum = (int) config('skymedia.min_free_disk_bytes', 5 * 1024 * 1024 * 1024);
+        if ($free < $minimum) {
+            Log::warning("[Recording] {$channel->name}: free disk space " . round($free / 1_073_741_824, 2) . ' GB is below minimum ' . round($minimum / 1_073_741_824, 2) . ' GB');
+
+            return false;
         }
 
         return true;
@@ -232,10 +294,10 @@ class RecordingService
         // Timecode burn-in overlay for fallback VODs
         if ($channel->recording_burn_timestamp) {
             $cmd = array_merge($cmd, [
-                '-vf', "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
+                '-vf', 'drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:'
                      . "text='%{pts\:gmtime\:{$channel->timezone}\:%Y-%m-%d %H\\\\:%M\\\\:%S}':"
-                     . "fontsize=18:fontcolor=white:box=1:boxcolor=black@0.5:"
-                     . "x=10:y=h-th-10",
+                     . 'fontsize=18:fontcolor=white:box=1:boxcolor=black@0.5:'
+                     . 'x=10:y=h-th-10',
             ]);
         }
 
@@ -253,24 +315,32 @@ class RecordingService
 
     private function pruneOld(Channel $channel, int $keep = 3): void
     {
-        // Delete and unlink old completed recordings beyond keep limit
+        $minRetentionHours = max(1, (int) config('skymedia.min_recording_retention_hours', 24));
+        $retentionCutoff = now()->subHours($minRetentionHours);
+
+        // Delete and unlink old completed recordings beyond keep limit,
+        // but never delete recordings that are still within the minimum
+        // retention window (so fallback VOD is available for at least a day).
         Recording::where('channel_id', $channel->id)
             ->where('status', 'completed')
             ->orderByDesc('completed_at')
             ->skip($keep)
             ->take(1000)
             ->get()
-            ->each(function (Recording $rec) use ($channel) {
+            ->each(function (Recording $rec) use ($channel, $retentionCutoff) {
+                if ($rec->completed_at !== null && $rec->completed_at->gt($retentionCutoff)) {
+                    return;
+                }
                 if ($rec->filepath !== $channel->fallback_recording_path) {
                     @unlink($rec->filepath);
                 }
                 $rec->delete();
             });
 
-        // Clean up failed recordings older than 1 hour (keep DB tidy)
+        // Clean up failed recordings older than the retention window.
         Recording::where('channel_id', $channel->id)
             ->where('status', 'failed')
-            ->where('created_at', '<', now()->subHour())
+            ->where('created_at', '<', $retentionCutoff)
             ->each(function (Recording $rec) {
                 @unlink($rec->filepath);
                 $rec->delete();

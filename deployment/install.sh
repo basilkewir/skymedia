@@ -252,6 +252,7 @@ else
     ok "Supervisor already installed — skipping"
 fi
 systemctl enable supervisor --quiet
+systemctl start supervisor --quiet || true
 
 # ─────────────────────────────────────────────────────────────────────────────
 step "9 / 10  Directories & permissions"
