@@ -60,16 +60,23 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Link, useForm } from '@inertiajs/vue3'
 import AppLayout from '@/Layouts/AppLayout.vue'
 import Section from '@/Components/Section.vue'
 import FormField from '@/Components/FormField.vue'
 
 const props = defineProps({ channel:Object, previewUrl:String })
-const vods = props.channel.media.filter(x => x.type === 'vod')
+const vods = computed(() => props.channel.media.filter(x => x.type === 'vod'))
 const logos = computed(() => props.channel.media.filter(x => x.type === 'logo'))
-const form = useForm({ playlist: vods.map(x => ({...x})), logo_media_id: props.channel.logo_media_id, logo_position: props.channel.logo_position || 'top-right', ticker_enabled: Boolean(props.channel.ticker_enabled), ticker_text: props.channel.ticker_text || '' })
+const form = useForm({ playlist: [], logo_media_id: null, logo_position: 'top-right', ticker_enabled: false, ticker_text: '' })
+watch(() => props.channel, (ch) => {
+  form.playlist = ch.media.filter(x => x.type === 'vod').map(x => ({...x}))
+  form.logo_media_id = ch.logo_media_id
+  form.logo_position = ch.logo_position || 'top-right'
+  form.ticker_enabled = Boolean(ch.ticker_enabled)
+  form.ticker_text = ch.ticker_text || ''
+}, { immediate: true })
 const vodForm = useForm({ type:'vod', file:null })
 const logoForm = useForm({ type:'logo', file:null })
 const player = ref(null); let hls = null
