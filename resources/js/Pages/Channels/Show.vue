@@ -40,29 +40,30 @@
                     </div>
                     </div>
                     <div class="flex items-center gap-2 flex-wrap justify-end">
-                        <button @click="probeStream" :disabled="probing"
+                        <Link v-if="isManaged" :href="route('channels.content', channel.id)" class="px-3 py-1.5 text-xs text-indigo-300 border border-indigo-500/30 rounded-lg hover:bg-indigo-500/10">Content Manager</Link>
+                        <button v-if="isAdmin || !isManaged" @click="probeStream" :disabled="probing"
                                 class="px-3 py-1.5 text-xs text-slate-300 border border-slate-700 rounded-lg hover:border-slate-500 transition-colors disabled:opacity-40">
                             {{ probing ? 'Probing…' : '🔍 Probe Source' }}
                         </button>
-                        <button @click="diagnoseIngest" :disabled="diagnosing"
+                        <button v-if="isAdmin || !isManaged" @click="diagnoseIngest" :disabled="diagnosing"
                                 class="px-3 py-1.5 text-xs text-orange-400 border border-orange-500/30 rounded-lg hover:bg-orange-500/10 transition-colors disabled:opacity-40"
                                 title="Runs ffmpeg for 5s and shows the exact error output">
                             {{ diagnosing ? 'Running…' : '🩺 Diagnose' }}
                         </button>
-                        <Link :href="route('channels.restart', channel.id)" method="post" as="button"
+                        <Link v-if="isAdmin || !isManaged" :href="route('channels.restart', channel.id)" method="post" as="button"
                               class="px-3 py-1.5 text-xs text-yellow-400 border border-yellow-500/30 rounded-lg hover:bg-yellow-500/10 transition-colors">
                             ↺ Restart
                         </Link>
-                        <Link :href="route('channels.edit', channel.id)"
+                        <Link v-if="isAdmin || !isManaged" :href="route('channels.edit', channel.id)"
                               class="px-3 py-1.5 text-xs text-slate-300 border border-slate-700 rounded-lg hover:border-slate-500 transition-colors">
                             ✎ Edit
                         </Link>
-                        <Link :href="route('channels.clone', channel.id)" method="post" as="button"
+                        <Link v-if="isAdmin" :href="route('channels.clone', channel.id)" method="post" as="button"
                               class="px-3 py-1.5 text-xs text-indigo-400 border border-indigo-500/30 rounded-lg hover:bg-indigo-500/10 transition-colors"
                               title="Duplicate all settings to a new channel">
                             ⧉ Clone
                         </Link>
-                        <Link :href="route('channels.toggle', channel.id)" method="post" as="button"
+                        <Link v-if="isAdmin || !isManaged" :href="route('channels.toggle', channel.id)" method="post" as="button"
                               class="px-4 py-1.5 text-xs font-semibold rounded-lg transition-colors"
                               :class="channel.is_active
                                   ? 'bg-red-600/20 text-red-400 border border-red-500/30 hover:bg-red-600/30'
@@ -74,15 +75,16 @@
 
                 <!-- Info grid -->
                 <div class="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    <InfoItem label="Source" :value="channel.source_type.toUpperCase()" :sub="channel.source_url" />
-                    <InfoItem label="Push Output" :value="channel.push_protocol.toUpperCase()" :sub="channel.push_url + '/' + channel.push_stream_key" />
-                    <InfoItem label="Video Codec" :value="channel.push_video_codec.toUpperCase()"
+                    <InfoItem label="Source" :value="channel.source_type.toUpperCase()"
+                              :sub="channel.ingest_mode === 'push' ? channel.published_ingest_url : channel.source_url" />
+                    <InfoItem v-if="isAdmin || !isManaged" label="Push Output" :value="channel.push_protocol.toUpperCase()" :sub="channel.push_url + '/' + channel.push_stream_key" />
+                    <InfoItem v-if="isAdmin || !isManaged" label="Video Codec" :value="channel.push_video_codec.toUpperCase()"
                               :sub="channel.push_video_bitrate ? channel.push_video_bitrate + ' kbps' + (channel.push_resolution ? ' · ' + channel.push_resolution : '') : 'passthrough'" />
-                    <InfoItem label="Audio Codec" :value="channel.push_audio_codec.toUpperCase()"
+                    <InfoItem v-if="isAdmin || !isManaged" label="Audio Codec" :value="channel.push_audio_codec.toUpperCase()"
                               :sub="channel.push_audio_codec !== 'copy' ? (channel.push_audio_bitrate + 'k · ' + channel.push_audio_samplerate + 'Hz · ' + (channel.push_audio_channels === 1 ? 'mono' : channel.push_audio_channels === 6 ? '5.1' : 'stereo')) : 'passthrough'" />
-                    <InfoItem label="DVR Window" :value="channel.dvr_window_label" />
-                    <InfoItem label="Recording File" :value="channel.record_duration > 0 ? channel.record_duration_label : 'Disabled'" />
-                    <InfoItem label="Health Check" :value="'Every ' + channel.check_interval + 's'" />
+                    <InfoItem v-if="isAdmin || !isManaged" label="DVR Window" :value="channel.dvr_window_label" />
+                    <InfoItem v-if="isAdmin || !isManaged" label="Recording File" :value="channel.record_duration > 0 ? channel.record_duration_label : 'Disabled'" />
+                    <InfoItem v-if="isAdmin || !isManaged" label="Health Check" :value="'Every ' + channel.check_interval + 's'" />
                     <InfoItem label="Last Live" :value="channel.last_live_at ? new Date(channel.last_live_at).toLocaleString() : 'Never'" />
                 </div>
             </div>
@@ -90,14 +92,55 @@
             <!-- Status row -->
             <div class="grid grid-cols-2 sm:grid-cols-5 gap-4">
                 <StatusCard label="Ingest" :status="state.stream_status" :pid="state.pid" />
-                <StatusCard label="Playout" :status="state.playout_status" :pid="state.playout_pid" />
-                <StatusCard label="Push Output" :status="state.push_status" :pid="state.push_pid" />
-                <StatusCard label="DVR Recording" :status="state.dvr_status" />
-                <StatusCard label="File Recording" :status="state.record_status" :pid="state.record_pid" />
+                <StatusCard v-if="isAdmin || !isManaged" label="Playout" :status="state.playout_status" :pid="state.playout_pid" />
+                <StatusCard v-if="isAdmin || !isManaged" label="Push Output" :status="state.push_status" :pid="state.push_pid" />
+                <StatusCard v-if="isAdmin || !isManaged" label="DVR Recording" :status="state.dvr_status" />
+                <StatusCard v-if="isAdmin || !isManaged" label="File Recording" :status="state.record_status" :pid="state.record_pid" />
+            </div>
+
+            <div v-if="isManaged" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <div class="lg:col-span-2 bg-slate-900 border border-indigo-500/30 rounded-xl p-6">
+                    <h2 class="text-sm font-semibold text-white mb-3">Publisher Connection</h2>
+                    <div v-if="channel.source_type === 'rtmp'" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <div class="text-xs text-slate-500 mb-1">OBS / vMix Server</div>
+                            <div class="font-mono text-sm text-indigo-300 bg-slate-950 rounded-lg px-3 py-2 break-all">{{ channel.published_ingest_server }}</div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-slate-500 mb-1">Stream Key</div>
+                            <div class="font-mono text-sm text-indigo-300 bg-slate-950 rounded-lg px-3 py-2 break-all">{{ channel.rtmp_input_key }}</div>
+                        </div>
+                    </div>
+                    <div v-else>
+                        <div class="text-xs text-slate-500 mb-1">SRT Caller URL</div>
+                        <div class="font-mono text-sm text-indigo-300 bg-slate-950 rounded-lg px-3 py-2 break-all">{{ channel.published_ingest_server }}</div>
+                    </div>
+                    <p class="mt-3 text-xs" :class="state.pid ? 'text-green-400' : 'text-yellow-400'">
+                        {{ state.pid ? 'Listener is ready for a publisher.' : 'Listener is not running. Ask an administrator to start this channel.' }}
+                    </p>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+                    <h2 class="text-sm font-semibold text-white mb-3">Channel Preview</h2>
+                    <video ref="previewPlayer" controls autoplay muted playsinline class="w-full aspect-video bg-black rounded-lg" />
+                    <p class="mt-2 text-xs text-slate-500">Preview becomes available after the publisher starts sending media.</p>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+                    <h2 class="text-sm font-semibold text-white mb-2">Fallback VOD</h2>
+                    <p class="text-xs text-slate-500 mb-4">This uploaded video loops whenever the pushed source is unavailable.</p>
+                    <div v-if="state.fallback_vod_name" class="flex items-center justify-between gap-3">
+                        <span class="text-sm text-slate-300 break-all">{{ state.fallback_vod_name }}</span>
+                        <Link :href="route('channels.fallback-vod.remove', channel.id)" method="delete" as="button" class="text-xs text-red-400">Remove</Link>
+                    </div>
+                    <form v-else @submit.prevent="uploadFallback" class="space-y-3">
+                        <input type="file" accept="video/*,.mkv,.ts" @change="fallbackForm.fallback_vod = $event.target.files[0]" class="form-input text-sm" required />
+                        <button :disabled="fallbackForm.processing" class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg disabled:opacity-50">Upload VOD</button>
+                        <p v-if="fallbackForm.errors.fallback_vod" class="text-xs text-red-400">{{ fallbackForm.errors.fallback_vod }}</p>
+                    </form>
+                </div>
             </div>
 
             <!-- Push controls -->
-            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+            <div v-if="isAdmin || !isManaged" class="bg-slate-900 border border-slate-800 rounded-xl p-6">
                 <h2 class="text-sm font-semibold text-white mb-4">Output Control</h2>
                 <div class="space-y-4">
 
@@ -139,7 +182,7 @@
             </div>
 
             <!-- Push log viewer -->
-            <div v-if="showPushLog" class="bg-slate-900 border border-indigo-500/30 rounded-xl p-6">
+            <div v-if="(isAdmin || !isManaged) && showPushLog" class="bg-slate-900 border border-indigo-500/30 rounded-xl p-6">
                 <div class="flex items-center justify-between mb-3">
                     <h2 class="text-sm font-semibold text-indigo-400">📋 Push Output Log</h2>
                     <span class="text-xs text-slate-500">ffmpeg stderr/stdout — last 80 lines</span>
@@ -150,7 +193,7 @@
             </div>
 
             <!-- DVR progress -->
-            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+            <div v-if="isAdmin || !isManaged" class="bg-slate-900 border border-slate-800 rounded-xl p-6">
                 <div class="flex items-center justify-between mb-3">
                     <div>
                         <h2 class="text-sm font-semibold text-white">DVR Rolling Buffer</h2>
@@ -179,7 +222,7 @@
             </div>
 
             <!-- Recordings -->
-            <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+            <div v-if="isAdmin || !isManaged" class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
                 <div class="px-6 py-4 border-b border-slate-800">
                     <h2 class="text-sm font-semibold text-white">Recording Files</h2>
                     <p class="text-xs text-slate-500 mt-0.5">
@@ -308,13 +351,17 @@
 
 <script setup>
 import { onMounted, onUnmounted, ref, reactive } from 'vue'
-import { Link } from '@inertiajs/vue3'
+import { Link, useForm } from '@inertiajs/vue3'
 import AppLayout from '@/Layouts/AppLayout.vue'
 import StatusBadge from '@/Components/StatusBadge.vue'
 import StatusCard from '@/Components/StatusCard.vue'
 import InfoItem from '@/Components/InfoItem.vue'
 
-const props = defineProps({ channel: Object })
+const props = defineProps({ channel: Object, isAdmin: Boolean, previewUrl: String })
+const isManaged = props.channel.ingest_mode === 'push'
+const fallbackForm = useForm({ fallback_vod: null })
+const previewPlayer = ref(null)
+let hlsPlayer = null
 
 // Live-reactive channel state (updated by polling)
 const state = reactive({
@@ -333,6 +380,7 @@ const state = reactive({
     dvr_total_size:           props.channel.dvr_total_size    ?? 0,
     dvr_segment_count:        props.channel.dvr_segment_count ?? 0,
     fallback_recording_path:  props.channel.fallback_recording_path,
+    fallback_vod_name:        props.channel.fallback_vod_name,
     recordings:               props.channel.recordings        ?? [],
     last_live_at:             props.channel.last_live_at,
 })
@@ -350,12 +398,11 @@ let timer = null
 async function poll() {
     try {
         // Fetch status + logs in parallel
-        const [statusRes, logsRes] = await Promise.all([
-            fetch(route('channels.status', props.channel.id)),
-            fetch(route('channels.logs',   props.channel.id)),
-        ])
+        const requests = [fetch(route('channels.status', props.channel.id))]
+        if (props.isAdmin || !isManaged) requests.push(fetch(route('channels.logs', props.channel.id)))
+        const [statusRes, logsRes] = await Promise.all(requests)
         const status = await statusRes.json()
-        const newLogs = await logsRes.json()
+        const newLogs = logsRes ? await logsRes.json() : []
 
         // Update reactive state
         Object.assign(state, {
@@ -374,12 +421,17 @@ async function poll() {
             dvr_total_size:          status.dvr_total_size    ?? state.dvr_total_size,
             dvr_segment_count:       status.dvr_segment_count ?? state.dvr_segment_count,
             fallback_recording_path: status.fallback_recording_path,
+            fallback_vod_name:       status.fallback_vod_name,
             recordings:              status.recordings        ?? state.recordings,
             last_live_at:            status.last_live_at,
         })
 
         logs.value = newLogs
     } catch {}
+}
+
+function uploadFallback() {
+    fallbackForm.post(route('channels.fallback-vod.upload', props.channel.id), { forceFormData: true })
 }
 
 async function probeStream() {
@@ -407,8 +459,26 @@ async function diagnoseIngest() {
     }
 }
 
-onMounted(() => { poll(); timer = setInterval(poll, 4000) })
-onUnmounted(() => clearInterval(timer))
+onMounted(async () => {
+    poll()
+    timer = setInterval(poll, 4000)
+    if (isManaged && previewPlayer.value) {
+        if (previewPlayer.value.canPlayType('application/vnd.apple.mpegurl')) {
+            previewPlayer.value.src = props.previewUrl
+        } else {
+            const { default: Hls } = await import('hls.js')
+            if (Hls.isSupported()) {
+                hlsPlayer = new Hls({ liveSyncDurationCount: 3 })
+                hlsPlayer.loadSource(props.previewUrl)
+                hlsPlayer.attachMedia(previewPlayer.value)
+            }
+        }
+    }
+})
+onUnmounted(() => {
+    clearInterval(timer)
+    hlsPlayer?.destroy()
+})
 
 async function togglePushLog() {
     showPushLog.value = !showPushLog.value

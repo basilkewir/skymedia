@@ -7,6 +7,9 @@ services:
     restart: unless-stopped
     ports:
       - "8080:80"
+      - "20000-20099:20000-20099/tcp"
+      - "30000-30099:30000-30099/udp"
+      - "19350-19399:19350-19399/tcp"
     environment:
       SKYMEDIA_PROD: "true"
       APP_URL: "${APP_URL:-http://localhost}"
@@ -25,6 +28,16 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  rtmp:
+    image: alfg/nginx-rtmp
+    restart: unless-stopped
+    ports:
+      - "1935:1935"
+      - "8081:8081"
+    environment:
+      - RTMP_PORT=1935
+      - HTTP_PORT=8081
 
   db:
     image: mysql:8.0

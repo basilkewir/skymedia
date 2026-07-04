@@ -218,6 +218,10 @@ class FFmpegService
         $m3u8 = "{$dvrDir}/live.m3u8";
         $segPattern = "{$dvrDir}/seg_%05d.ts";
 
+        // Managed RTMP/SRT publishers are relay-only. Keep only the small HLS
+        // working buffer required for preview/fallback switching.
+        $dvrEnabled = ! $channel->isPushIngest() && $channel->dvr_enabled !== false;
+
         return array_merge(
             [
                 $this->ffmpegBin,
@@ -231,13 +235,15 @@ class FFmpegService
                 '-c:a', 'copy',
                 '-f',                    'hls',
                 '-hls_time',             (string) max(1, (int) $channel->segment_duration),
-                '-hls_list_size',        '10',
-                '-hls_flags',            'delete_segments+omit_endlist+append_list',
-                '-hls_delete_threshold', '3',
+                '-hls_list_size',        $dvrEnabled ? '10' : '5',
+                '-hls_flags',            'delete_segments+omit_endlist',
+                '-hls_delete_threshold', $dvrEnabled ? '3' : '2',
                 '-hls_segment_type',     'mpegts',
                 '-hls_segment_filename', $segPattern,
                 '-hls_allow_cache',      '0',
-                '-start_number',         '0',
+                // Epoch-derived numbering prevents sequence rollback when
+                // switching between independently generated live/VOD HLS.
+                '-hls_start_number_source', 'epoch',
                 $m3u8,
             ]
         );
@@ -264,7 +270,9 @@ class FFmpegService
             '-i',                  $playlistPath,
         ];
 
-        $cmd = array_merge($cmd, $this->videoEncodeFlags($channel));
+        $branding = $this->brandingFlags($channel);
+        $cmd = array_merge($cmd, $branding['inputs']);
+        $cmd = array_merge($cmd, $branding['video'] ?: $this->videoEncodeFlags($channel));
         $cmd = array_merge($cmd, $this->audioEncodeFlags($channel));
 
         if ($protocol === 'srt') {
@@ -283,6 +291,32 @@ class FFmpegService
         }
 
         return $cmd;
+    }
+
+    private function brandingFlags(Channel $channel): array
+    {
+        $channel->loadMissing('logoMedia');
+        $logo = $channel->logoMedia;
+        $hasLogo = $logo && file_exists($logo->filepath);
+        $hasTicker = $channel->ticker_enabled && trim((string) $channel->ticker_text) !== '';
+        if (! $hasLogo && ! $hasTicker) return ['inputs' => [], 'video' => []];
+
+        $inputs = $hasLogo ? ['-loop', '1', '-i', $logo->filepath] : [];
+        $position = match ($channel->logo_position) {
+            'top-left' => '20:20', 'bottom-left' => '20:H-h-20',
+            'bottom-right' => 'W-w-20:H-h-20', default => 'W-w-20:20',
+        };
+        $text = str_replace(['\\', ':', "'", '%'], ['\\\\', '\\:', "\\'", '\\%'], (string) $channel->ticker_text);
+        $ticker = "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='{$text}':fontcolor=white:fontsize=28:box=1:boxcolor=black@0.65:boxborderw=10:x=w-mod(t*100\,w+tw):y=h-th-25";
+
+        if ($hasLogo) {
+            $filter = "[1:v][0:v]scale2ref=w=main_w*0.15:h=-1[logo][base];[base][logo]overlay={$position}[branded]";
+            $filter .= $hasTicker ? ";[branded]{$ticker}[vout]" : ';[branded]null[vout]';
+            $video = ['-filter_complex', $filter, '-map', '[vout]', '-map', '0:a?', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p'];
+        } else {
+            $video = ['-vf', $ticker, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p'];
+        }
+        return ['inputs' => $inputs, 'video' => $video];
     }
 
     /**
@@ -445,6 +479,10 @@ class FFmpegService
 
     public function checkSourceHealth(Channel $channel): bool
     {
+        if ($channel->isPushIngest()) {
+            return false;
+        }
+
         try {
             $url = $this->effectiveSourceUrl($channel);
 
@@ -501,6 +539,10 @@ class FFmpegService
 
     public function probeStream(Channel $channel): array
     {
+        if ($channel->isPushIngest()) {
+            return ['error' => 'Push ingest listeners are monitored from received media segments.'];
+        }
+
         $proc = new Process($this->buildProbeCommand($channel));
         $proc->setTimeout(15);
         $proc->run();
@@ -537,6 +579,15 @@ class FFmpegService
         $segPattern = str_contains($target, 'playout') ? 'playout_*.ts' : 'seg_*.ts';
 
         return count(glob($dvrDir . '/' . $segPattern) ?: []) >= $minSegments;
+    }
+
+    /** Check the ingest playlist directly, even while output.m3u8 is on fallback. */
+    public function liveHlsReady(Channel $channel, int $minSegments = 2): bool
+    {
+        $dvrDir = $channel->dvr_directory;
+        if (! file_exists($dvrDir . '/live.m3u8')) return false;
+
+        return count(glob($dvrDir . '/seg_*.ts') ?: []) >= $minSegments;
     }
 
     /**
@@ -658,10 +709,30 @@ class FFmpegService
      */
     protected function inputFlags(Channel $channel): array
     {
-        $url = $channel->source_url;
+        $url = $channel->isPushIngest() ? $channel->ingest_listen_url : $channel->source_url;
         $type = $channel->source_type;
         $probesize = '5000000';
         $analyze = '3000000';
+
+        if ($channel->isPushIngest()) {
+            if ($type === 'srt') {
+                $latency = $this->srtLatencyMs() * 1000;
+                $separator = str_contains($url, '?') ? '&' : '?';
+                $url .= "{$separator}latency={$latency}";
+            }
+
+            $flags = [
+                '-fflags', '+genpts+discardcorrupt',
+                '-probesize', $probesize,
+                '-analyzeduration', $analyze,
+            ];
+            if ($type === 'rtmp') {
+                array_push($flags, '-listen', '1');
+            }
+            array_push($flags, '-i', $url);
+
+            return $flags;
+        }
 
         // Detect HTTP MPEG-TS: http(s) URL but NOT an HLS playlist
         $isHttpMpegts = $this->isHttpMpegts($url, $type);

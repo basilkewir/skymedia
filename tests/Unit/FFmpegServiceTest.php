@@ -56,6 +56,48 @@ class FFmpegServiceTest extends TestCase
     }
 
     /** @test */
+    public function it_builds_an_rtmp_push_listener_ingest_command(): void
+    {
+        $channel = $this->makeChannel('rtmp', 'push://listener');
+        $channel->ingest_mode = 'push';
+        $channel->ingest_port = 20001;
+        $channel->rtmp_input_key = 'secret-key';
+
+        $cmd = implode(' ', $this->ffmpeg->buildIngestCommand($channel));
+
+        $this->assertStringContainsString('-listen 1', $cmd);
+        $this->assertStringContainsString('rtmp://0.0.0.0:20001/live/secret-key', $cmd);
+    }
+
+    /** @test */
+    public function it_builds_an_srt_push_listener_ingest_command(): void
+    {
+        $channel = $this->makeChannel('srt', 'push://listener');
+        $channel->ingest_mode = 'push';
+        $channel->ingest_port = 30001;
+
+        $cmd = implode(' ', $this->ffmpeg->buildIngestCommand($channel));
+
+        $this->assertStringContainsString('srt://0.0.0.0:30001?mode=listener', $cmd);
+        $this->assertStringNotContainsString('-listen 1', $cmd);
+    }
+
+    /** @test */
+    public function it_uses_only_a_small_live_buffer_when_dvr_is_disabled(): void
+    {
+        $channel = $this->makeChannel('rtmp', 'push://listener');
+        $channel->ingest_mode = 'push';
+        $channel->ingest_port = 20001;
+        $channel->rtmp_input_key = 'secret-key';
+        $channel->dvr_enabled = false;
+
+        $cmd = implode(' ', $this->ffmpeg->buildIngestCommand($channel));
+
+        $this->assertStringContainsString('-hls_list_size 5', $cmd);
+        $this->assertStringContainsString('-hls_delete_threshold 2', $cmd);
+    }
+
+    /** @test */
     public function it_builds_push_command_with_rtmp_url(): void
     {
         $channel = $this->makeChannel('hls', 'https://example.com/stream.m3u8');

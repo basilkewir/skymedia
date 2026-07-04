@@ -19,6 +19,7 @@ class IngestController extends Controller
 
     public function start(Channel $channel): RedirectResponse
     {
+        $this->admin();
         try {
             $ok = $this->manager->startChannel($channel);
         } catch (\Throwable $e) {
@@ -29,12 +30,14 @@ class IngestController extends Controller
 
     public function stop(Channel $channel): RedirectResponse
     {
+        $this->admin();
         $this->manager->stopChannel($channel);
         return back()->with('success', 'Ingest stopped');
     }
 
     public function restart(Channel $channel): RedirectResponse
     {
+        $this->admin();
         try {
             $this->manager->stopChannel($channel);
             $channel->update(['is_active' => true]);
@@ -47,8 +50,11 @@ class IngestController extends Controller
 
     public function log(Channel $channel): JsonResponse
     {
+        $this->admin();
         return response()->json([
             'log' => $this->ffmpeg->readLogTail($this->ffmpeg->logFile($channel, 'ingest'), 80),
         ]);
     }
+
+    private function admin(): void { abort_unless(auth()->user()?->is_admin, 403); }
 }

@@ -25,6 +25,10 @@ class RecordingService
 
     public function start(Channel $channel): bool
     {
+        if ($channel->isPushIngest()) {
+            return false;
+        }
+
         if ($channel->record_duration <= 0) {
             return false;
         }
@@ -104,13 +108,19 @@ class RecordingService
         if ($recording) {
             $isPlayable = $this->ffmpeg->isPlayableFile($recording->filepath);
             if ($isPlayable) {
+                $size = filesize($recording->filepath);
                 $recording->update([
                     'status' => 'completed',
-                    'filesize' => filesize($recording->filepath),
+                    'filesize' => $size,
                     'completed_at' => now(),
                 ]);
                 // Always promote latest completed recording as fallback
                 $channel->update(['fallback_recording_path' => $recording->filepath]);
+                
+                // Increment channel storage usage
+                if ($size > 0) {
+                    $channel->increment('storage_used_bytes', $size);
+                }
             } else {
                 $recording->update(['status' => 'failed', 'completed_at' => now()]);
                 @unlink($recording->filepath);
@@ -332,7 +342,12 @@ class RecordingService
                     return;
                 }
                 if ($rec->filepath !== $channel->fallback_recording_path) {
+                    $size = filesize($rec->filepath) ?? 0;
                     @unlink($rec->filepath);
+                    // Decrement channel storage usage
+                    if ($size > 0) {
+                        $channel->decrement('storage_used_bytes', $size);
+                    }
                 }
                 $rec->delete();
             });

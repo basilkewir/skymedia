@@ -13,7 +13,7 @@ class UserManagementTest extends TestCase
     /** @test */
     public function it_lists_users(): void
     {
-        $admin = User::factory()->create();
+        $admin = User::factory()->create(['is_admin' => true]);
         User::factory()->count(3)->create();
 
         $this->actingAs($admin, 'sanctum')
@@ -24,7 +24,7 @@ class UserManagementTest extends TestCase
     /** @test */
     public function it_creates_a_user(): void
     {
-        $admin = User::factory()->create();
+        $admin = User::factory()->create(['is_admin' => true]);
 
         $response = $this->actingAs($admin, 'sanctum')
             ->post('/users', [
@@ -40,7 +40,7 @@ class UserManagementTest extends TestCase
     /** @test */
     public function it_updates_a_user_password(): void
     {
-        $admin = User::factory()->create();
+        $admin = User::factory()->create(['is_admin' => true]);
         $user = User::factory()->create(['email' => 'target@example.com']);
 
         $response = $this->actingAs($admin, 'sanctum')
@@ -59,7 +59,7 @@ class UserManagementTest extends TestCase
     /** @test */
     public function it_prevents_deleting_the_last_user(): void
     {
-        $admin = User::factory()->create();
+        $admin = User::factory()->create(['is_admin' => true]);
 
         $response = $this->actingAs($admin, 'sanctum')
             ->delete("/users/{$admin->id}");

@@ -20,6 +20,7 @@ class PushController extends Controller
 
     public function start(Request $request, Channel $channel): RedirectResponse
     {
+        $this->ensureAdmin();
         $mode = $request->input('mode', 'live');
 
         if (empty($channel->push_url)) {
@@ -40,12 +41,14 @@ class PushController extends Controller
 
     public function stop(Channel $channel): RedirectResponse
     {
+        $this->ensureAdmin();
         $this->manager->stopPush($channel);
         return back()->with('success', 'Push stopped');
     }
 
     public function restart(Request $request, Channel $channel): RedirectResponse
     {
+        $this->ensureAdmin();
         $mode = $request->input('mode', 'live');
         $this->manager->stopPush($channel);
         $ok = $mode === 'live'
@@ -60,8 +63,14 @@ class PushController extends Controller
 
     public function log(Channel $channel): JsonResponse
     {
+        $this->ensureAdmin();
         return response()->json([
             'log' => $this->ffmpeg->readLogTail($this->ffmpeg->logFile($channel, 'push'), 80),
         ]);
+    }
+
+    private function ensureAdmin(): void
+    {
+        abort_unless(auth()->user()?->is_admin, 403);
     }
 }

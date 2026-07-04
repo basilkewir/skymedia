@@ -26,7 +26,11 @@ COPY deployment/nginx-docker.conf /etc/nginx/sites-enabled/skymedia
 RUN rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/*default* 2>/dev/null; \
     mkdir -p /run/php && chown www-data:www-data /run/php; \
     sed -i 's/^user = www-data/user = root/' /etc/php/8.2/fpm/pool.d/www.conf; \
-    sed -i 's/^group = www-data/group = root/' /etc/php/8.2/fpm/pool.d/www.conf
+    sed -i 's/^group = www-data/group = root/' /etc/php/8.2/fpm/pool.d/www.conf; \
+    printf 'upload_max_filesize = 512M\npost_max_size = 512M\nmax_execution_time = 300\nmax_input_time = 300\n' \
+        > /etc/php/8.2/cli/conf.d/99-uploads.ini; \
+    printf 'upload_max_filesize = 512M\npost_max_size = 512M\nmax_execution_time = 300\nmax_input_time = 300\n' \
+        > /etc/php/8.2/fpm/conf.d/99-uploads.ini
 
 # ── Supervisor ─────────────────────────────────────────────────────
 COPY deployment/supervisord-docker.conf /etc/supervisor/conf.d/skymedia.conf

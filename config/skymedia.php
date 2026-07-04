@@ -7,6 +7,7 @@ return [
     'ffprobe_binary' => env('FFPROBE_BINARY', 'ffprobe'),
     'dvr_base_path' => env('DVR_BASE_PATH', storage_path('app/dvr')),
     'log_base_path' => env('LOG_BASE_PATH', storage_path('logs/streams')),
+    'server_ip' => env('SKYMEDIA_SERVER_IP', parse_url((string) env('APP_URL', 'http://localhost'), PHP_URL_HOST) ?: 'localhost'),
 
     /*
      * How many seconds between each monitor loop tick.

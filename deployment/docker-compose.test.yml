@@ -5,6 +5,8 @@ services:
       dockerfile: deployment/Dockerfile
     ports:
       - "8888:80"
+      - "20000-20099:20000-20099/tcp"
+      - "30000-30099:30000-30099/udp"
     environment:
       - APP_URL=http://localhost:8888
     volumes:

@@ -22,6 +22,12 @@
                             <input v-model="form.password" type="password" required class="form-input" />
                             <p class="mt-1 text-xs text-slate-500">Minimum 8 characters.</p>
                         </FormField>
+                        <FormField label="Admin">
+                            <label class="flex items-center gap-3 cursor-pointer">
+                                <input v-model="form.is_admin" type="checkbox" class="w-4 h-4 text-indigo-600 border-slate-600 rounded focus:ring-indigo-500" />
+                                <span class="text-sm text-slate-300">Administrator access (sees all channels)</span>
+                            </label>
+                        </FormField>
                     </div>
                 </Section>
 
@@ -50,6 +56,7 @@ const form = useForm({
     name: '',
     email: '',
     password: '',
+    is_admin: false,
 })
 
 function submit() { form.post(route('users.store')) }

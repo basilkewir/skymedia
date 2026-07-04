@@ -15,7 +15,7 @@
             </div>
 
             <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-                <SideNavLink :href="route('dashboard')" :active="$page.component === 'Dashboard'">
+                <SideNavLink v-if="isAdmin" :href="route('dashboard')" :active="$page.component === 'Dashboard'">
                     <template #icon><IconDashboard /></template>
                     Dashboard
                 </SideNavLink>
@@ -23,19 +23,19 @@
                     <template #icon><IconChannels /></template>
                     Channels
                 </SideNavLink>
-                <SideNavLink :href="route('dvr.index')" :active="$page.component?.startsWith('DVR')">
+                <SideNavLink v-if="isAdmin" :href="route('dvr.index')" :active="$page.component?.startsWith('DVR')">
                     <template #icon><IconDvr /></template>
                     DVR Storage
                 </SideNavLink>
-                <SideNavLink :href="route('logs.index')" :active="$page.component?.startsWith('Logs')">
+                <SideNavLink v-if="isAdmin" :href="route('logs.index')" :active="$page.component?.startsWith('Logs')">
                     <template #icon><IconLogs /></template>
                     Event Logs
                 </SideNavLink>
-                <SideNavLink :href="route('settings.index')" :active="$page.component?.startsWith('Settings')">
+                <SideNavLink v-if="isAdmin" :href="route('settings.index')" :active="$page.component?.startsWith('Settings')">
                     <template #icon><IconSettings /></template>
                     Settings
                 </SideNavLink>
-                <SideNavLink :href="route('users.index')" :active="$page.component?.startsWith('Users')">
+                <SideNavLink v-if="isAdmin" :href="route('users.index')" :active="$page.component?.startsWith('Users')">
                     <template #icon><IconUsers /></template>
                     Users
                 </SideNavLink>
@@ -87,6 +87,11 @@
 <script setup>
 import { Link } from '@inertiajs/vue3'
 import SideNavLink from '@/Components/SideNavLink.vue'
+import { computed } from 'vue'
+import { usePage } from '@inertiajs/vue3'
+
+const page = usePage()
+const isAdmin = computed(() => Boolean(page.props.auth?.user?.is_admin))
 
 const IconDashboard = { template: `<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>` }
 const IconChannels  = { template: `<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/></svg>` }

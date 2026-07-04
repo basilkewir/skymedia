@@ -22,6 +22,12 @@
                             <input v-model="form.password" type="password" class="form-input" />
                             <p class="mt-1 text-xs text-slate-500">Leave blank to keep the current password.</p>
                         </FormField>
+                        <FormField label="Admin">
+                            <label class="flex items-center gap-3 cursor-pointer">
+                                <input v-model="form.is_admin" type="checkbox" class="w-4 h-4 text-indigo-600 border-slate-600 rounded focus:ring-indigo-500" />
+                                <span class="text-sm text-slate-300">Administrator access (sees all channels)</span>
+                            </label>
+                        </FormField>
                     </div>
                 </Section>
 
@@ -52,6 +58,7 @@ const form = useForm({
     name: props.user.name,
     email: props.user.email,
     password: '',
+    is_admin: props.user.is_admin ?? false,
 })
 
 function submit() { form.put(route('users.update', props.user.id)) }

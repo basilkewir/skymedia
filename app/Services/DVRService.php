@@ -53,7 +53,7 @@ class DVRService
             // Use ffprobe for accurate duration; fall back to channel default
             $duration = $this->probeSegmentDuration($filepath) ?? (float) $channel->segment_duration;
 
-            DvrSegment::create([
+            $segment = DvrSegment::create([
                 'channel_id'   => $channel->id,
                 'filename'     => $filename,
                 'filepath'     => $filepath,
@@ -63,6 +63,11 @@ class DVRService
                 'recorded_at'  => now(),
                 'is_available' => true,
             ]);
+
+            // Increment channel storage usage
+            if ($diskSize > 0) {
+                $channel->increment('storage_used_bytes', $diskSize);
+            }
         }
 
         $this->enforceWindow($channel);
@@ -191,13 +196,20 @@ class DVRService
     public function purgeAll(Channel $channel): int
     {
         $deleted = 0;
+        $totalSize = 0;
 
         DvrSegment::where('channel_id', $channel->id)
-            ->each(function (DvrSegment $seg) use (&$deleted) {
+            ->each(function (DvrSegment $seg) use (&$deleted, &$totalSize) {
                 @unlink($seg->filepath);
+                $totalSize += $seg->filesize ?? 0;
                 $seg->delete();
                 $deleted++;
             });
+
+        // Decrement channel storage usage
+        if ($totalSize > 0) {
+            $channel->decrement('storage_used_bytes', $totalSize);
+        }
 
         foreach (['concat.txt', 'live.m3u8'] as $f) {
             @unlink("{$channel->dvr_directory}/{$f}");
@@ -249,7 +261,13 @@ class DVRService
     protected function deleteSegment(DvrSegment $seg): void
     {
         @unlink($seg->filepath);
+        $size = $seg->filesize ?? 0;
         $seg->delete();
+
+        // Update channel storage usage
+        if ($size > 0) {
+            $seg->channel->decrement('storage_used_bytes', $size);
+        }
     }
 
     protected function extractSeq(string $filename): ?int

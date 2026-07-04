@@ -26,6 +26,8 @@ if [ "${SKYMEDIA_PROD:-false}" = "true" ]; then
     sed -i "s|QUEUE_CONNECTION=.*|QUEUE_CONNECTION=redis|"      .env
     sed -i "s|REDIS_HOST=.*|REDIS_HOST=${REDIS_HOST:-redis}|"   .env
     sed -i "s|REDIS_PORT=.*|REDIS_PORT=${REDIS_PORT:-6379}|"    .env
+    # Server IP for published ingest URLs (default to host.docker.internal for Docker Desktop)
+    sed -i "s|SKYMEDIA_SERVER_IP=.*|SKYMEDIA_SERVER_IP=${SKYMEDIA_SERVER_IP:-host.docker.internal}|" .env
 else
     # Test/local: SQLite + file drivers
     sed -i "s|APP_URL=.*|APP_URL=${APP_URL:-http://localhost:8888}|" .env
@@ -77,10 +79,14 @@ if [ "${USER_COUNT}" = "0" ] || [ -z "${USER_COUNT}" ]; then
             'email'             => 'admin@skymedia.local',
             'password'          => bcrypt('password'),
             'email_verified_at' => now(),
+            'is_admin'          => true,
         ]);
     " 2>/dev/null
     echo "Admin created: admin@skymedia.local / password"
 fi
+
+# Keep the documented local bootstrap account compatible with role-based UI.
+php artisan tinker --execute="\App\Models\User::where('email', 'admin@skymedia.local')->update(['is_admin' => true]);" 2>/dev/null || true
 
 # ── Clear caches for runtime ────────────────────────────────────────
 php artisan config:clear --quiet 2>/dev/null || true

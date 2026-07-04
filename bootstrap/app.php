@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Http\Middleware\ChannelLocale;
 use App\Http\Middleware\HandleInertiaRequests;
+use App\Http\Middleware\EnsureAdmin;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Console\Scheduling\Schedule;
@@ -22,6 +23,7 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/api/health/live',
     )
     ->withMiddleware(function (Middleware $middleware) {
+        $middleware->alias(['admin' => EnsureAdmin::class]);
         $middleware->web(append: [
             HandleInertiaRequests::class,
             ChannelLocale::class,

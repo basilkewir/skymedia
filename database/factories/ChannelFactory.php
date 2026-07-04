@@ -24,6 +24,7 @@ class ChannelFactory extends Factory
             'push_audio_codec'      => 'aac',
             'dvr_duration'          => 3600,
             'segment_duration'      => 6,
+            'dvr_enabled'           => true,
             'record_duration'       => 0,
             'check_interval'        => 5,
             'max_retries'           => 3,

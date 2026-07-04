@@ -7,7 +7,7 @@
         <div class="space-y-4">
             <div class="flex items-center justify-between">
                 <p class="text-sm text-slate-400">{{ channels.total }} channel{{ channels.total !== 1 ? 's' : '' }}</p>
-                <Link :href="route('channels.create')"
+                <Link v-if="isAdmin" :href="route('channels.create')"
                       class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors">
                     + Add Channel
                 </Link>
@@ -19,11 +19,11 @@
                         <tr class="border-b border-slate-800">
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Channel</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Source</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Push Target</th>
+                            <th v-if="isAdmin" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Push Target</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Ingest</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Push</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">DVR</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Segments</th>
+                            <th v-if="isAdmin" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Push</th>
+                            <th v-if="isAdmin" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">DVR</th>
+                            <th v-if="isAdmin" class="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Segments</th>
                             <th class="px-6 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">Actions</th>
                         </tr>
                     </thead>
@@ -41,7 +41,7 @@
                                     {{ ch.source_type.toUpperCase() }}
                                 </span>
                             </td>
-                            <td class="px-6 py-4 text-xs text-slate-400">
+                            <td v-if="isAdmin" class="px-6 py-4 text-xs text-slate-400">
                                 <span class="px-2 py-0.5 bg-slate-800 text-slate-300 text-xs font-mono rounded mr-1">
                                     {{ ch.push_protocol.toUpperCase() }}
                                 </span>
@@ -50,16 +50,16 @@
                                 </span>
                             </td>
                             <td class="px-6 py-4"><StatusBadge :status="ch.stream_status" /></td>
-                            <td class="px-6 py-4"><StatusBadge :status="ch.push_status ?? 'idle'" /></td>
-                            <td class="px-6 py-4"><StatusBadge :status="ch.dvr_status ?? 'idle'" /></td>
-                            <td class="px-6 py-4 text-sm text-slate-400">{{ ch.dvr_segments_count ?? 0 }}</td>
+                            <td v-if="isAdmin" class="px-6 py-4"><StatusBadge :status="ch.push_status ?? 'idle'" /></td>
+                            <td v-if="isAdmin" class="px-6 py-4"><StatusBadge :status="ch.dvr_status ?? 'idle'" /></td>
+                            <td v-if="isAdmin" class="px-6 py-4 text-sm text-slate-400">{{ ch.dvr_segments_count ?? 0 }}</td>
                             <td class="px-6 py-4">
                                 <div class="flex items-center justify-end gap-3">
                                     <Link :href="route('channels.show', ch.id)"
                                           class="text-xs text-slate-400 hover:text-white transition-colors">Manage</Link>
-                                    <Link :href="route('channels.edit', ch.id)"
+                                    <Link v-if="isAdmin || ch.ingest_mode !== 'push'" :href="route('channels.edit', ch.id)"
                                           class="text-xs text-slate-400 hover:text-white transition-colors">Edit</Link>
-                                    <Link :href="route('channels.toggle', ch.id)" method="post" as="button"
+                                    <Link v-if="isAdmin || ch.ingest_mode !== 'push'" :href="route('channels.toggle', ch.id)" method="post" as="button"
                                           preserve-scroll
                                           class="text-xs font-medium transition-colors"
                                           :class="ch.is_active
@@ -67,7 +67,7 @@
                                               : 'text-green-400 hover:text-green-300'">
                                         {{ ch.is_active ? '■ Stop' : '▶ Start' }}
                                     </Link>
-                                    <button @click="confirmDelete(ch)"
+                                    <button v-if="isAdmin" @click="confirmDelete(ch)"
                                             class="text-xs text-slate-600 hover:text-red-400 transition-colors">
                                         Delete
                                     </button>
@@ -75,9 +75,9 @@
                             </td>
                         </tr>
                         <tr v-if="channels.data.length === 0">
-                            <td colspan="8" class="px-6 py-16 text-center text-slate-500 text-sm">
+                            <td :colspan="isAdmin ? 8 : 4" class="px-6 py-16 text-center text-slate-500 text-sm">
                                 No channels configured.
-                                <Link :href="route('channels.create')" class="text-indigo-400 hover:underline ml-1">Add one</Link>
+                                <Link v-if="isAdmin" :href="route('channels.create')" class="text-indigo-400 hover:underline ml-1">Add one</Link>
                             </td>
                         </tr>
                     </tbody>
@@ -116,7 +116,7 @@ import AppLayout from '@/Layouts/AppLayout.vue'
 import StatusBadge from '@/Components/StatusBadge.vue'
 import Pagination from '@/Components/Pagination.vue'
 
-defineProps({ channels: Object })
+defineProps({ channels: Object, isAdmin: Boolean })
 
 const deleting = ref(null)
 function confirmDelete(ch) { deleting.value = ch }

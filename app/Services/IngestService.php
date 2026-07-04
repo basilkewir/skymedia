@@ -27,6 +27,12 @@ class IngestService
             }
         }
 
+        // Remove stale ingest segments + playlist so a fresh start does not
+        // inherit stale files from the previous run.  Does NOT touch playout
+        // files (playout_*.ts / playout.m3u8 / playout_concat.txt / slate),
+        // so fallback playback continues uninterrupted while ingest waits.
+        $this->cleanSegments($dvrDir);
+
         // Verify ffmpeg binary exists and is executable
         $bin     = $this->ffmpeg->getBin();
         $binPath = trim((string) shell_exec("which {$bin} 2>/dev/null"))
@@ -46,12 +52,15 @@ class IngestService
         // startProcess throws \RuntimeException with ffmpeg output on failure
         $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile);
 
+        $waitingForPush = $channel->isPushIngest();
         $channel->update([
             'pid'           => $pid,
-            'stream_status' => 'live',
-            'dvr_status'    => 'recording',
-            'source_live'   => true,
-            'last_live_at'  => now(),
+            'stream_status' => $waitingForPush ? 'starting' : 'live',
+            'dvr_status'    => $channel->isPushIngest() || $channel->dvr_enabled === false
+                ? 'idle'
+                : ($waitingForPush ? 'starting' : 'recording'),
+            'source_live'   => ! $waitingForPush,
+            'last_live_at'  => $waitingForPush ? $channel->last_live_at : now(),
             'retry_count'   => 0,
             'last_error'    => null,
         ]);
@@ -78,5 +87,20 @@ class IngestService
     {
         $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'ingest'));
         return $pid > 0 && $this->ffmpeg->isRunning($pid);
+    }
+
+    /**
+     * Remove stale ingest segments and playlist so ffmpeg starts with a clean slate.
+     * Does NOT touch playout files (playout_*.ts, playout.m3u8, playout_concat.txt,
+     * slate.mp4, fallback_loop.mp4, recordings) — those belong to PlayoutService.
+     */
+    protected function cleanSegments(string $dvrDir): void
+    {
+        if (! is_dir($dvrDir)) return;
+
+        foreach (glob("{$dvrDir}/seg_*.ts") ?: [] as $f) @unlink($f);
+        @unlink("{$dvrDir}/live.m3u8");
+        // Never remove output.m3u8 here: it may still point at a healthy VOD
+        // fallback while a returning live source is warming up.
     }
 }

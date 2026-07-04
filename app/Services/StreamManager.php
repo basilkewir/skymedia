@@ -47,8 +47,9 @@ class StreamManager
             // 3. Start push immediately if playlist is ready — monitor will retry if not
             $this->startPushIfReady($channel);
 
-            $channel->update(['stream_status' => 'live']);
-            event(new StreamStatusChanged($channel, 'live'));
+            $status = $channel->isPushIngest() ? 'starting' : 'live';
+            $channel->update(['stream_status' => $status]);
+            event(new StreamStatusChanged($channel, $status));
             return true;
 
         } catch (\Throwable $e) {
@@ -150,14 +151,22 @@ class StreamManager
         // Primary health signal: is the ingest process running and writing fresh segments?
         $ingestRunning = $this->ingest->isRunning($channel);
         $recentSegments = $this->ffmpeg->hasRecentSegments($channel, 20);
-        $probeHealthy = $this->ffmpeg->checkSourceHealth($channel);
+        // A listener cannot be probed without consuming its single incoming
+        // connection. Fresh output segments are its health signal instead.
+        $probeHealthy = $channel->isPushIngest() ? false : $this->ffmpeg->checkSourceHealth($channel);
 
         $sourceLive = ($ingestRunning && $recentSegments) || $probeHealthy;
 
-        // Recover only when the source actually answers health probes.
-        // Recent segments alone can be stale for ~20 s after a source outage,
-        // so relying on them causes a false "recovered" bounce.
-        $sourceRecovered = $probeHealthy;
+        // For push-ingest (listener mode), the ingest ffmpeg is always running
+        // and stale segments from a prior connection can persist ~20 s on disk.
+        // To avoid a false "recovered" bounce, also verify that the live.m3u8
+        // playlist is being actively updated by the current ffmpeg process.
+        $liveM3u8 = $channel->dvr_directory . '/live.m3u8';
+        $liveM3u8Fresh = file_exists($liveM3u8) && (time() - filemtime($liveM3u8)) <= max(5, (int) $channel->segment_duration * 2);
+
+        $sourceRecovered = $channel->isPushIngest()
+            ? ($ingestRunning && $recentSegments && $liveM3u8Fresh)
+            : $probeHealthy;
 
         if ($sourceRecovered && !$channel->source_live) {
             $this->onSourceRecovered($channel->fresh());
@@ -177,19 +186,31 @@ class StreamManager
     protected function onSourceLost(Channel $channel): void
     {
         $this->log($channel, 'warning', 'source_lost',
-            'Source offline — stopping ingest, switching playout to fallback');
+            'Source offline — switching playout to fallback');
 
         $this->recording->stop($channel);
-        $this->ingest->stop($channel);
 
-        $channel->update([
-            'source_live'   => false,
-            'pid'           => null,
-            'record_pid'    => null,
-            'stream_status' => 'offline',
-            'dvr_status'    => 'idle',
-            'record_status' => 'idle',
-        ]);
+        if ($channel->isPushIngest()) {
+            // Push ingest (listener): keep the ingest running so the
+            // encoder can reconnect without a restart cycle.
+            $channel->update([
+                'source_live'   => false,
+                'record_pid'    => null,
+                'stream_status' => 'offline',
+                'dvr_status'    => 'idle',
+                'record_status' => 'idle',
+            ]);
+        } else {
+            $this->ingest->stop($channel);
+            $channel->update([
+                'source_live'   => false,
+                'pid'           => null,
+                'record_pid'    => null,
+                'stream_status' => 'offline',
+                'dvr_status'    => 'idle',
+                'record_status' => 'idle',
+            ]);
+        }
 
         $this->alert->sendOfflineAlert($channel->fresh(), 'Source unreachable', $this->playout->hasFallback($channel));
 
@@ -214,30 +235,45 @@ class StreamManager
 
     protected function onSourceRecovered(Channel $channel): void
     {
-        $this->log($channel, 'info', 'source_recovered', 'Source back online — restarting ingest');
-
-        $this->ingest->stop($channel);
-        $channel->update(['source_live' => true, 'last_live_at' => now()]);
-
-        try {
-            $this->ingest->start($channel);
-        } catch (\Throwable $e) {
-            $this->log($channel, 'error', 'ingest_restart_failed', $e->getMessage());
-            return;
+        if (!$channel->isPushIngest()) {
+            // Pull ingest: restart to pick up the new stream
+            $this->ingest->stop($channel);
+            try {
+                $this->ingest->start($channel);
+            } catch (\Throwable $e) {
+                $this->log($channel, 'error', 'ingest_restart_failed', $e->getMessage());
+                return;
+            }
+        } else {
+            // Push ingest (listener): the encoder reconnected to the
+            // still-listening ffmpeg. No stop/start needed — the ingest
+            // is already receiving the stream and writing segments.
+            $this->log($channel, 'info', 'source_recovered', 'Source back online — listener active');
         }
 
         // Wait for live.m3u8 to have segments, then swap the symlink.
         // Push keeps running — ffmpeg picks up live.m3u8 on next refresh.
         $start = time();
-        while (time() - $start < 10) {
-            if ($this->ffmpeg->hlsReady($channel->fresh(), 2)) break;
+        $maxWait = max(10, (int) $channel->segment_duration * 3 + 2);
+        while (time() - $start < $maxWait) {
+            if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) break;
             usleep(250_000);
         }
 
-        // Atomically symlink output.m3u8 → live.m3u8, stop fallback loop
+        if (! $this->ffmpeg->liveHlsReady($channel->fresh(), 2)) {
+            $this->log($channel, 'warning', 'live_playout_not_ready',
+                'Live source returned but its playback buffer is not ready; fallback remains on air');
+            return;
+        }
+
+        // Atomically symlink output.m3u8 → live.m3u8.
+        // Fallback loop stays running in the background for instant switch-back.
         $this->playout->switchToLive($channel->fresh());
 
-        $channel->update(['stream_status' => 'live', 'playout_status' => 'live']);
+        $channel->update([
+            'source_live' => true, 'last_live_at' => now(),
+            'stream_status' => 'live', 'playout_status' => 'live',
+        ]);
         $channel->resetRetries();
         $this->alert->sendRecoveryAlert($channel->fresh());
         event(new StreamStatusChanged($channel, 'live'));
@@ -245,6 +281,13 @@ class StreamManager
 
     protected function onSourceStillLive(Channel $channel): void
     {
+        // Managed push-ingest channels are relay-only and must never create
+        // timed recordings, including when an older database value enabled it.
+        if ($channel->isPushIngest() && $this->recording->isRunning($channel)) {
+            $this->recording->stop($channel);
+            $channel->refresh();
+        }
+
         // ── Recording lifecycle ──────────────────────────────────────────
         if ($this->recording->justFinished($channel)) {
             $this->recording->finish($channel);
@@ -264,7 +307,9 @@ class StreamManager
         }
 
         // ── DVR rolling window ───────────────────────────────────────────
-        $this->dvr->syncSegments($channel);
+        if (! $channel->isPushIngest() && $channel->dvr_enabled !== false) {
+            $this->dvr->syncSegments($channel);
+        }
 
         // ── Ingest watchdog ──────────────────────────────────────────────
         if (!$this->ingest->isRunning($channel)) {
@@ -278,7 +323,7 @@ class StreamManager
         }
 
         // ── Playout: always make sure output.m3u8 points to live.m3u8 when source is live ─
-        if (!$this->playout->isLiveOutput($channel)) {
+        if (!$this->playout->isLiveOutput($channel) && $this->ffmpeg->liveHlsReady($channel, 2)) {
             $this->playout->switchToLive($channel);
             $this->log($channel, 'info', 'playout_forced_live',
                 'output.m3u8 was not pointing to live — corrected');
@@ -322,7 +367,10 @@ class StreamManager
             $channel->update(['stream_status' => 'live', 'source_live' => true]);
         }
 
-        $dvrStatus = $this->ingest->isRunning($channel) ? 'recording' : 'idle';
+        $dvrStatus = ! $channel->isPushIngest()
+            && $channel->dvr_enabled !== false && $this->ingest->isRunning($channel)
+            ? 'recording'
+            : 'idle';
         if ($channel->dvr_status !== $dvrStatus) {
             $channel->update(['dvr_status' => $dvrStatus]);
         }
@@ -332,11 +380,25 @@ class StreamManager
 
     protected function onSourceStillDown(Channel $channel): void
     {
+        // Stop any stale recording from a previous onSourceStillLive cycle.
+        if ($this->recording->isRunning($channel)) {
+            $this->recording->stop($channel);
+        }
+
+        // Keep RTMP/SRT listeners available while the publisher is offline.
+        if ($channel->isPushIngest() && ! $this->ingest->isRunning($channel)) {
+            try {
+                $this->ingest->start($channel);
+            } catch (\Throwable $e) {
+                $this->log($channel, 'error', 'ingest_listener_restart_failed', $e->getMessage());
+            }
+        }
+
         // ── If no fallback was available when source dropped, keep trying ──
         if ($channel->playout_status !== 'fallback' && $this->playout->hasFallback($channel)) {
             $this->log($channel, 'info', 'fallback_now_available', 'Recording ready — switching to VOD loop');
             if ($this->playout->switchToFallback($channel)) {
-                $channel->update(['playout_status' => 'fallback']);
+                $channel->update(['playout_status' => 'fallback', 'stream_status' => 'offline']);
                 $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
                 event(new StreamStatusChanged($channel, 'offline'));
             }
@@ -346,7 +408,7 @@ class StreamManager
         if ($channel->playout_status === 'fallback' && !$this->playout->isFallbackRunning($channel)) {
             $this->log($channel, 'warning', 'fallback_restart', 'Fallback loop died — restarting');
             if ($this->playout->switchToFallback($channel)) {
-                $channel->update(['playout_status' => 'fallback']);
+                $channel->update(['playout_status' => 'fallback', 'stream_status' => 'offline']);
                 $this->log($channel, 'info', 'fallback_restarted', 'Fallback loop restarted');
             }
         }
@@ -366,6 +428,7 @@ class StreamManager
             $this->push->watchDestinations($channel, $playlist);
         }
 
+        $channel->update(['stream_status' => 'offline']);
         $channel->incrementRetry('Source offline');
     }
 

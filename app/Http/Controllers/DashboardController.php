@@ -7,11 +7,13 @@ use App\Models\StreamLog;
 use Illuminate\Http\JsonResponse;
 use Inertia\Inertia;
 use Inertia\Response;
+use Illuminate\Http\RedirectResponse;
 
 class DashboardController extends Controller
 {
-    public function index(): Response
+    public function index(): Response|RedirectResponse
     {
+        if (! auth()->user()?->is_admin) return redirect()->route('channels.index');
         $channels = Channel::withCount('dvrSegments')
             ->withSum('dvrSegments', 'duration')
             ->withSum('dvrSegments', 'filesize')
@@ -47,6 +49,7 @@ class DashboardController extends Controller
      */
     public function status(): JsonResponse
     {
+        abort_unless(auth()->user()?->is_admin, 403);
         $channels = Channel::select([
             'id', 'name', 'slug', 'source_type', 'push_protocol',
             'stream_status', 'push_status', 'dvr_status', 'record_status',

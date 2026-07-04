@@ -30,22 +30,59 @@
                 </Section>
 
                 <!-- Source -->
-                <Section title="Source Stream">
+                <Section title="Channel Type">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <button type="button" @click="selectChannelKind('managed')"
+                                class="text-left rounded-xl border p-4 transition-colors"
+                                :class="channelKind === 'managed' ? 'border-indigo-500 bg-indigo-500/10' : 'border-slate-700 hover:border-slate-600'">
+                            <span class="block text-sm font-semibold text-white">Managed push channel</span>
+                            <span class="block mt-1 text-xs text-slate-400">OBS or vMix sends RTMP/SRT to this server. A publisher URL and stream key are generated.</span>
+                        </button>
+                        <button type="button" @click="selectChannelKind('streamed')"
+                                class="text-left rounded-xl border p-4 transition-colors"
+                                :class="channelKind === 'streamed' ? 'border-indigo-500 bg-indigo-500/10' : 'border-slate-700 hover:border-slate-600'">
+                            <span class="block text-sm font-semibold text-white">Streamed source channel</span>
+                            <span class="block mt-1 text-xs text-slate-400">This server pulls an existing HLS, UDP, MPEG-TS, RTMP, or SRT source URL.</span>
+                        </button>
+                    </div>
+                </Section>
+
+                <Section :title="channelKind === 'managed' ? 'Publisher Ingest' : 'Source Stream'">
                     <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
-                        <FormField label="Source Protocol" :error="form.errors.source_type">
+                        <FormField :label="channelKind === 'managed' ? 'Receive Protocol' : 'Source Protocol'" :error="form.errors.source_type">
                             <select v-model="form.source_type" class="form-input">
-                                <option value="hls">HLS (HTTP Live Streaming)</option>
-                                <option value="udp">UDP Multicast</option>
-                                <option value="mpegts">MPEG-TS</option>
-                                <option value="rtmp">RTMP</option>
-                                <option value="srt">SRT (Secure Reliable Transport)</option>
+                                <template v-if="channelKind === 'managed'">
+                                    <option value="rtmp">RTMP — OBS / vMix</option>
+                                    <option value="srt">SRT — caller publishing mode</option>
+                                </template>
+                                <template v-else>
+                                    <option value="hls">HLS (HTTP Live Streaming)</option>
+                                    <option value="udp">UDP Multicast</option>
+                                    <option value="mpegts">MPEG-TS</option>
+                                    <option value="rtmp">RTMP</option>
+                                    <option value="srt">SRT (Secure Reliable Transport)</option>
+                                </template>
                             </select>
                         </FormField>
-                        <FormField label="Source URL" class-name="sm:col-span-2" :error="form.errors.source_url">
+                        <FormField v-if="channelKind === 'managed'" label="Listener Port" :error="form.errors.ingest_port">
+                            <input v-model.number="form.ingest_port" type="number"
+                                   :min="form.source_type === 'srt' ? 30000 : 20000"
+                                   :max="form.source_type === 'srt' ? 30099 : 20099"
+                                   placeholder="Assigned automatically" class="form-input" />
+                            <p class="mt-1 text-xs text-slate-500">Leave empty for automatic assignment.</p>
+                        </FormField>
+                        <FormField v-if="channelKind === 'managed' && form.source_type === 'rtmp'" label="RTMP Stream Key (Custom)" :error="form.errors.rtmp_input_key">
+                            <input v-model="form.rtmp_input_key" type="text" class="form-input font-mono text-sm" placeholder="Leave empty to auto-generate" />
+                            <p class="mt-1 text-xs text-slate-500">Custom stream key for OBS/vMix to publish to. Auto-generated if left blank.</p>
+                        </FormField>
+                        <FormField v-if="channelKind === 'streamed'" label="Source URL" class-name="sm:col-span-2" :error="form.errors.source_url">
                             <input v-model="form.source_url" type="text" required class="form-input font-mono text-sm"
                                    :placeholder="sourcePlaceholder" />
                             <p class="mt-1 text-xs text-slate-500">{{ sourceHint }}</p>
                         </FormField>
+                        <p v-if="channelKind === 'managed'" class="sm:col-span-2 text-xs text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 rounded-lg px-3 py-2">
+                            After creation, copy the generated Server URL and Stream Key into OBS or vMix.
+                        </p>
                     </div>
                 </Section>
 
@@ -193,11 +230,22 @@
                         output live at all times.
                     </p>
                     <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
-                        <FormField label="DVR Rolling Window" :error="form.errors.dvr_duration">
+                        <p v-if="channelKind === 'managed'" class="sm:col-span-2 text-sm text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 rounded-lg px-4 py-3">
+                            Recording and rolling DVR are disabled for managed push channels. Uploaded VOD playlists remain available for fallback.
+                        </p>
+                        <template v-else>
+                        <FormField label="Rolling DVR" :error="form.errors.dvr_enabled" class-name="sm:col-span-2">
+                            <select v-model="form.dvr_enabled" class="form-input">
+                                <option :value="false">Disabled — live preview and forwarding only</option>
+                                <option :value="true">Enabled — retain a rewindable rolling window</option>
+                            </select>
+                            <p class="mt-1 text-xs text-slate-500">Uploaded fallback VOD works whether DVR is enabled or disabled.</p>
+                        </FormField>
+                        <FormField label="DVR Rolling Window" :error="form.errors.dvr_duration" :class-name="!form.dvr_enabled ? 'opacity-50' : ''">
                             <div class="flex gap-2">
                                 <input v-model.number="form.dvr_duration" type="number"
-                                       min="60" max="86400" required class="form-input flex-1" />
-                                <select @change="applyDvrPreset" v-model="dvrPreset" class="form-input w-28">
+                                       min="60" max="86400" required :disabled="!form.dvr_enabled" class="form-input flex-1" />
+                                <select @change="applyDvrPreset" v-model="dvrPreset" :disabled="!form.dvr_enabled" class="form-input w-28">
                                     <option value="">Custom</option>
                                     <option value="1800">30 min</option>
                                     <option value="3600">1 hr</option>
@@ -211,9 +259,9 @@
                                 {{ formatDuration(form.dvr_duration) }} · ~{{ estimatedDvrMb }} MB
                             </p>
                         </FormField>
-                        <FormField label="Segment Duration (seconds)" :error="form.errors.segment_duration">
+                        <FormField label="Segment Duration (seconds)" :error="form.errors.segment_duration" :class-name="!form.dvr_enabled ? 'opacity-50' : ''">
                             <input v-model.number="form.segment_duration" type="number"
-                                   min="2" max="30" required class="form-input" />
+                                   min="2" max="30" required :disabled="!form.dvr_enabled" class="form-input" />
                             <p class="mt-1 text-xs text-slate-500">
                                 {{ Math.ceil(form.dvr_duration / form.segment_duration) }} segments total
                             </p>
@@ -253,6 +301,7 @@
                                 Oldest completed recordings are auto-deleted to maintain disk space
                             </p>
                         </FormField>
+                        </template>
                         <FormField label="Health Check Interval (seconds)" :error="form.errors.check_interval">
                             <input v-model.number="form.check_interval" type="number"
                                    min="1" max="60" required class="form-input" />
@@ -315,10 +364,11 @@ import Section from '@/Components/Section.vue'
 
 const dvrPreset = ref('3600')
 const recPreset = ref('3600')
+const channelKind = ref('managed')
 
 const form = useForm({
     name: '', slug: '', notes: '',
-    source_type: 'hls', source_url: '',
+    source_type: 'rtmp', ingest_mode: 'push', ingest_port: null, source_url: '',
     push_protocol: 'rtmp', push_url: '', push_stream_key: '',
     push_username: '', push_password: '',
     push_hls_segment_duration: null, push_hls_list_size: null,
@@ -326,7 +376,7 @@ const form = useForm({
     push_resolution: '',        push_framerate: null,
     push_audio_codec: 'aac',    push_audio_bitrate: 128,
     push_audio_samplerate: 48000, push_audio_channels: 2,
-    dvr_duration: 3600, segment_duration: 4,
+    dvr_duration: 3600, segment_duration: 4, dvr_enabled: false,
     record_duration: 3600, keep_recordings: 24,
     timezone: 'UTC', locale: 'en',
     check_interval: 5, max_retries: 3,
@@ -341,6 +391,21 @@ function autoSlug() {
 }
 function applyDvrPreset() { if (dvrPreset.value !== '') form.dvr_duration = parseInt(dvrPreset.value) }
 function applyRecPreset() { if (recPreset.value !== '') form.record_duration = parseInt(recPreset.value) }
+
+function selectChannelKind(kind) {
+    channelKind.value = kind
+    if (kind === 'managed') {
+        form.source_type = 'rtmp'
+        form.ingest_mode = 'push'
+        form.source_url = ''
+        form.dvr_enabled = false
+    } else {
+        form.source_type = 'hls'
+        form.ingest_mode = 'pull'
+        form.ingest_port = null
+        form.dvr_enabled = true
+    }
+}
 
 const sourcePlaceholders = {
     hls: 'https://stream.example.com/live/stream.m3u8',
@@ -376,5 +441,13 @@ function formatDuration(s) {
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60)
     return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
-function submit() { form.post(route('channels.store')) }
+function submit() {
+    if (channelKind.value === 'managed') {
+        form.ingest_mode = 'push'
+        form.source_url = ''
+    } else {
+        form.ingest_mode = 'pull'
+    }
+    form.post(route('channels.store'))
+}
 </script>

@@ -25,5 +25,9 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('health', fn (Request $request) =>
             Limit::perMinute(30)->by($request->ip())
         );
+
+        RateLimiter::for('login', fn (Request $request) =>
+            Limit::perMinute(5)->by($request->input('email') ?: $request->ip())
+        );
     }
 }

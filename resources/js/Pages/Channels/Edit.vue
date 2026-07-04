@@ -25,6 +25,20 @@
                                 <option :value="false">Disabled</option>
                             </select>
                         </FormField>
+                        <FormField label="Owner (Admin only)" v-if="isAdmin">
+                            <select v-model="form.user_id" class="form-input">
+                                <option value="">Unassigned</option>
+                                <option v-for="u in users" :key="u.id" :value="u.id">
+                                    {{ u.name }} ({{ u.email }})
+                                </option>
+                            </select>
+                        </FormField>
+                        <FormField label="Storage Quota (GB)" :error="form.errors.storage_quota_bytes">
+                            <input v-model.number="form.storage_quota_gb" type="number"
+                                   min="1" max="10000" step="1"
+                                   class="form-input" />
+                            <p class="mt-1 text-xs text-slate-500">Leave empty for unlimited storage</p>
+                        </FormField>
                         <FormField label="Notes" class-name="sm:col-span-2">
                             <textarea v-model="form.notes" rows="2" class="form-input resize-none" />
                         </FormField>
@@ -43,9 +57,32 @@
                                 <option value="srt">SRT</option>
                             </select>
                         </FormField>
-                        <FormField label="Source URL" class-name="sm:col-span-2" :error="form.errors.source_url">
+                        <FormField v-if="['rtmp', 'srt'].includes(form.source_type)" label="Ingest Direction" :error="form.errors.ingest_mode">
+                            <select v-model="form.ingest_mode" class="form-input">
+                                <option value="pull">Pull from a source URL</option>
+                                <option value="push">Receive a publisher connection</option>
+                            </select>
+                        </FormField>
+                        <FormField v-if="form.ingest_mode === 'push' && ['rtmp', 'srt'].includes(form.source_type)" label="Listener Port" :error="form.errors.ingest_port">
+                            <input v-model.number="form.ingest_port" type="number"
+                                   :min="form.source_type === 'srt' ? 30000 : 20000"
+                                   :max="form.source_type === 'srt' ? 30099 : 20099"
+                                   class="form-input" />
+                        </FormField>
+                        <FormField v-else label="Source URL" class-name="sm:col-span-2" :error="form.errors.source_url">
                             <input v-model="form.source_url" type="text" required class="form-input font-mono text-sm" />
                         </FormField>
+                        <FormField v-if="form.ingest_mode === 'push' && form.source_type === 'rtmp'" label="RTMP Stream Key (Custom)" :error="form.errors.rtmp_input_key">
+                            <input v-model="form.rtmp_input_key" type="text" class="form-input font-mono text-sm" placeholder="Leave empty to auto-generate" />
+                            <p class="mt-1 text-xs text-slate-500">Custom stream key for OBS/vMix to publish to. Auto-generated if left blank.</p>
+                        </FormField>
+                        <div v-if="form.ingest_mode === 'push' && channel.published_ingest_server" class="sm:col-span-2 px-3 py-2 bg-slate-800/60 rounded-lg text-xs break-all text-indigo-400">
+                            <template v-if="form.source_type === 'rtmp'">
+                                <div>OBS Server: <span class="font-mono">{{ channel.published_ingest_server }}</span></div>
+                                <div class="mt-1">Stream Key: <span class="font-mono">{{ channel.rtmp_input_key }}</span></div>
+                            </template>
+                            <template v-else>SRT Caller URL: <span class="font-mono">{{ channel.published_ingest_server }}</span></template>
+                        </div>
                     </div>
                 </Section>
 
@@ -182,11 +219,22 @@
                 <!-- DVR & Recording -->
                 <Section title="DVR &amp; Recording">
                     <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
-                        <FormField label="DVR Rolling Window (seconds)" :error="form.errors.dvr_duration">
+                        <p v-if="channel.ingest_mode === 'push'" class="sm:col-span-2 text-sm text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 rounded-lg px-4 py-3">
+                            Recording and rolling DVR are disabled for managed push channels. Uploaded VOD playlists remain available for fallback.
+                        </p>
+                        <template v-else>
+                        <FormField label="Rolling DVR" :error="form.errors.dvr_enabled" class-name="sm:col-span-2">
+                            <select v-model="form.dvr_enabled" class="form-input">
+                                <option :value="false">Disabled — live preview and forwarding only</option>
+                                <option :value="true">Enabled — retain a rewindable rolling window</option>
+                            </select>
+                            <p class="mt-1 text-xs text-slate-500">Uploaded fallback VOD remains available when DVR is disabled.</p>
+                        </FormField>
+                        <FormField label="DVR Rolling Window (seconds)" :error="form.errors.dvr_duration" :class-name="!form.dvr_enabled ? 'opacity-50' : ''">
                             <div class="flex gap-2">
                                 <input v-model.number="form.dvr_duration" type="number"
-                                       min="60" max="86400" required class="form-input flex-1" />
-                                <select @change="form.dvr_duration = $event.target.value ? parseInt($event.target.value) : form.dvr_duration" class="form-input w-28">
+                                       min="60" max="86400" required :disabled="!form.dvr_enabled" class="form-input flex-1" />
+                                <select @change="form.dvr_duration = $event.target.value ? parseInt($event.target.value) : form.dvr_duration" :disabled="!form.dvr_enabled" class="form-input w-28">
                                     <option value="">Custom</option>
                                     <option value="1800">30 min</option>
                                     <option value="3600">1 hour</option>
@@ -198,9 +246,9 @@
                             </div>
                             <p class="mt-1 text-xs text-slate-500">{{ formatDuration(form.dvr_duration) }}</p>
                         </FormField>
-                        <FormField label="Segment Duration (seconds)" :error="form.errors.segment_duration">
+                        <FormField label="Segment Duration (seconds)" :error="form.errors.segment_duration" :class-name="!form.dvr_enabled ? 'opacity-50' : ''">
                             <input v-model.number="form.segment_duration" type="number"
-                                   min="2" max="30" required class="form-input" />
+                                   min="2" max="30" required :disabled="!form.dvr_enabled" class="form-input" />
                         </FormField>
                         <FormField label="Recording File Length (seconds, 0=disabled)" :error="form.errors.record_duration">
                             <div class="flex gap-2">
@@ -229,6 +277,7 @@
                                 <option :value="10">10</option>
                             </select>
                         </FormField>
+                        </template>
                         <FormField label="Health Check Interval (seconds)" :error="form.errors.check_interval">
                             <input v-model.number="form.check_interval" type="number"
                                    min="1" max="60" required class="form-input" />
@@ -272,6 +321,19 @@
                     </button>
                 </div>
             </form>
+
+            <Section title="Uploaded Backup VOD" class="mt-5">
+                <p class="text-xs text-slate-500 mb-4">When present, this file is looped during an outage instead of recorded stream video.</p>
+                <div v-if="channel.fallback_vod_name" class="flex items-center justify-between gap-3">
+                    <span class="text-sm text-slate-300 break-all">{{ channel.fallback_vod_name }}</span>
+                    <Link :href="route('channels.fallback-vod.remove', channel.id)" method="delete" as="button" class="text-xs text-red-400">Remove</Link>
+                </div>
+                <form v-else @submit.prevent="uploadFallback" class="flex items-start gap-3">
+                    <input type="file" accept="video/*,.mkv,.ts" @change="fallbackForm.fallback_vod = $event.target.files[0]" class="form-input text-sm flex-1" required />
+                    <button :disabled="fallbackForm.processing" class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg disabled:opacity-50">Upload</button>
+                </form>
+                <p v-if="fallbackForm.errors.fallback_vod" class="mt-2 text-xs text-red-400">{{ fallbackForm.errors.fallback_vod }}</p>
+            </Section>
         </div>
     </AppLayout>
 </template>
@@ -283,13 +345,17 @@ import AppLayout from '@/Layouts/AppLayout.vue'
 import FormField from '@/Components/FormField.vue'
 import Section from '@/Components/Section.vue'
 
-const props = defineProps({ channel: Object })
+const props = defineProps({ channel: Object, users: Array, isAdmin: Boolean })
 
 const form = useForm({
     name:                   props.channel.name,
     notes:                  props.channel.notes ?? '',
     is_active:              props.channel.is_active,
+    user_id:                props.channel.user_id ?? '',
+    storage_quota_gb:       props.channel.storage_quota_bytes ? Math.round(props.channel.storage_quota_bytes / 1024 / 1024 / 1024) : '',
     source_type:            props.channel.source_type,
+    ingest_mode:            props.channel.ingest_mode ?? 'pull',
+    ingest_port:            props.channel.ingest_port ?? null,
     source_url:             props.channel.source_url,
     push_protocol:          props.channel.push_protocol,
     push_url:               props.channel.push_url,
@@ -308,6 +374,7 @@ const form = useForm({
     push_audio_channels:    props.channel.push_audio_channels ?? 2,
     dvr_duration:           props.channel.dvr_duration,
     segment_duration:       props.channel.segment_duration,
+    dvr_enabled:            props.channel.dvr_enabled ?? true,
     record_duration:        props.channel.record_duration     ?? 3600,
     keep_recordings:        props.channel.keep_recordings     ?? 3,
     timezone:               props.channel.timezone            ?? 'UTC',
@@ -315,6 +382,8 @@ const form = useForm({
     check_interval:         props.channel.check_interval,
     max_retries:            props.channel.max_retries,
 })
+
+const fallbackForm = useForm({ fallback_vod: null })
 
 const pushTarget = computed(() => {
     if (!form.push_url) return '—'
@@ -331,5 +400,19 @@ function formatDuration(s) {
     return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
 
-function submit() { form.put(route('channels.update', props.channel.id)) }
+function submit() {
+    if (!['rtmp', 'srt'].includes(form.source_type)) form.ingest_mode = 'pull'
+    const data = { ...form }
+    if (data.storage_quota_gb && data.storage_quota_gb > 0) {
+        data.storage_quota_bytes = Math.floor(data.storage_quota_gb * 1024 * 1024 * 1024)
+    } else {
+        data.storage_quota_bytes = null
+    }
+    delete data.storage_quota_gb
+    form.put(route('channels.update', props.channel.id), data)
+}
+
+function uploadFallback() {
+    fallbackForm.post(route('channels.fallback-vod.upload', props.channel.id), { forceFormData: true })
+}
 </script>
