@@ -39,6 +39,7 @@ class ChannelContentController extends Controller
             'file' => 'required|file|max:2097152',
         ]);
         $file = $request->file('file');
+        $fileSize = $file->getSize();
         // UploadedFile points to PHP's temporary upload path. Capture all
         // metadata before move(), because that temporary path no longer exists
         // after the file has been moved into the channel content directory.
@@ -47,6 +48,12 @@ class ChannelContentController extends Controller
         $extension = strtolower($file->getClientOriginalExtension() ?: ($data['type'] === 'logo' ? 'png' : 'mp4'));
         if ($data['type'] === 'vod' && ! str_starts_with($mimeType, 'video/')) abort(422, 'Please upload a video file.');
         if ($data['type'] === 'logo' && ! str_starts_with($mimeType, 'image/')) abort(422, 'Please upload an image file.');
+
+        if ($channel->hasStorageQuota() && ! $channel->canStore($fileSize)) {
+            $available = $channel->storage_quota_bytes - $channel->storage_used_bytes;
+            return back()->withErrors(['file' => 'Upload exceeds channel storage quota. Available: ' . $this->formatBytes($available)]);
+        }
+
         $dir = $channel->dvr_directory . '/content';
         if (! is_dir($dir)) mkdir($dir, 0755, true);
         $name = Str::uuid() . '.' . $extension;
@@ -54,9 +61,13 @@ class ChannelContentController extends Controller
         $media = $channel->media()->create([
             'type' => $data['type'], 'name' => $originalName,
             'filepath' => $dir . '/' . $name, 'mime_type' => $mimeType,
-            'filesize' => filesize($dir . '/' . $name),
+            'filesize' => $fileSize,
             'sort_order' => (int) $channel->media()->max('sort_order') + 1,
         ]);
+
+        if ($fileSize > 0) {
+            $channel->increment('storage_used_bytes', $fileSize);
+        }
         if ($data['type'] === 'logo' && ! $channel->logo_media_id) {
             $channel->update(['logo_media_id' => $media->id]);
             // Immediately restart the push so the logo filter is applied
@@ -113,8 +124,12 @@ class ChannelContentController extends Controller
                 return back()->withErrors(['media' => 'The replacement fallback could not be prepared. The existing VOD was kept on air.']);
             }
         }
+        $size = filesize($media->filepath) ?: 0;
         @unlink($media->filepath);
         $media->delete();
+        if ($size > 0) {
+            $channel->decrement('storage_used_bytes', $size);
+        }
         if ($wasLogo && $this->push->isRunning($channel)) {
             $this->push->stop($channel);
             $this->push->start($channel->fresh());
@@ -129,6 +144,17 @@ class ChannelContentController extends Controller
             $host = parse_url((string) config('app.url'), PHP_URL_HOST) ?: 'localhost';
         }
         return "http://{$host}:8081/hls-static/{$channel->slug}/index.m3u8";
+    }
+
+    private function formatBytes(int $bytes): string
+    {
+        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        $i = 0;
+        while ($bytes >= 1024 && $i < count($units) - 1) {
+            $bytes /= 1024;
+            $i++;
+        }
+        return sprintf('%.2f %s', $bytes, $units[$i]);
     }
 
     private function access(Channel $channel): void
