@@ -261,7 +261,7 @@
                         </FormField>
                         <FormField label="Segment Duration (seconds)" :error="form.errors.segment_duration" :class-name="!form.dvr_enabled ? 'opacity-50' : ''">
                             <input v-model.number="form.segment_duration" type="number"
-                                   min="2" max="30" required :disabled="!form.dvr_enabled" class="form-input" />
+                                   min="1" max="30" required :disabled="!form.dvr_enabled" class="form-input" />
                             <p class="mt-1 text-xs text-slate-500">
                                 {{ Math.ceil(form.dvr_duration / form.segment_duration) }} segments total
                             </p>
@@ -376,7 +376,7 @@ const form = useForm({
     push_resolution: '',        push_framerate: null,
     push_audio_codec: 'aac',    push_audio_bitrate: 128,
     push_audio_samplerate: 48000, push_audio_channels: 2,
-    dvr_duration: 3600, segment_duration: 4, dvr_enabled: false,
+    dvr_duration: 3600, segment_duration: 2, dvr_enabled: false,
     record_duration: 3600, keep_recordings: 24,
     timezone: 'UTC', locale: 'en',
     check_interval: 5, max_retries: 3,

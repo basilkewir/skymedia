@@ -22,7 +22,12 @@ class ChannelContentController extends Controller
         $channel->load(['media', 'logoMedia']);
         return Inertia::render('Channels/Content', [
             'channel' => $channel,
-            'previewUrl' => route('hls.serve', [$channel, 'output.m3u8']),
+            'previewUrl' => $channel->logo_media_id || $channel->ticker_enabled
+                ? $this->brandedPreviewUrl($channel)
+                : route('hls.serve', [$channel, 'output.m3u8']),
+            'serverLogoPreviewUrl' => $channel->logoMedia
+                ? route('hls.serve', [$channel, 'content/' . basename($channel->logoMedia->filepath)])
+                : null,
         ]);
     }
 
@@ -115,6 +120,15 @@ class ChannelContentController extends Controller
             $this->push->start($channel->fresh());
         }
         return back()->with('success', 'Media removed');
+    }
+
+    private function brandedPreviewUrl(Channel $channel): string
+    {
+        $host = config('skymedia.server_ip');
+        if ($host === 'localhost') {
+            $host = parse_url((string) config('app.url'), PHP_URL_HOST) ?: 'localhost';
+        }
+        return "http://{$host}:8081/hls-static/{$channel->slug}/index.m3u8";
     }
 
     private function access(Channel $channel): void

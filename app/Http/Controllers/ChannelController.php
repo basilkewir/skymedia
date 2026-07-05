@@ -150,7 +150,9 @@ class ChannelController extends Controller
         return Inertia::render('Channels/Show', [
             'channel' => $channel,
             'isAdmin' => $isAdmin,
-            'previewUrl' => route('hls.serve', [$channel, 'output.m3u8']),
+            'previewUrl' => $channel->logo_media_id || $channel->ticker_enabled
+                ? $this->brandedPreviewUrl($channel)
+                : route('hls.serve', [$channel, 'output.m3u8']),
         ]);
     }
 
@@ -521,7 +523,7 @@ class ChannelController extends Controller
             'push_audio_channels' => 'nullable|integer|in:1,2,6',
             // DVR
             'dvr_duration' => 'required|integer|min:60|max:86400',
-            'segment_duration' => 'required|integer|min:2|max:30',
+            'segment_duration' => 'required|integer|min:1|max:30',
             'dvr_enabled' => 'required|boolean',
             // Storage quota
             'storage_quota_bytes' => 'nullable|integer|min:1',
@@ -549,6 +551,15 @@ class ChannelController extends Controller
         if ($port > $maxPort) throw new \RuntimeException('No ingest ports are available');
 
         return $port;
+    }
+
+    private function brandedPreviewUrl(Channel $channel): string
+    {
+        $host = config('skymedia.server_ip');
+        if ($host === 'localhost') {
+            $host = parse_url((string) config('app.url'), PHP_URL_HOST) ?: 'localhost';
+        }
+        return "http://{$host}:8081/hls-static/{$channel->slug}/index.m3u8";
     }
 
     private function ensureChannelAccess(Channel $channel): void

@@ -219,10 +219,9 @@ class StreamManager
                 $channel->update(['playout_status' => 'fallback']);
                 $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
                 event(new StreamStatusChanged($channel, 'offline'));
-                // Ensure push is running to serve the fallback
-                if (!$this->push->isRunning($channel->fresh())) {
-                    $this->push->start($channel->fresh());
-                }
+                // Restart push with branding since source is now offline
+                $this->push->stop($channel->fresh());
+                $this->startPushIfReady($channel->fresh());
             } else {
                 $this->log($channel, 'error', 'fallback_failed', 'Fallback playout failed to start');
                 event(new StreamStatusChanged($channel, 'offline'));
@@ -269,6 +268,10 @@ class StreamManager
         // Atomically symlink output.m3u8 → live.m3u8.
         // Fallback loop stays running in the background for instant switch-back.
         $this->playout->switchToLive($channel->fresh());
+
+        // Restart push without branding since source is now live
+        $this->push->stop($channel->fresh());
+        $this->startPushIfReady($channel->fresh());
 
         $channel->update([
             'source_live' => true, 'last_live_at' => now(),
@@ -324,7 +327,11 @@ class StreamManager
 
         // ── Playout: always make sure output.m3u8 points to live.m3u8 when source is live ─
         if (!$this->playout->isLiveOutput($channel) && $this->ffmpeg->liveHlsReady($channel, 2)) {
-            $this->playout->switchToLive($channel);
+            $fresh = $channel->fresh();
+            $this->playout->switchToLive($fresh);
+            // Restart push without branding since source is live
+            $this->push->stop($fresh);
+            $this->startPushIfReady($fresh);
             $this->log($channel, 'info', 'playout_forced_live',
                 'output.m3u8 was not pointing to live — corrected');
         }
@@ -343,7 +350,7 @@ class StreamManager
                 $this->log($channel, 'warning',
                     $wasPreviouslyLive ? 'push_died' : 'push_not_running',
                     $wasPreviouslyLive ? 'Push died — restarting' : 'Push not running — starting');
-                if ($this->push->start($channel)) {
+                if ($this->push->start($channel->fresh())) {
                     $channel->update(['push_status' => 'live']);
                     $channel->resetRetries();
                     $this->log($channel, 'info', 'push_started',

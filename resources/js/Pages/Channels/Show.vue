@@ -468,7 +468,7 @@ onMounted(async () => {
         } else {
             const { default: Hls } = await import('hls.js')
             if (Hls.isSupported()) {
-                hlsPlayer = new Hls({ liveSyncDurationCount: 3 })
+                hlsPlayer = new Hls({ liveSyncDurationCount: 2, maxBufferLength: 4, enableWorker: true })
                 hlsPlayer.loadSource(props.previewUrl)
                 hlsPlayer.attachMedia(previewPlayer.value)
             }

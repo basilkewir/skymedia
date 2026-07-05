@@ -20,6 +20,7 @@ class HlsController extends Controller
     public function serve(Channel $channel, string $file): BinaryFileResponse
     {
         $dvrDir = $channel->dvr_directory;
+
         $path = realpath("{$dvrDir}/{$file}");
 
         // Security: only serve files that actually live inside this channel's DVR dir

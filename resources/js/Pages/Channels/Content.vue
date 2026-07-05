@@ -47,6 +47,7 @@
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
                     <FormField label="Channel Logo">
                         <select v-model="form.logo_media_id" class="form-input"><option :value="null">No logo</option><option v-for="logo in logos" :key="logo.id" :value="logo.id">{{ logo.name }}</option></select>
+                        <img v-if="logoPreviewUrl" :src="logoPreviewUrl" class="mt-2 max-h-16 rounded border border-slate-600" />
                     </FormField>
                     <FormField label="Logo Position"><select v-model="form.logo_position" class="form-input"><option value="top-left">Top left</option><option value="top-right">Top right</option><option value="bottom-left">Bottom left</option><option value="bottom-right">Bottom right</option></select></FormField>
                     <FormField label="Ticker"><select v-model="form.ticker_enabled" class="form-input"><option :value="false">Disabled</option><option :value="true">Enabled</option></select></FormField>
@@ -66,7 +67,13 @@ import AppLayout from '@/Layouts/AppLayout.vue'
 import Section from '@/Components/Section.vue'
 import FormField from '@/Components/FormField.vue'
 
-const props = defineProps({ channel:Object, previewUrl:String })
+const props = defineProps({ channel:Object, previewUrl:String, serverLogoPreviewUrl:String|null })
+const logoPreviewUrl = computed(() => {
+    if (!form.logo_media_id) return null
+    const logo = logos.value.find(l => l.id === form.logo_media_id)
+    if (!logo) return null
+    return route('hls.serve', [props.channel.id, 'content/' + logo.filepath.split('/').pop()])
+})
 const vods = computed(() => props.channel.media.filter(x => x.type === 'vod'))
 const logos = computed(() => props.channel.media.filter(x => x.type === 'logo'))
 const form = useForm({ playlist: [], logo_media_id: null, logo_position: 'top-right', ticker_enabled: false, ticker_text: '' })
@@ -85,7 +92,7 @@ function uploadLogo(){ logoForm.post(route('channels.content.upload',props.chann
 function move(i,d){ const n=i+d; if(n<0||n>=form.playlist.length)return; [form.playlist[i],form.playlist[n]]=[form.playlist[n],form.playlist[i]] }
 function save(){ form.put(route('channels.content.update',props.channel.id)) }
 function formatBytes(n){ if(!n)return '0 B'; const u=['B','KB','MB','GB']; const i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),3); return `${(n/1024**i).toFixed(1)} ${u[i]}` }
-onMounted(async()=>{ if(player.value.canPlayType('application/vnd.apple.mpegurl')) player.value.src=props.previewUrl; else { const {default:Hls}=await import('hls.js'); if(Hls.isSupported()){hls=new Hls();hls.loadSource(props.previewUrl);hls.attachMedia(player.value)} } })
+onMounted(async()=>{ if(player.value.canPlayType('application/vnd.apple.mpegurl')) player.value.src=props.previewUrl; else { const {default:Hls}=await import('hls.js'); if(Hls.isSupported()){hls=new Hls({liveSyncDurationCount:2,maxBufferLength:4,enableWorker:true});hls.loadSource(props.previewUrl);hls.attachMedia(player.value)} } })
 onUnmounted(()=>hls?.destroy())
 </script>
 

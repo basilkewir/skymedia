@@ -248,7 +248,7 @@
                         </FormField>
                         <FormField label="Segment Duration (seconds)" :error="form.errors.segment_duration" :class-name="!form.dvr_enabled ? 'opacity-50' : ''">
                             <input v-model.number="form.segment_duration" type="number"
-                                   min="2" max="30" required :disabled="!form.dvr_enabled" class="form-input" />
+                                   min="1" max="30" required :disabled="!form.dvr_enabled" class="form-input" />
                         </FormField>
                         <FormField label="Recording File Length (seconds, 0=disabled)" :error="form.errors.record_duration">
                             <div class="flex gap-2">

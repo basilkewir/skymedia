@@ -16,7 +16,7 @@ class SettingsSeeder extends Seeder
             ['key' => 'monitor_tick',           'value' => '3',        'type' => 'integer', 'group' => 'system',  'label' => 'Monitor Tick (seconds)'],
             ['key' => 'srt_latency',            'value' => '200',      'type' => 'integer', 'group' => 'stream',  'label' => 'SRT Latency (ms)'],
             ['key' => 'default_dvr_duration',   'value' => '3600',     'type' => 'integer', 'group' => 'dvr',     'label' => 'Default DVR Duration (sec)'],
-            ['key' => 'default_segment_duration','value' => '4',       'type' => 'integer', 'group' => 'dvr',     'label' => 'Default Segment Duration (sec)'],
+            ['key' => 'default_segment_duration','value' => '2',       'type' => 'integer', 'group' => 'dvr',     'label' => 'Default Segment Duration (sec)'],
             ['key' => 'log_retention_days',     'value' => '30',       'type' => 'integer', 'group' => 'system',  'label' => 'Log Retention (days)'],
             ['key' => 'app_name',               'value' => 'SkyMedia', 'type' => 'string',  'group' => 'general', 'label' => 'Application Name'],
         ];

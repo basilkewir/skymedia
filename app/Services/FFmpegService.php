@@ -235,9 +235,9 @@ class FFmpegService
                 '-c:a', 'copy',
                 '-f',                    'hls',
                 '-hls_time',             (string) max(1, (int) $channel->segment_duration),
-                '-hls_list_size',        $dvrEnabled ? '10' : '5',
+                '-hls_list_size',        $dvrEnabled ? '15' : '10',
                 '-hls_flags',            'delete_segments+omit_endlist',
-                '-hls_delete_threshold', $dvrEnabled ? '3' : '2',
+                '-hls_delete_threshold', $dvrEnabled ? '4' : '3',
                 '-hls_segment_type',     'mpegts',
                 '-hls_segment_filename', $segPattern,
                 '-hls_allow_cache',      '0',
@@ -260,20 +260,37 @@ class FFmpegService
     {
         $protocol ??= $channel->push_protocol;
 
+        $fps = $channel->push_framerate ?? 25;
+        $bitrate = (int) ($channel->push_video_bitrate ?? 2000);
+
         $cmd = [
             $this->ffmpegBin, '-y', '-loglevel', 'warning', '-stats',
             '-re',
-            '-fflags',             '+genpts+igndts+discardcorrupt',
+            '-fflags',             '+genpts+discardcorrupt',
             '-live_start_index',   '-3',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
             '-i',                  $playlistPath,
         ];
 
-        $branding = $this->brandingFlags($channel);
+        $isLiveOutput = is_link($playlistPath) && readlink($playlistPath) === 'live.m3u8';
+        $branding = $isLiveOutput ? ['inputs' => [], 'video' => []] : $this->brandingFlags($channel);
         $cmd = array_merge($cmd, $branding['inputs']);
-        $cmd = array_merge($cmd, $branding['video'] ?: $this->videoEncodeFlags($channel));
-        $cmd = array_merge($cmd, $this->audioEncodeFlags($channel));
+        if ($branding['video']) {
+            $cmd = array_merge($cmd, $branding['video']);
+            $cmd[] = '-max_muxing_queue_size';
+            $cmd[] = '9999';
+            $audioCodec = $channel->push_audio_codec ?? 'aac';
+            if ($audioCodec !== 'copy') {
+                $cmd[] = '-af';
+                $cmd[] = 'aresample=async=1:first_pts=0';
+            }
+            $cmd = array_merge($cmd, $this->audioEncodeFlags($channel));
+        } else {
+            $cmd[] = '-max_muxing_queue_size';
+            $cmd[] = '9999';
+            $cmd = array_merge($cmd, ['-c:v', 'copy', '-c:a', 'copy']);
+        }
 
         if ($protocol === 'srt') {
             $cmd[] = '-f';
@@ -285,8 +302,8 @@ class FFmpegService
         } else {
             $cmd[] = '-f';
             $cmd[] = 'flv';
-            $cmd[] = '-flvflags';
-            $cmd[] = 'no_duration_filesize';
+            $cmd[] = '-rtmp_live';
+            $cmd[] = 'live';
             $cmd[] = $destination ? $this->buildDestinationPushUrl($destination) : $this->pushUrl($channel);
         }
 
@@ -309,12 +326,24 @@ class FFmpegService
         $text = str_replace(['\\', ':', "'", '%'], ['\\\\', '\\:', "\\'", '\\%'], (string) $channel->ticker_text);
         $ticker = "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='{$text}':fontcolor=white:fontsize=28:box=1:boxcolor=black@0.65:boxborderw=10:x=w-mod(t*100\,w+tw):y=h-th-25";
 
+        $fps = $channel->push_framerate ?? 25;
+        $bitrate = (int) ($channel->push_video_bitrate ?? 2000);
+        $encodeBase = ['-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p'];
+        $rateControl = ['-b:v', $bitrate . 'k', '-maxrate', ((int) ($bitrate * 1.2)) . 'k', '-bufsize', ((int) ($bitrate * 2)) . 'k'];
+        $gopFlags = ['-g', (string) ($fps * 2), '-keyint_min', (string) $fps, '-sc_threshold', '0', '-threads', '0'];
+
         if ($hasLogo) {
             $filter = "[1:v][0:v]scale2ref=w=main_w*0.15:h=-1[logo][base];[base][logo]overlay={$position}[branded]";
             $filter .= $hasTicker ? ";[branded]{$ticker}[vout]" : ';[branded]null[vout]';
-            $video = ['-filter_complex', $filter, '-map', '[vout]', '-map', '0:a?', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p'];
+            $video = array_merge(
+                ['-filter_complex', $filter, '-map', '[vout]', '-map', '0:a?'],
+                $encodeBase, $rateControl, $gopFlags
+            );
         } else {
-            $video = ['-vf', $ticker, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p'];
+            $video = array_merge(
+                ['-vf', $ticker],
+                $encodeBase, $rateControl, $gopFlags
+            );
         }
         return ['inputs' => $inputs, 'video' => $video];
     }

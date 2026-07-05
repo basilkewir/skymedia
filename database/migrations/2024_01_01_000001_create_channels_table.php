@@ -45,7 +45,7 @@ return new class extends Migration
 
             // ── DVR ───────────────────────────────────────────────────────
             $table->unsignedInteger('dvr_duration')->default(3600)->comment('Rolling window in seconds');
-            $table->unsignedSmallInteger('segment_duration')->default(4)->comment('Segment duration in seconds');
+            $table->unsignedSmallInteger('segment_duration')->default(2)->comment('Segment duration in seconds');
             $table->string('dvr_path')->nullable();
 
             // ── Recording (periodic full recordings for fallback) ─────────
