@@ -377,7 +377,7 @@ const form = useForm({
     push_audio_codec: 'aac',    push_audio_bitrate: 128,
     push_audio_samplerate: 48000, push_audio_channels: 2,
     dvr_duration: 3600, segment_duration: 2, dvr_enabled: false,
-    record_duration: 3600, keep_recordings: 24,
+    record_duration: 3600, keep_recordings: 10,
     timezone: 'UTC', locale: 'en',
     check_interval: 5, max_retries: 3,
 })
