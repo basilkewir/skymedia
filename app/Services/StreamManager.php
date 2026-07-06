@@ -219,9 +219,13 @@ class StreamManager
                 $channel->update(['playout_status' => 'fallback']);
                 $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
                 event(new StreamStatusChanged($channel, 'offline'));
-                // Restart push with branding since source is now offline
-                $this->push->stop($channel->fresh());
-                $this->startPushIfReady($channel->fresh());
+                // Only restart push if branding overlay (logo/ticker) needs to change.
+                // Without branding the ffmpeg command is identical for live and fallback
+                // (-c:v copy -c:a copy), so the atomic symlink swap is sufficient.
+                if ($this->hasBranding($channel->fresh())) {
+                    $this->push->stop($channel->fresh());
+                    $this->startPushIfReady($channel->fresh());
+                }
             } else {
                 $this->log($channel, 'error', 'fallback_failed', 'Fallback playout failed to start');
                 event(new StreamStatusChanged($channel, 'offline'));
@@ -269,9 +273,13 @@ class StreamManager
         // Fallback loop stays running in the background for instant switch-back.
         $this->playout->switchToLive($channel->fresh());
 
-        // Restart push without branding since source is now live
-        $this->push->stop($channel->fresh());
-        $this->startPushIfReady($channel->fresh());
+        // Only restart push if branding overlay (logo/ticker) needs to change.
+        // Without branding the ffmpeg command is identical for live and fallback,
+        // so the atomic symlink swap is sufficient and avoids a viewer gap.
+        if ($this->hasBranding($channel->fresh())) {
+            $this->push->stop($channel->fresh());
+            $this->startPushIfReady($channel->fresh());
+        }
 
         $channel->update([
             'source_live' => true, 'last_live_at' => now(),
@@ -329,9 +337,11 @@ class StreamManager
         if (!$this->playout->isLiveOutput($channel) && $this->ffmpeg->liveHlsReady($channel, 2)) {
             $fresh = $channel->fresh();
             $this->playout->switchToLive($fresh);
-            // Restart push without branding since source is live
-            $this->push->stop($fresh);
-            $this->startPushIfReady($fresh);
+            // Only restart push if branding overlay needs to change
+            if ($this->hasBranding($fresh)) {
+                $this->push->stop($fresh);
+                $this->startPushIfReady($fresh);
+            }
             $this->log($channel, 'info', 'playout_forced_live',
                 'output.m3u8 was not pointing to live — corrected');
         }
@@ -423,7 +433,7 @@ class StreamManager
         // ── Push watchdog ────────────────────────────────────────────────
         if (!$this->push->isRunning($channel)) {
             $playlist = $this->playout->outputPlaylist($channel);
-            if (file_exists($playlist)) {
+            if (file_exists($playlist) && $this->ffmpeg->hlsReady($channel, 2)) {
                 $this->log($channel, 'warning', 'push_died_offline', 'Push died during fallback — restarting');
                 $this->push->start($channel);
             }
@@ -437,6 +447,26 @@ class StreamManager
 
         $channel->update(['stream_status' => 'offline']);
         $channel->incrementRetry('Source offline');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  HELPERS
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * True when the channel has a logo or ticker overlay configured.
+     * When branding is present, live and fallback modes use different ffmpeg
+     * encoding flags, so the push process must be restarted on transitions.
+     * Without branding both modes use -c:v copy, so the symlink swap is
+     * sufficient and no restart is needed.
+     */
+    private function hasBranding(Channel $channel): bool
+    {
+        $channel->loadMissing('logoMedia');
+        $logo = $channel->logoMedia;
+
+        return ($logo && file_exists($logo->filepath))
+            || ($channel->ticker_enabled && trim((string) $channel->ticker_text) !== '');
     }
 
     // ═══════════════════════════════════════════════════════════════════
