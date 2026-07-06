@@ -47,6 +47,9 @@ class StreamManager
             // 3. Start push immediately if playlist is ready — monitor will retry if not
             $this->startPushIfReady($channel);
 
+            // 4. Start HLS relay to local nginx-rtmp for browser playback
+            $this->startHlsRelay($channel);
+
             $status = $channel->isPushIngest() ? 'starting' : 'live';
             $channel->update(['stream_status' => $status]);
             event(new StreamStatusChanged($channel, $status));
@@ -82,6 +85,7 @@ class StreamManager
     {
         $this->recording->stop($channel);
         $this->push->stop($channel);
+        $this->stopHlsRelay($channel);
         $this->playout->stop($channel);
         $this->ingest->stop($channel);
 
@@ -380,6 +384,11 @@ class StreamManager
             $this->push->watchDestinations($channel, $playlist);
         }
 
+        // ── HLS relay watchdog ───────────────────────────────────────────
+        if (! $this->isHlsRelayRunning($channel)) {
+            $this->startHlsRelay($channel);
+        }
+
         if ($channel->stream_status !== 'live') {
             $channel->update(['stream_status' => 'live', 'source_live' => true]);
         }
@@ -445,8 +454,86 @@ class StreamManager
             $this->push->watchDestinations($channel, $playlist);
         }
 
+        // ── HLS relay watchdog ───────────────────────────────────────────
+        if (! $this->isHlsRelayRunning($channel)) {
+            $this->startHlsRelay($channel);
+        }
+
         $channel->update(['stream_status' => 'offline']);
         $channel->incrementRetry('Source offline');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  HLS RELAY (pushes output.m3u8 → local nginx-rtmp for HLS preview)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Start a relay that pushes channel output to the local nginx-rtmp
+     * "static" application so it generates HLS files at:
+     *   http://<host>:8081/hls-static/<slug>/index.m3u8
+     */
+    public function startHlsRelay(Channel $channel): bool
+    {
+        if ($this->isHlsRelayRunning($channel)) {
+            return true;
+        }
+
+        $playlist = $this->playout->outputPlaylist($channel);
+        if (! file_exists($playlist)) {
+            return false;
+        }
+
+        $slug = $channel->slug;
+        $rtmpUrl = "rtmp://rtmp:1935/static/{$slug}";
+
+        $cmd = [
+            $this->ffmpeg->getBin(),
+            '-y', '-loglevel', 'warning', '-stats',
+            '-re',
+            '-fflags',             '+genpts+discardcorrupt',
+            '-live_start_index',   '-3',
+            '-allowed_extensions', 'ALL',
+            '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
+            '-i',                  $playlist,
+            '-max_muxing_queue_size', '9999',
+            '-c:v', 'copy',
+            '-c:a', 'copy',
+            '-f',   'flv',
+            '-rtmp_live', 'live',
+            $rtmpUrl,
+        ];
+
+        $pidFile = $this->ffmpeg->pidFile($channel, 'hls_relay');
+        $logFile = $this->ffmpeg->logFile($channel, 'hls_relay');
+
+        try {
+            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 6);
+            $this->log($channel, 'info', 'hls_relay_started',
+                "HLS relay started — PID {$pid} → {$rtmpUrl}");
+            Log::info("[HLS Relay] {$channel->name} started — PID {$pid} → {$rtmpUrl}");
+            return true;
+        } catch (\Throwable $e) {
+            Log::error("[HLS Relay] {$channel->name} failed: {$e->getMessage()}");
+            $this->log($channel, 'error', 'hls_relay_failed', $e->getMessage());
+            return false;
+        }
+    }
+
+    public function stopHlsRelay(Channel $channel): void
+    {
+        $pidFile = $this->ffmpeg->pidFile($channel, 'hls_relay');
+        $pid = $this->ffmpeg->readPid($pidFile);
+        if ($pid > 0) {
+            $this->ffmpeg->stopProcess($pid);
+            Log::info("[HLS Relay] {$channel->name} stopped — PID {$pid}");
+        }
+        $this->ffmpeg->clearPid($pidFile);
+    }
+
+    public function isHlsRelayRunning(Channel $channel): bool
+    {
+        $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'hls_relay'));
+        return $pid > 0 && $this->ffmpeg->isRunning($pid);
     }
 
     // ═══════════════════════════════════════════════════════════════════
