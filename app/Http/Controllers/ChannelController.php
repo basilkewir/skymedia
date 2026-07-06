@@ -89,7 +89,9 @@ class ChannelController extends Controller
 
         if (($data['ingest_mode'] ?? 'pull') === 'push') {
             $data['source_url'] = $data['source_url'] ?: 'push://listener';
-            $data['rtmp_input_key'] = Str::random(24);
+            if (empty($data['rtmp_input_key'])) {
+                $data['rtmp_input_key'] = Str::random(24);
+            }
             $data['dvr_enabled'] = false;
             $data['record_duration'] = 0;
         }
@@ -102,7 +104,17 @@ class ChannelController extends Controller
         // Managed channels must immediately listen for OBS/vMix publishers.
         // A stopped listener presents as "Failed to connect to server".
         if ($channel->fresh()->isPushIngest()) {
-            $this->manager->startChannel($channel->fresh());
+            try {
+                $started = $this->manager->startChannel($channel->fresh());
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error("[Channel {$channel->id}] store startChannel: {$e->getMessage()}");
+                $started = false;
+            }
+
+            if (! $started) {
+                return redirect()->route('channels.show', $channel)
+                    ->with('error', 'Channel created but the ingest listener failed to start. Check the channel status for details.');
+            }
         }
 
         return redirect()->route('channels.show', $channel)->with('success', 'Channel created');
