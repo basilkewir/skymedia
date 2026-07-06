@@ -97,8 +97,12 @@ class ChannelController extends Controller
         }
 
         $channel = Channel::create($data);
-        if ($channel->isPushIngest() && ! $channel->ingest_port) {
-            $channel->update(['ingest_port' => $this->availableIngestPort($channel->source_type)]);
+        if ($channel->isPushIngest()) {
+            $port = $channel->ingest_port;
+            $portTaken = $port && Channel::where('ingest_port', $port)->where('id', '!=', $channel->id)->exists();
+            if (! $port || $portTaken) {
+                $channel->update(['ingest_port' => $this->availableIngestPort($channel->source_type, $channel->id)]);
+            }
         }
 
         // Managed channels must immediately listen for OBS/vMix publishers.
@@ -515,7 +519,7 @@ class ChannelController extends Controller
             'user_id' => 'nullable|exists:users,id',
             'source_type' => 'required|in:hls,udp,mpegts,rtmp,srt',
             'ingest_mode' => 'required|in:pull,push',
-            'ingest_port' => "nullable|integer|min:{$ingestPortMin}|max:{$ingestPortMax}|unique:channels,ingest_port" . ($update ? ',' . request()->route('channel')->id : ''),
+            'ingest_port' => "nullable|integer|min:{$ingestPortMin}|max:{$ingestPortMax}",
             'source_url' => 'nullable|required_if:ingest_mode,pull|string|max:1000',
             'rtmp_input_key' => 'nullable|string|max:255',
             'push_protocol' => 'required|in:rtmp,srt,hls',
