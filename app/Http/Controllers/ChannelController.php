@@ -563,7 +563,7 @@ class ChannelController extends Controller
             ->when($exceptId, fn ($q) => $q->whereKeyNot($exceptId))->exists()) {
             $port++;
         }
-        $maxPort = $protocol === 'srt' ? 30999 : 20999;
+        $maxPort = $protocol === 'srt' ? 30099 : 20099;
         if ($port > $maxPort) throw new \RuntimeException('No ingest ports are available');
 
         return $port;

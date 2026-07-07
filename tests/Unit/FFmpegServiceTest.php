@@ -93,8 +93,8 @@ class FFmpegServiceTest extends TestCase
 
         $cmd = implode(' ', $this->ffmpeg->buildIngestCommand($channel));
 
-        $this->assertStringContainsString('-hls_list_size 5', $cmd);
-        $this->assertStringContainsString('-hls_delete_threshold 2', $cmd);
+        $this->assertStringContainsString('-hls_list_size 10', $cmd);
+        $this->assertStringContainsString('-hls_delete_threshold 3', $cmd);
     }
 
     /** @test */

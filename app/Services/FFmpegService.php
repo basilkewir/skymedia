@@ -289,7 +289,8 @@ class FFmpegService
         } else {
             $cmd[] = '-max_muxing_queue_size';
             $cmd[] = '9999';
-            $cmd = array_merge($cmd, ['-c:v', 'copy', '-c:a', 'copy']);
+            $cmd = array_merge($cmd, $this->videoEncodeFlags($channel));
+            $cmd = array_merge($cmd, $this->audioEncodeFlags($channel));
         }
 
         if ($protocol === 'srt') {
