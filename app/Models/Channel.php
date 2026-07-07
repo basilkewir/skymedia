@@ -45,7 +45,7 @@ class Channel extends Model
     ];
 
     protected $attributes = [
-        'storage_quota_bytes' => 524288000, // 500 MB default
+        // No default quota — null means unlimited
     ];
 
     protected $casts = [

@@ -402,14 +402,7 @@ function formatDuration(s) {
 
 function submit() {
     if (!['rtmp', 'srt'].includes(form.source_type)) form.ingest_mode = 'pull'
-    const data = { ...form }
-    if (data.storage_quota_gb && data.storage_quota_gb > 0) {
-        data.storage_quota_bytes = Math.floor(data.storage_quota_gb * 1024 * 1024 * 1024)
-    } else {
-        data.storage_quota_bytes = null
-    }
-    delete data.storage_quota_gb
-    form.put(route('channels.update', props.channel.id), data)
+    form.put(route('channels.update', props.channel.id))
 }
 
 function uploadFallback() {

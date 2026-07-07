@@ -195,8 +195,20 @@ class StreamManager
         $this->recording->stop($channel);
 
         if ($channel->isPushIngest()) {
-            // Push ingest (listener): keep the ingest running so the
-            // encoder can reconnect without a restart cycle.
+            // Push ingest (listener): restart the listener immediately if it
+            // died (ffmpeg -listen 1 exits when the encoder disconnects).
+            // This ensures the encoder can reconnect without waiting for the
+            // next monitor tick.
+            if (! $this->ingest->isRunning($channel)) {
+                try {
+                    $this->ingest->start($channel);
+                    $this->log($channel, 'info', 'listener_restarted',
+                        'RTMP listener restarted for reconnection');
+                } catch (\Throwable $e) {
+                    $this->log($channel, 'error', 'listener_restart_failed',
+                        'Failed to restart listener: ' . $e->getMessage());
+                }
+            }
             $channel->update([
                 'source_live'   => false,
                 'record_pid'    => null,

@@ -75,9 +75,11 @@ class ChannelController extends Controller
         abort_unless(auth()->user()->is_admin ?? false, 403);
         $data = $request->validate($this->rules());
 
-        // Convert GB to bytes
+        // Convert GB to bytes — also handle clearing the quota (unlimited)
         if (!empty($data['storage_quota_gb']) && $data['storage_quota_gb'] > 0) {
             $data['storage_quota_bytes'] = (int) ($data['storage_quota_gb'] * 1024 * 1024 * 1024);
+        } elseif (array_key_exists('storage_quota_gb', $data)) {
+            $data['storage_quota_bytes'] = null;
         }
         unset($data['storage_quota_gb']);
 
@@ -200,9 +202,11 @@ class ChannelController extends Controller
             $data['record_duration'] = 0;
         }
 
-        // Convert GB to bytes
+        // Convert GB to bytes — also handle clearing the quota (unlimited)
         if (!empty($data['storage_quota_gb']) && $data['storage_quota_gb'] > 0) {
             $data['storage_quota_bytes'] = (int) ($data['storage_quota_gb'] * 1024 * 1024 * 1024);
+        } elseif (array_key_exists('storage_quota_gb', $data)) {
+            $data['storage_quota_bytes'] = null;
         }
         unset($data['storage_quota_gb']);
 
@@ -541,7 +545,8 @@ class ChannelController extends Controller
             'dvr_duration' => 'required|integer|min:60|max:86400',
             'segment_duration' => 'required|integer|min:1|max:30',
             'dvr_enabled' => 'required|boolean',
-            // Storage quota
+            // Storage quota (sent as GB from the form, converted to bytes below)
+            'storage_quota_gb' => 'nullable|numeric|min:0',
             'storage_quota_bytes' => 'nullable|integer|min:1',
             // Recording
             'record_duration' => 'required|integer|min:0|max:86400',
