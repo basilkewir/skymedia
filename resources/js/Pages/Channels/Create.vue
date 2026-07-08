@@ -42,7 +42,7 @@
                                 class="text-left rounded-xl border p-4 transition-colors"
                                 :class="channelKind === 'streamed' ? 'border-indigo-500 bg-indigo-500/10' : 'border-slate-700 hover:border-slate-600'">
                             <span class="block text-sm font-semibold text-white">Streamed source channel</span>
-                            <span class="block mt-1 text-xs text-slate-400">This server pulls an existing HLS, UDP, MPEG-TS, RTMP, or SRT source URL.</span>
+                            <span class="block mt-1 text-xs text-slate-400">This server pulls an existing HLS, YouTube Live, UDP, MPEG-TS, RTMP, or SRT source URL.</span>
                         </button>
                     </div>
                 </Section>
@@ -57,6 +57,7 @@
                                 </template>
                                 <template v-else>
                                     <option value="hls">HLS (HTTP Live Streaming)</option>
+                                    <option value="youtube">YouTube Live</option>
                                     <option value="udp">UDP Multicast</option>
                                     <option value="mpegts">MPEG-TS</option>
                                     <option value="rtmp">RTMP</option>
@@ -79,6 +80,11 @@
                             <input v-model="form.source_url" type="text" required class="form-input font-mono text-sm"
                                    :placeholder="sourcePlaceholder" />
                             <p class="mt-1 text-xs text-slate-500">{{ sourceHint }}</p>
+                        </FormField>
+                        <FormField v-if="channelKind === 'streamed' && form.source_type === 'youtube'" label="YouTube Cookies (optional)" class-name="sm:col-span-2" :error="form.errors.youtube_cookies">
+                            <textarea v-model="form.youtube_cookies" rows="4" class="form-input font-mono text-xs"
+                                      placeholder="Netscape-format cookies from your browser (for private/restricted streams)&#10;Example:&#10;.youtube.com	TRUE	/	TRUE	0	SID	xxxxx"></textarea>
+                            <p class="mt-1 text-xs text-slate-500">Export cookies from your browser using a cookies.txt extension. Required only for age-restricted or private streams.</p>
                         </FormField>
                         <p v-if="channelKind === 'managed'" class="sm:col-span-2 text-xs text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 rounded-lg px-3 py-2">
                             After creation, copy the generated Server URL and Stream Key into OBS or vMix.
@@ -369,6 +375,7 @@ const channelKind = ref('managed')
 const form = useForm({
     name: '', slug: '', notes: '',
     source_type: 'rtmp', ingest_mode: 'push', ingest_port: null, source_url: '',
+    youtube_cookies: '',
     push_protocol: 'rtmp', push_url: '', push_stream_key: '',
     push_username: '', push_password: '',
     push_hls_segment_duration: null, push_hls_list_size: null,
@@ -409,11 +416,14 @@ function selectChannelKind(kind) {
 
 const sourcePlaceholders = {
     hls: 'https://stream.example.com/live/stream.m3u8',
+    youtube: 'https://www.youtube.com/watch?v=XXXXXXX',
     udp: 'udp://239.1.1.1:1234', mpegts: 'udp://239.1.1.1:1234',
     rtmp: 'rtmp://ingest.example.com/live/key', srt: '192.168.1.100:9000',
 }
 const sourceHints = {
-    hls: 'HTTP(S) HLS playlist URL', udp: 'UDP multicast or unicast address',
+    hls: 'HTTP(S) HLS playlist URL',
+    youtube: 'YouTube watch/live URL — resolved via yt-dlp (requires yt-dlp installed on server)',
+    udp: 'UDP multicast or unicast address',
     mpegts: 'UDP/TCP MPEG-TS address', rtmp: 'Full RTMP ingest URL with stream key',
     srt: 'Host:port — srt:// prefix added automatically',
 }

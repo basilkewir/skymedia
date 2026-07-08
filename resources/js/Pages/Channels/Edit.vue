@@ -51,6 +51,7 @@
                         <FormField label="Source Protocol" :error="form.errors.source_type">
                             <select v-model="form.source_type" class="form-input">
                                 <option value="hls">HLS</option>
+                                <option value="youtube">YouTube Live</option>
                                 <option value="udp">UDP Multicast</option>
                                 <option value="mpegts">MPEG-TS</option>
                                 <option value="rtmp">RTMP</option>
@@ -75,6 +76,11 @@
                         <FormField v-if="form.ingest_mode === 'push' && form.source_type === 'rtmp'" label="RTMP Stream Key (Custom)" :error="form.errors.rtmp_input_key">
                             <input v-model="form.rtmp_input_key" type="text" class="form-input font-mono text-sm" placeholder="Leave empty to auto-generate" />
                             <p class="mt-1 text-xs text-slate-500">Custom stream key for OBS/vMix to publish to. Auto-generated if left blank.</p>
+                        </FormField>
+                        <FormField v-if="form.source_type === 'youtube'" label="YouTube Cookies (optional)" class-name="sm:col-span-2" :error="form.errors.youtube_cookies">
+                            <textarea v-model="form.youtube_cookies" rows="4" class="form-input font-mono text-xs"
+                                      placeholder="Netscape-format cookies from your browser (for private/restricted streams)&#10;Example:&#10;.youtube.com	TRUE	/	TRUE	0	SID	xxxxx"></textarea>
+                            <p class="mt-1 text-xs text-slate-500">Export cookies from your browser using a cookies.txt extension. Required only for age-restricted or private streams.</p>
                         </FormField>
                         <div v-if="form.ingest_mode === 'push' && channel.published_ingest_server" class="sm:col-span-2 px-3 py-2 bg-slate-800/60 rounded-lg text-xs break-all text-indigo-400">
                             <template v-if="form.source_type === 'rtmp'">
@@ -357,6 +363,7 @@ const form = useForm({
     ingest_mode:            props.channel.ingest_mode ?? 'pull',
     ingest_port:            props.channel.ingest_port ?? null,
     source_url:             props.channel.source_url,
+    youtube_cookies:        props.channel.youtube_cookies ?? '',
     push_protocol:          props.channel.push_protocol,
     push_url:               props.channel.push_url,
     push_stream_key:        props.channel.push_stream_key,

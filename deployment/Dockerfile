@@ -18,6 +18,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs fonts-dejavu-core fonts-noto \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# ── yt-dlp (YouTube stream extraction) ─────────────────────────────
+RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp
+
 # ── Composer ───────────────────────────────────────────────────────
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 
