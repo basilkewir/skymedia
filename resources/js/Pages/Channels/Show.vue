@@ -98,6 +98,19 @@
                 <StatusCard v-if="isAdmin || !isManaged" label="File Recording" :status="state.record_status" :pid="state.record_pid" />
             </div>
 
+            <!-- Channel Preview — shown for all channel types -->
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+                <div class="flex items-center justify-between mb-3">
+                    <h2 class="text-sm font-semibold text-white">Channel Preview</h2>
+                    <span class="text-xs text-slate-500">Live HLS · auto-refreshes</span>
+                </div>
+                <video ref="previewPlayer" controls autoplay muted playsinline
+                       class="w-full aspect-video bg-black rounded-lg" />
+                <p class="mt-2 text-xs text-slate-500">
+                    {{ isManaged ? 'Preview becomes available after the publisher starts sending media.' : 'Preview updates as the ingest buffer fills.' }}
+                </p>
+            </div>
+
             <div v-if="isManaged" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
                 <div class="lg:col-span-2 bg-slate-900 border border-indigo-500/30 rounded-xl p-6">
                     <h2 class="text-sm font-semibold text-white mb-3">Publisher Connection</h2>
@@ -118,11 +131,6 @@
                     <p class="mt-3 text-xs" :class="state.pid ? 'text-green-400' : 'text-yellow-400'">
                         {{ state.pid ? 'Listener is ready for a publisher.' : 'Listener is not running. Ask an administrator to start this channel.' }}
                     </p>
-                </div>
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
-                    <h2 class="text-sm font-semibold text-white mb-3">Channel Preview</h2>
-                    <video ref="previewPlayer" controls autoplay muted playsinline class="w-full aspect-video bg-black rounded-lg" />
-                    <p class="mt-2 text-xs text-slate-500">Preview becomes available after the publisher starts sending media.</p>
                 </div>
                 <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
                     <h2 class="text-sm font-semibold text-white mb-2">Fallback VOD</h2>
@@ -462,7 +470,7 @@ async function diagnoseIngest() {
 onMounted(async () => {
     poll()
     timer = setInterval(poll, 4000)
-    if (isManaged && previewPlayer.value) {
+    if (previewPlayer.value) {
         if (previewPlayer.value.canPlayType('application/vnd.apple.mpegurl')) {
             previewPlayer.value.src = props.previewUrl
         } else {
