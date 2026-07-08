@@ -92,6 +92,58 @@
                     </div>
                 </Section>
 
+                <!-- Multiple Sources (failover) -->
+                <Section v-if="form.ingest_mode === 'pull'" title="Stream Sources (Failover)">
+                    <p class="text-xs text-slate-500 mb-4">
+                        Add backup sources for automatic failover. When the primary source goes down, the system tries the next source before falling back to VOD.
+                    </p>
+                    <div class="space-y-3">
+                        <div v-for="(src, idx) in sources" :key="src.id"
+                             class="flex items-center gap-2 p-3 rounded-lg border transition-colors"
+                             :class="src.id === currentSourceId ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-slate-700 bg-slate-800/40'">
+                            <div class="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold"
+                                 :class="src.id === currentSourceId ? 'bg-emerald-500 text-white' : 'bg-slate-700 text-slate-400'">
+                                {{ idx + 1 }}
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs font-mono text-slate-300 truncate">{{ src.source_url }}</span>
+                                    <span v-if="src.id === currentSourceId" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-medium">ACTIVE</span>
+                                </div>
+                                <div class="text-[11px] text-slate-500 mt-0.5">{{ src.source_type.toUpperCase() }}</div>
+                            </div>
+                            <button v-if="src.id !== currentSourceId" @click="activateSource(src)"
+                                    class="text-xs text-emerald-400 hover:text-emerald-300 px-2 py-1 rounded hover:bg-emerald-500/10 transition-colors">
+                                Set Active
+                            </button>
+                            <button @click="removeSource(src)"
+                                    class="text-xs text-red-400 hover:text-red-300 px-2 py-1 rounded hover:bg-red-500/10 transition-colors">
+                                Remove
+                            </button>
+                        </div>
+                    </div>
+                    <!-- Add new source -->
+                    <div class="mt-3 flex items-end gap-2">
+                        <FormField label="New Source URL" class-name="flex-1" :error="newSourceError">
+                            <input v-model="newSourceUrl" type="text" class="form-input font-mono text-sm"
+                                   placeholder="https://backup-server.com/stream.m3u8" />
+                        </FormField>
+                        <FormField label="Protocol" class-name="w-32">
+                            <select v-model="newSourceType" class="form-input">
+                                <option value="hls">HLS</option>
+                                <option value="mpegts">MPEG-TS</option>
+                                <option value="rtmp">RTMP</option>
+                                <option value="srt">SRT</option>
+                                <option value="youtube">YouTube</option>
+                            </select>
+                        </FormField>
+                        <button @click="addSource" :disabled="!newSourceUrl"
+                                class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap">
+                            Add Source
+                        </button>
+                    </div>
+                </Section>
+
                 <!-- Push Destination -->
                 <Section title="Push Destination">
                     <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
@@ -351,7 +403,15 @@ import AppLayout from '@/Layouts/AppLayout.vue'
 import FormField from '@/Components/FormField.vue'
 import Section from '@/Components/Section.vue'
 
-const props = defineProps({ channel: Object, users: Array, isAdmin: Boolean })
+const props = defineProps({ channel: Object, users: Array, isAdmin: Boolean, sources: Array, currentSourceId: Number })
+
+import { ref, onMounted } from 'vue'
+
+const sources = ref(props.sources || [])
+const currentSourceId = ref(props.currentSourceId || props.channel.current_source_id)
+const newSourceUrl = ref('')
+const newSourceType = ref('hls')
+const newSourceError = ref('')
 
 const form = useForm({
     name:                   props.channel.name,
@@ -405,6 +465,57 @@ function formatDuration(s) {
     if (!s) return 'Disabled'
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60)
     return h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
+async function addSource() {
+    newSourceError.value = ''
+    try {
+        const res = await fetch(route('channels.sources.store', props.channel.id), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-XSRF-TOKEN': decodeURIComponent(getCookie('XSRF-TOKEN')) },
+            body: JSON.stringify({ source_url: newSourceUrl.value, source_type: newSourceType.value }),
+        })
+        if (!res.ok) {
+            const data = await res.json()
+            newSourceError.value = data.message || 'Failed to add source'
+            return
+        }
+        const source = await res.json()
+        sources.value.push(source)
+        sources.value.sort((a, b) => a.priority - b.priority)
+        if (sources.value.length === 1) currentSourceId.value = source.id
+        newSourceUrl.value = ''
+    } catch (e) {
+        newSourceError.value = 'Network error'
+    }
+}
+
+async function removeSource(src) {
+    if (!confirm('Remove this source?')) return
+    try {
+        await fetch(route('channels.sources.destroy', [props.channel.id, src.id]), {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-XSRF-TOKEN': decodeURIComponent(getCookie('XSRF-TOKEN')) },
+        })
+        sources.value = sources.value.filter(s => s.id !== src.id)
+        if (currentSourceId.value === src.id && sources.value.length > 0) {
+            currentSourceId.value = sources.value[0].id
+        }
+    } catch (e) { /* ignore */ }
+}
+
+async function activateSource(src) {
+    try {
+        await fetch(route('channels.sources.activate', [props.channel.id, src.id]), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-XSRF-TOKEN': decodeURIComponent(getCookie('XSRF-TOKEN')) },
+        })
+        currentSourceId.value = src.id
+    } catch (e) { /* ignore */ }
+}
+
+function getCookie(name) {
+    return document.cookie.split('; ').find(row => row.startsWith(name + '='))?.split('=')[1] || ''
 }
 
 function submit() {

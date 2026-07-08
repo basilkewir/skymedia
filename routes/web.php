@@ -48,6 +48,13 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::put('channels/{channel}/content', [ChannelContentController::class, 'update'])->name('channels.content.update');
     Route::delete('channels/{channel}/content/{media}', [ChannelContentController::class, 'destroy'])->name('channels.content.destroy');
 
+    // ── Channel Sources (multi-source failover) ─────────────────────────────
+    Route::get('channels/{channel}/sources', [\App\Http\Controllers\ChannelSourceController::class, 'index'])->name('channels.sources.index');
+    Route::post('channels/{channel}/sources', [\App\Http\Controllers\ChannelSourceController::class, 'store'])->name('channels.sources.store');
+    Route::put('channels/{channel}/sources/{source}', [\App\Http\Controllers\ChannelSourceController::class, 'update'])->name('channels.sources.update');
+    Route::delete('channels/{channel}/sources/{source}', [\App\Http\Controllers\ChannelSourceController::class, 'destroy'])->name('channels.sources.destroy');
+    Route::post('channels/{channel}/sources/{source}/activate', [\App\Http\Controllers\ChannelSourceController::class, 'activate'])->name('channels.sources.activate');
+
     // ── Channels CRUD resource ────────────────────────────────────────────────
     Route::resource('channels', ChannelController::class);
 

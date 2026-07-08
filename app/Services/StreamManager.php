@@ -232,6 +232,7 @@ class StreamManager
                 'record_status' => 'idle',
             ]);
         } else {
+            // Pull ingest: stop the failed source.
             $this->ingest->stop($channel);
             $channel->update([
                 'source_live'   => false,
@@ -241,6 +242,28 @@ class StreamManager
                 'dvr_status'    => 'idle',
                 'record_status' => 'idle',
             ]);
+
+            // ── Multi-source failover: try the next source before VOD ──
+            if ($channel->hasMultipleSources()) {
+                $next = $channel->nextSource();
+                if ($next) {
+                    $channel->activateSource($next);
+                    try {
+                        $this->ingest->start($channel);
+                        $this->log($channel, 'info', 'source_switched',
+                            "Switched to backup source [{$next->id}]: {$next->source_url}");
+                        $this->alert->sendOfflineAlert($channel->fresh(), "Primary source down — using backup", $this->playout->hasFallback($channel));
+                        return;
+                    } catch (\Throwable $e) {
+                        $this->log($channel, 'error', 'source_switch_failed',
+                            "Backup source [{$next->id}] also failed: " . $e->getMessage());
+                        $next->update(['last_error' => $e->getMessage()]);
+                    }
+                } else {
+                    $this->log($channel, 'info', 'all_sources_exhausted',
+                        'All backup sources exhausted — falling back to VOD');
+                }
+            }
         }
 
         $this->alert->sendOfflineAlert($channel->fresh(), 'Source unreachable', $this->playout->hasFallback($channel));

@@ -19,6 +19,7 @@ class Channel extends Model
         'name', 'slug', 'notes',
         'user_id',
         'source_type', 'ingest_mode', 'source_url', 'youtube_cookies', 'ingest_port', 'rtmp_input_key', 'relay_pid',
+        'current_source_id',
         'push_protocol', 'push_url', 'push_stream_key', 'push_username', 'push_password',
         'push_hls_segment_duration', 'push_hls_list_size',
         // Video encoding
@@ -110,6 +111,16 @@ class Channel extends Model
     public function media(): HasMany { return $this->hasMany(ChannelMedia::class)->orderBy('sort_order'); }
     public function logoMedia() { return $this->belongsTo(ChannelMedia::class, 'logo_media_id'); }
 
+    public function channelSources(): HasMany
+    {
+        return $this->hasMany(ChannelSource::class)->orderBy('priority');
+    }
+
+    public function currentSource()
+    {
+        return $this->belongsTo(ChannelSource::class, 'current_source_id');
+    }
+
     // ── Computed attributes ───────────────────────────────────────────────────
 
     public function getPushTargetAttribute(): string
@@ -125,6 +136,67 @@ class Channel extends Model
     public function isPushIngest(): bool
     {
         return $this->ingest_mode === 'push' && in_array($this->source_type, ['rtmp', 'srt'], true);
+    }
+
+    /**
+     * Whether this channel has multiple sources configured.
+     */
+    public function hasMultipleSources(): bool
+    {
+        return $this->channelSources()->count() > 1;
+    }
+
+    /**
+     * Get the effective source URL to use for ingest.
+     * If a current_source_id is set, use that source's URL.
+     * Otherwise fall back to the legacy source_url field.
+     */
+    public function effectiveSourceUrl(): string
+    {
+        if ($this->currentSource) {
+            return $this->currentSource->source_url;
+        }
+        return $this->source_url;
+    }
+
+    /**
+     * Get the effective source type for the active source.
+     */
+    public function effectiveSourceType(): string
+    {
+        if ($this->currentSource) {
+            return $this->currentSource->source_type;
+        }
+        return $this->source_type;
+    }
+
+    /**
+     * Get the next source to try after the current one failed.
+     * Returns the next ChannelSource by priority, or null if none left.
+     */
+    public function nextSource(): ?ChannelSource
+    {
+        $currentId = $this->current_source_id;
+        $query = $this->channelSources()->where('is_active', true);
+
+        if ($currentId) {
+            $currentPriority = $this->currentSource?->priority ?? 0;
+            $query->where('priority', '>', $currentPriority);
+        }
+
+        return $query->orderBy('priority')->first();
+    }
+
+    /**
+     * Activate a specific source as the current one and clear the legacy source_url.
+     */
+    public function activateSource(ChannelSource $source): void
+    {
+        $this->update([
+            'current_source_id' => $source->id,
+            'source_url'        => $source->source_url,
+            'source_type'       => $source->source_type,
+        ]);
     }
 
     public function getIngestListenUrlAttribute(): ?string

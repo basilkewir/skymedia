@@ -180,10 +180,13 @@ class ChannelController extends Controller
         if ($channel->isPushIngest() && ! (auth()->user()->is_admin ?? false)) abort(403);
         $channel->append(['published_ingest_url', 'published_ingest_server']);
         $users = auth()->user()->is_admin ? User::orderBy('name')->get(['id', 'name', 'email']) : collect();
+        $sources = $channel->channelSources()->orderBy('priority')->get();
         return Inertia::render('Channels/Edit', [
             'channel' => $channel,
             'users' => $users,
             'isAdmin' => auth()->user()->is_admin ?? false,
+            'sources' => $sources,
+            'currentSourceId' => $channel->current_source_id,
         ]);
     }
 
