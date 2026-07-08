@@ -199,9 +199,11 @@ class StreamManager
             // died (ffmpeg -listen 1 exits when the encoder disconnects).
             // This ensures the encoder can reconnect without waiting for the
             // next monitor tick.
+            // Skip segment cleaning to avoid breaking the push process that
+            // reads from output.m3u8 → live.m3u8.
             if (! $this->ingest->isRunning($channel)) {
                 try {
-                    $this->ingest->start($channel);
+                    $this->ingest->start($channel, cleanSegments: false);
                     $this->log($channel, 'info', 'listener_restarted',
                         'RTMP listener restarted for reconnection');
                 } catch (\Throwable $e) {
@@ -458,7 +460,7 @@ class StreamManager
         // Keep RTMP/SRT listeners available while the publisher is offline.
         if ($channel->isPushIngest() && ! $this->ingest->isRunning($channel)) {
             try {
-                $this->ingest->start($channel);
+                $this->ingest->start($channel, cleanSegments: false);
             } catch (\Throwable $e) {
                 $this->log($channel, 'error', 'ingest_listener_restart_failed', $e->getMessage());
             }

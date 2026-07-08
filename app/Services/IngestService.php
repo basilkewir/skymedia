@@ -14,9 +14,12 @@ class IngestService
     /**
      * Start the ingest ffmpeg process.
      *
+     * @param bool $cleanSegments Whether to clean stale segments before starting.
+     *        Pass false when restarting a listener for a push-ingest channel
+     *        (to avoid breaking the push process reading live.m3u8).
      * @throws \RuntimeException with the ffmpeg stderr on failure
      */
-    public function start(Channel $channel): bool
+    public function start(Channel $channel, bool $cleanSegments = true): bool
     {
         // Only stop if the process is actually running. For push-ingest
         // channels with -listen 1, the listener may be idle (waiting for
@@ -41,7 +44,11 @@ class IngestService
         // inherit stale files from the previous run.  Does NOT touch playout
         // files (playout_*.ts / playout.m3u8 / playout_concat.txt / slate),
         // so fallback playback continues uninterrupted while ingest waits.
-        $this->cleanSegments($dvrDir);
+        // Skip when restarting listener for push-ingest (encoder offline) to
+        // avoid breaking the push process reading live.m3u8 via output.m3u8.
+        if ($cleanSegments) {
+            $this->cleanSegments($dvrDir);
+        }
 
         // Verify ffmpeg binary exists and is executable
         $bin     = $this->ffmpeg->getBin();
