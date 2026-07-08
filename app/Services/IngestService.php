@@ -106,7 +106,32 @@ class IngestService
     public function isRunning(Channel $channel): bool
     {
         $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'ingest'));
-        return $pid > 0 && $this->ffmpeg->isRunning($pid);
+        if ($pid > 0 && $this->ffmpeg->isRunning($pid)) {
+            return true;
+        }
+
+        // For push-ingest channels the PID file may be missing (e.g. after a
+        // container restart) while an ffmpeg listener still holds the port.
+        // Detect this by checking ss/netstat and adopt the running PID so the
+        // monitor stops trying to restart it.
+        if ($channel->isPushIngest() && $channel->ingest_port) {
+            $port = (int) $channel->ingest_port;
+            $out  = shell_exec("ss -tlnp 2>/dev/null | grep :{$port} | grep -o 'pid=[0-9]*' | head -1");
+            if (! $out) {
+                $out = shell_exec("ss -ulnp 2>/dev/null | grep :{$port} | grep -o 'pid=[0-9]*' | head -1");
+            }
+            if ($out && preg_match('/pid=(\d+)/', trim($out), $m)) {
+                $livePid = (int) $m[1];
+                if ($livePid > 0 && $this->ffmpeg->isRunning($livePid)) {
+                    // Adopt: write the PID file so future checks work normally.
+                    file_put_contents($this->ffmpeg->pidFile($channel, 'ingest'), $livePid);
+                    $channel->update(['pid' => $livePid]);
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
