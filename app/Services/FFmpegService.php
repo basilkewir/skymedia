@@ -17,7 +17,7 @@ class FFmpegService
 
     protected string $ffprobeBin;
 
-    public function __construct()
+    public function __construct(protected YoutubeService $youtube)
     {
         $this->ffmpegBin = config('skymedia.ffmpeg_binary', 'ffmpeg');
         $this->ffprobeBin = config('skymedia.ffprobe_binary', 'ffprobe');
@@ -162,6 +162,15 @@ class FFmpegService
     protected function effectiveSourceUrl(Channel $channel): string
     {
         $url = $channel->source_url;
+
+        if ($channel->source_type === 'youtube') {
+            try {
+                return $this->youtube->resolveHlsUrl($channel);
+            } catch (\Throwable $e) {
+                Log::warning("[YouTube] URL resolution failed for channel {$channel->id}: {$e->getMessage()}");
+                return $url; // fall through — ffmpeg will fail with a clear error
+            }
+        }
 
         if ($channel->source_type === 'hls' && $this->isHttpUrl($url)) {
             return $this->resolveHlsUrl($url);
@@ -775,6 +784,31 @@ class FFmpegService
 
         switch (true) {
 
+            // YouTube live: resolved to HLS by YoutubeService — treat as HLS
+            case $type === 'youtube':
+                try {
+                    $inputUrl = $this->youtube->resolveHlsUrl($channel);
+                } catch (\Throwable $e) {
+                    throw new \RuntimeException("YouTube URL resolution failed: {$e->getMessage()}");
+                }
+                $ua = $this->httpUserAgent()
+                    ?? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+                return [
+                    '-re',
+                    '-fflags',             '+genpts+discardcorrupt',
+                    '-probesize',          '5000000',
+                    '-analyzeduration',    '3000000',
+                    '-allowed_extensions', 'ALL',
+                    '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
+                    '-live_start_index',   '-3',
+                    '-user_agent',         $ua,
+                    '-timeout',            '15000000',
+                    '-reconnect',          '1',
+                    '-reconnect_streamed', '1',
+                    '-reconnect_delay_max','30',
+                    '-i',                  $inputUrl,
+                ];
+
             // HLS: http/https URLs ending in .m3u8/.m3u OR explicitly set to hls
             case $type === 'hls' && ! $isHttpMpegts:
                 // Master playlists can make FFmpeg probe every variant at once,
@@ -881,6 +915,7 @@ class FFmpegService
     public function isIptvStream(Channel $channel): bool
     {
         if ($channel->isPushIngest()) return false;
+        if ($channel->source_type === 'youtube') return true; // never ffprobe YouTube URLs
         return $this->isHttpMpegts($channel->source_url, $channel->source_type);
     }
 

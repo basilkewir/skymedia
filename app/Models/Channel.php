@@ -18,7 +18,7 @@ class Channel extends Model
     protected $fillable = [
         'name', 'slug', 'notes',
         'user_id',
-        'source_type', 'ingest_mode', 'source_url', 'ingest_port', 'rtmp_input_key', 'relay_pid',
+        'source_type', 'ingest_mode', 'source_url', 'youtube_cookies', 'ingest_port', 'rtmp_input_key', 'relay_pid',
         'push_protocol', 'push_url', 'push_stream_key', 'push_username', 'push_password',
         'push_hls_segment_duration', 'push_hls_list_size',
         // Video encoding
@@ -115,6 +115,11 @@ class Channel extends Model
     public function getPushTargetAttribute(): string
     {
         return rtrim($this->push_url, '/') . '/' . $this->push_stream_key;
+    }
+
+    public function isYoutube(): bool
+    {
+        return $this->source_type === 'youtube';
     }
 
     public function isPushIngest(): bool
