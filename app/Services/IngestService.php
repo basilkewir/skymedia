@@ -18,7 +18,17 @@ class IngestService
      */
     public function start(Channel $channel): bool
     {
-        $this->stop($channel);
+        // Only stop if the process is actually running. For push-ingest
+        // channels with -listen 1, the listener may be idle (waiting for
+        // encoder reconnection). Killing it here would cause a brief freeze.
+        if ($this->isRunning($channel)) {
+            $this->stop($channel);
+        } else {
+            // Clear stale PID file if the process is already dead
+            $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
+            $this->ffmpeg->clearPid($pidFile);
+            $channel->update(['pid' => null]);
+        }
 
         $dvrDir = $channel->dvr_directory;
         if (!is_dir($dvrDir)) {

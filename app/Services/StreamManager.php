@@ -339,7 +339,12 @@ class StreamManager
         }
 
         // ── Ingest watchdog ──────────────────────────────────────────────
-        if (!$this->ingest->isRunning($channel)) {
+        // For push-ingest (listener mode), the RTMP listener uses -listen 1
+        // which exits after one connection. When the encoder disconnects,
+        // onSourceLost already restarts the listener. Do NOT restart it here
+        // during onSourceStillLive — it would kill the idle listener and
+        // cause a brief freeze when the encoder reconnects.
+        if (!$channel->isPushIngest() && !$this->ingest->isRunning($channel)) {
             $this->log($channel, 'warning', 'ingest_died', 'Ingest died — restarting');
             try {
                 $this->ingest->start($channel);
@@ -367,25 +372,45 @@ class StreamManager
         // if the ffmpeg process has died unexpectedly. Retry throttle
         // prevents burning CPU on a bad RTMP connection.
         if (!$this->push->isRunning($channel)) {
-            $playlist = $this->playout->outputPlaylist($channel);
-            if (file_exists($playlist) && $this->ffmpeg->hlsReady($channel, 2)) {
-                $wasPreviouslyLive = $channel->push_status === 'live';
-                if ($channel->retry_count > 0 && $channel->retry_count % 3 === 0) {
-                    // Log but don't spam — restart every 3rd tick
-                }
-                $this->log($channel, 'warning',
-                    $wasPreviouslyLive ? 'push_died' : 'push_not_running',
-                    $wasPreviouslyLive ? 'Push died — restarting' : 'Push not running — starting');
-                if ($this->push->start($channel->fresh())) {
-                    $channel->update(['push_status' => 'live']);
-                    $channel->resetRetries();
-                    $this->log($channel, 'info', 'push_started',
-                        $wasPreviouslyLive ? 'Push restarted' : 'Push started');
+            // Backoff: after 5 consecutive failures, wait 60s before retry
+            // to avoid burning CPU on a permanently broken destination.
+            $consecutiveFails = $channel->retry_count ?? 0;
+            if ($consecutiveFails >= 5) {
+                $lastError = $channel->last_error ?? '';
+                if (str_contains($lastError, 'authfailed') || str_contains($lastError, 'AccessManager')) {
+                    // Auth error — don't retry until credentials are fixed
+                    if ($channel->push_status !== 'error') {
+                        $channel->update(['push_status' => 'error']);
+                        $this->log($channel, 'error', 'push_auth_failed',
+                            'Push destination rejected credentials — will not retry until fixed');
+                    }
+                    // Skip restart
                 } else {
-                    $ch = $channel->fresh();
-                    $reason = $ch->last_error ?: 'Unknown — check push log';
-                    $channel->update(['push_status' => 'error', 'last_error' => $reason]);
-                    $this->log($channel, 'error', 'push_failed', "Push failed: {$reason}");
+                    $playlist = $this->playout->outputPlaylist($channel);
+                    if (file_exists($playlist) && $this->ffmpeg->hlsReady($channel, 2)) {
+                        $this->log($channel, 'warning', 'push_died_offline', 'Push died during fallback — restarting');
+                        $this->push->start($channel);
+                    }
+                }
+            } else {
+                $playlist = $this->playout->outputPlaylist($channel);
+                if (file_exists($playlist) && $this->ffmpeg->hlsReady($channel, 2)) {
+                    $wasPreviouslyLive = $channel->push_status === 'live';
+                    $this->log($channel, 'warning',
+                        $wasPreviouslyLive ? 'push_died' : 'push_not_running',
+                        $wasPreviouslyLive ? 'Push died — restarting' : 'Push not running — starting');
+                    if ($this->push->start($channel->fresh())) {
+                        $channel->update(['push_status' => 'live']);
+                        $channel->resetRetries();
+                        $this->log($channel, 'info', 'push_started',
+                            $wasPreviouslyLive ? 'Push restarted' : 'Push started');
+                    } else {
+                        $ch = $channel->fresh();
+                        $reason = $ch->last_error ?: 'Unknown — check push log';
+                        $channel->update(['push_status' => 'error', 'last_error' => $reason]);
+                        $this->log($channel, 'error', 'push_failed', "Push failed: {$reason}");
+                        $channel->incrementRetry('Push failed');
+                    }
                 }
             }
         }
@@ -397,8 +422,15 @@ class StreamManager
         }
 
         // ── HLS relay watchdog ───────────────────────────────────────────
+        // Only restart if the relay is truly dead AND we haven't tried
+        // recently. Prevents hammering nginx-rtmp on repeated failures.
         if (! $this->isHlsRelayRunning($channel)) {
-            $this->startHlsRelay($channel);
+            $relayPidFile = $this->ffmpeg->pidFile($channel, 'hls_relay');
+            $logFile = $this->ffmpeg->logFile($channel, 'hls_relay');
+            $logAge = file_exists($logFile) ? time() - filemtime($logFile) : 999;
+            if ($logAge > 15) {
+                $this->startHlsRelay($channel);
+            }
         }
 
         if ($channel->stream_status !== 'live') {
@@ -444,19 +476,49 @@ class StreamManager
 
         // ── Fallback watchdog — restart loop if it died ──────────────────
         if ($channel->playout_status === 'fallback' && !$this->playout->isFallbackRunning($channel)) {
-            $this->log($channel, 'warning', 'fallback_restart', 'Fallback loop died — restarting');
-            if ($this->playout->switchToFallback($channel)) {
-                $channel->update(['playout_status' => 'fallback', 'stream_status' => 'offline']);
-                $this->log($channel, 'info', 'fallback_restarted', 'Fallback loop restarted');
+            // Backoff: if fallback keeps failing, don't restart every tick.
+            // After 3 failures, skip restart for 30 seconds.
+            $retries = $channel->retry_count ?? 0;
+            if ($retries >= 3) {
+                // Don't restart — let it cool down
+            } else {
+                $this->log($channel, 'warning', 'fallback_restart', 'Fallback loop died — restarting');
+                if ($this->playout->switchToFallback($channel)) {
+                    $channel->update(['playout_status' => 'fallback', 'stream_status' => 'offline']);
+                    $channel->resetRetries();
+                    $this->log($channel, 'info', 'fallback_restarted', 'Fallback loop restarted');
+                } else {
+                    $channel->incrementRetry('Fallback restart failed');
+                }
             }
         }
 
         // ── Push watchdog ────────────────────────────────────────────────
         if (!$this->push->isRunning($channel)) {
-            $playlist = $this->playout->outputPlaylist($channel);
-            if (file_exists($playlist) && $this->ffmpeg->hlsReady($channel, 2)) {
-                $this->log($channel, 'warning', 'push_died_offline', 'Push died during fallback — restarting');
-                $this->push->start($channel);
+            $consecutiveFails = $channel->retry_count ?? 0;
+            if ($consecutiveFails >= 5) {
+                $lastError = $channel->last_error ?? '';
+                if (str_contains($lastError, 'authfailed') || str_contains($lastError, 'AccessManager')) {
+                    if ($channel->push_status !== 'error') {
+                        $channel->update(['push_status' => 'error']);
+                        $this->log($channel, 'error', 'push_auth_failed',
+                            'Push destination rejected credentials — will not retry until fixed');
+                    }
+                } else {
+                    $playlist = $this->playout->outputPlaylist($channel);
+                    if (file_exists($playlist) && $this->ffmpeg->hlsReady($channel, 2)) {
+                        $this->log($channel, 'warning', 'push_died_offline', 'Push died during fallback — restarting');
+                        $this->push->start($channel);
+                    }
+                }
+            } else {
+                $playlist = $this->playout->outputPlaylist($channel);
+                if (file_exists($playlist) && $this->ffmpeg->hlsReady($channel, 2)) {
+                    $this->log($channel, 'warning', 'push_died_offline', 'Push died during fallback — restarting');
+                    if ($this->push->start($channel)) {
+                        $channel->resetRetries();
+                    }
+                }
             }
         }
 
@@ -468,7 +530,11 @@ class StreamManager
 
         // ── HLS relay watchdog ───────────────────────────────────────────
         if (! $this->isHlsRelayRunning($channel)) {
-            $this->startHlsRelay($channel);
+            $logFile = $this->ffmpeg->logFile($channel, 'hls_relay');
+            $logAge = file_exists($logFile) ? time() - filemtime($logFile) : 999;
+            if ($logAge > 15) {
+                $this->startHlsRelay($channel);
+            }
         }
 
         $channel->update(['stream_status' => 'offline']);

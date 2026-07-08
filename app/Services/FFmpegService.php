@@ -266,7 +266,11 @@ class FFmpegService
         $cmd = [
             $this->ffmpegBin, '-y', '-loglevel', 'warning', '-stats',
             '-re',
-            '-fflags',             '+genpts+discardcorrupt',
+            '-fflags',             '+genpts+discardcorrupt+flush_packets',
+            '-thread_queue_size',  '1024',
+            '-probesize',          '5000000',
+            '-analyzeduration',    '3000000',
+            '-err_detect',         'ignore_err',
             '-live_start_index',   '-3',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
@@ -279,7 +283,9 @@ class FFmpegService
         if ($branding['video']) {
             $cmd = array_merge($cmd, $branding['video']);
             $cmd[] = '-max_muxing_queue_size';
-            $cmd[] = '9999';
+            $cmd[] = '99999';
+            $cmd[] = '-thread_queue_size';
+            $cmd[] = '1024';
             $audioCodec = $channel->push_audio_codec ?? 'aac';
             if ($audioCodec !== 'copy') {
                 $cmd[] = '-af';
@@ -288,7 +294,9 @@ class FFmpegService
             $cmd = array_merge($cmd, $this->audioEncodeFlags($channel));
         } else {
             $cmd[] = '-max_muxing_queue_size';
-            $cmd[] = '9999';
+            $cmd[] = '99999';
+            $cmd[] = '-thread_queue_size';
+            $cmd[] = '1024';
             $cmd = array_merge($cmd, $this->videoEncodeFlags($channel));
             $cmd = array_merge($cmd, $this->audioEncodeFlags($channel));
         }
