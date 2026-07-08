@@ -36,6 +36,11 @@ class StreamManager
                 mkdir($dvrDir, 0755, true);
             }
 
+            // Kill any orphan listeners from a previous run before starting fresh.
+            if ($channel->isPushIngest()) {
+                $this->ingest->stopAllListeners($channel);
+            }
+
             // 1. Start ingest — source → HLS segments → live.m3u8
             $this->ingest->start($channel);
             $channel->refresh();
@@ -87,7 +92,11 @@ class StreamManager
         $this->push->stop($channel);
         $this->stopHlsRelay($channel);
         $this->playout->stop($channel);
-        $this->ingest->stop($channel);
+        if ($channel->isPushIngest()) {
+            $this->ingest->stopAllListeners($channel);
+        } else {
+            $this->ingest->stop($channel);
+        }
 
         $channel->update([
             'pid'            => null,
@@ -199,21 +208,21 @@ class StreamManager
         $this->recording->stop($channel);
 
         if ($channel->isPushIngest()) {
-            // Push ingest (listener): restart the listener immediately if it
-            // died (ffmpeg -listen 1 exits when the encoder disconnects).
-            // This ensures the encoder can reconnect without waiting for the
-            // next monitor tick.
+            // Push ingest (listener): with -listen 1, the ffmpeg process stays
+            // alive after the encoder disconnects (waiting for -timeout 120s).
+            // During that window it holds the port but won't accept new
+            // connections — causing vMix "Failed to connect to server".
+            // Kill ALL orphan listeners on this port, then start a fresh one.
             // Skip segment cleaning to avoid breaking the push process that
             // reads from output.m3u8 → live.m3u8.
-            if (! $this->ingest->isRunning($channel)) {
-                try {
-                    $this->ingest->start($channel, cleanSegments: false);
-                    $this->log($channel, 'info', 'listener_restarted',
-                        'RTMP listener restarted for reconnection');
-                } catch (\Throwable $e) {
-                    $this->log($channel, 'error', 'listener_restart_failed',
-                        'Failed to restart listener: ' . $e->getMessage());
-                }
+            try {
+                $this->ingest->stopAllListeners($channel);
+                $this->ingest->start($channel, cleanSegments: false);
+                $this->log($channel, 'info', 'listener_restarted',
+                    'RTMP listener force-restarted for reconnection');
+            } catch (\Throwable $e) {
+                $this->log($channel, 'error', 'listener_restart_failed',
+                    'Failed to restart listener: ' . $e->getMessage());
             }
             $channel->update([
                 'source_live'   => false,
@@ -462,9 +471,15 @@ class StreamManager
         }
 
         // Keep RTMP/SRT listeners available while the publisher is offline.
+        // Only restart if the listener actually died — onSourceLost already
+        // force-restarted it. If isRunning returns true, the listener is
+        // waiting for encoder reconnection (which is what we want).
         if ($channel->isPushIngest() && ! $this->ingest->isRunning($channel)) {
             try {
+                $this->ingest->stopAllListeners($channel);
                 $this->ingest->start($channel, cleanSegments: false);
+                $this->log($channel, 'info', 'listener_restarted_in_stilldown',
+                    'Listener was dead — restarted');
             } catch (\Throwable $e) {
                 $this->log($channel, 'error', 'ingest_listener_restart_failed', $e->getMessage());
             }

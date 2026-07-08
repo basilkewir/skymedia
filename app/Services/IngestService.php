@@ -109,6 +109,57 @@ class IngestService
         $channel->update(['pid' => null]);
     }
 
+    /**
+     * Kill ALL orphan ffmpeg ingest listeners for this channel.
+     *
+     * When the encoder disconnects from a `-listen 1` RTMP listener, the old
+     * ffmpeg process may linger (waiting for the 120 s timeout) while our code
+     * starts a new one — stacking multiple listeners on the same port.  This
+     * method uses `pkill` to find and kill every ffmpeg process that references
+     * this channel's ingest port, ensuring a clean slate before starting a
+     * fresh listener.
+     */
+    public function stopAllListeners(Channel $channel): int
+    {
+        // Extract port from ingest_listen_url (e.g. rtmp://0.0.0.0:20001/live/...)
+        $url = $channel->ingest_listen_url ?? '';
+        if (preg_match('/:(\d+)\//', $url, $m)) {
+            $port = $m[1];
+        } else {
+            // Fallback: derive port from channel ID
+            $port = 20000 + $channel->id;
+        }
+
+        // Kill all ffmpeg processes referencing this port as a listener.
+        // Use grep -F for literal string match (avoids regex escaping issues).
+        $count = 0;
+        exec("ps aux | grep -F 'listen' | grep -F '0.0.0.0:{$port}' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
+        foreach ($lines as $line) {
+            $pid = (int) trim($line);
+            if ($pid > 0) {
+                exec("kill -KILL {$pid} 2>/dev/null");
+                $count++;
+            }
+        }
+
+        // Also kill by PID file entry (belt and suspenders)
+        $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
+        $pid     = $this->ffmpeg->readPid($pidFile);
+        if ($pid > 0) {
+            exec("kill -KILL {$pid} 2>/dev/null");
+            $this->ffmpeg->clearPid($pidFile);
+        }
+
+        if ($count > 0) {
+            Log::info("[Ingest] {$channel->name} killed {$count} orphan listener(s) on port {$port}");
+        }
+
+        // Brief pause to let the kernel release the port
+        usleep(200_000);
+
+        return $count;
+    }
+
     public function isRunning(Channel $channel): bool
     {
         $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'ingest'));
