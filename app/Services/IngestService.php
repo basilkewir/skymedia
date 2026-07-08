@@ -66,8 +66,11 @@ class IngestService
         $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
         $logFile = $this->ffmpeg->logFile($channel, 'ingest');
 
-        // startProcess throws \RuntimeException with ffmpeg output on failure
-        $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile);
+        // Push-ingest listeners bind the port immediately and then wait for
+        // an encoder connection — use a shorter stabilise window so the port
+        // is available again as fast as possible after a reconnect.
+        $stabilise = $channel->isPushIngest() ? 1 : 3;
+        $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, $stabilise);
 
         $waitingForPush = $channel->isPushIngest();
         $channel->update([

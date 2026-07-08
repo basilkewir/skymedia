@@ -56,7 +56,7 @@ class RtmpRelayService
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
             '-listen',  '1',
-            '-timeout', '30000000',   // 30s wait for encoder to connect
+            '-timeout', '120000000',   // 120s wait for encoder to connect
             '-i',       $listenUrl,
             '-c:v', 'copy',
             '-c:a', 'copy',

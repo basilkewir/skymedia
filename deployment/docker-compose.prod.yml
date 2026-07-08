@@ -9,7 +9,8 @@ services:
       - "8080:80"
       - "20000-20099:20000-20099/tcp"
       - "30000-30099:30000-30099/udp"
-      - "19350-19399:19350-19399/tcp"
+      - "19350-19449:19350-19449/tcp"
+      - "19350-19449:19350-19449/udp"
     environment:
       SKYMEDIA_PROD: "true"
       APP_URL: "${APP_URL:-http://localhost}"
@@ -30,16 +31,13 @@ services:
         condition: service_healthy
 
   rtmp:
-    image: alfg/nginx-rtmp
+    image: tiangolo/nginx-rtmp
     restart: unless-stopped
     ports:
       - "1935:1935"
       - "8081:8081"
     volumes:
-      - ./nginx-rtmp.conf:/etc/nginx/nginx.conf.template
-    environment:
-      - RTMP_PORT=1935
-      - HTTP_PORT=8081
+      - ./nginx-rtmp.conf:/etc/nginx/nginx.conf
 
   db:
     image: mysql:8.0

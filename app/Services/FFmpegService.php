@@ -753,19 +753,17 @@ class FFmpegService
         $analyze = '3000000';
 
         if ($channel->isPushIngest()) {
-            if ($type === 'srt') {
-                $latency = $this->srtLatencyMs() * 1000;
-                $separator = str_contains($url, '?') ? '&' : '?';
-                $url .= "{$separator}latency={$latency}";
-            }
-
             $flags = [
                 '-fflags', '+genpts+discardcorrupt',
                 '-probesize', $probesize,
                 '-analyzeduration', $analyze,
             ];
             if ($type === 'rtmp') {
-                array_push($flags, '-listen', '1');
+                array_push($flags, '-listen', '1', '-timeout', '120000000');
+            } elseif ($type === 'srt') {
+                $latency = $this->srtLatencyMs() * 1000;
+                $separator = str_contains($url, '?') ? '&' : '?';
+                $url .= "{$separator}latency={$latency}&mode=listener";
             }
             array_push($flags, '-i', $url);
 
