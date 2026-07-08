@@ -21,16 +21,22 @@ class IngestService
      */
     public function start(Channel $channel, bool $cleanSegments = true): bool
     {
-        // Only stop if the process is actually running. For push-ingest
-        // channels with -listen 1, the listener may be idle (waiting for
-        // encoder reconnection). Killing it here would cause a brief freeze.
+        // Kill any existing process (tracked or orphaned).
         if ($this->isRunning($channel)) {
             $this->stop($channel);
         } else {
-            // Clear stale PID file if the process is already dead
             $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
             $this->ffmpeg->clearPid($pidFile);
             $channel->update(['pid' => null]);
+        }
+
+        // For push-ingest channels, also kill any orphan process holding the
+        // port that wasn't tracked by the PID file, then wait for the port to
+        // be fully released before binding a new listener. Without this wait,
+        // the new ffmpeg gets "Address already in use" and fails immediately.
+        if ($channel->isPushIngest() && $channel->ingest_port) {
+            $this->killPortOrphan($channel->ingest_port);
+            $this->waitForPortFree($channel->ingest_port, 8);
         }
 
         $dvrDir = $channel->dvr_directory;
@@ -131,6 +137,58 @@ class IngestService
             }
         }
 
+        return false;
+    }
+
+    /**
+     * Kill any process (not tracked by PID file) that is holding the given port.
+     * This handles the case where ffmpeg exited but the OS hasn't released the
+     * port yet, or a zombie process is still listed in /proc.
+     */
+    protected function killPortOrphan(int $port): void
+    {
+        // Try ss first (faster), fall back to fuser
+        $out = shell_exec("ss -tlnp 2>/dev/null | grep :{$port} | grep -o 'pid=[0-9]*' | head -1");
+        if (!$out) {
+            $out = shell_exec("ss -ulnp 2>/dev/null | grep :{$port} | grep -o 'pid=[0-9]*' | head -1");
+        }
+        if ($out && preg_match('/pid=(\d+)/', trim($out), $m)) {
+            $pid = (int) $m[1];
+            if ($pid > 0) {
+                $this->ffmpeg->stopProcess($pid, 4);
+                Log::info("[Ingest] Killed orphan PID {$pid} holding port {$port}");
+            }
+            return;
+        }
+        // fuser fallback
+        $fuser = trim((string) shell_exec("fuser {$port}/tcp 2>/dev/null"));
+        if ($fuser) {
+            foreach (preg_split('/\s+/', $fuser) as $pid) {
+                $pid = (int) $pid;
+                if ($pid > 0) {
+                    $this->ffmpeg->stopProcess($pid, 4);
+                    Log::info("[Ingest] Killed orphan PID {$pid} holding port {$port} (fuser)");
+                }
+            }
+        }
+    }
+
+    /**
+     * Wait up to $maxSeconds for the port to stop appearing in ss/netstat.
+     * Returns true when the port is free, false on timeout.
+     */
+    protected function waitForPortFree(int $port, int $maxSeconds = 8): bool
+    {
+        $deadline = time() + $maxSeconds;
+        while (time() < $deadline) {
+            $inUse = shell_exec("ss -tlnp 2>/dev/null | grep :{$port}") ?:
+                     shell_exec("ss -ulnp 2>/dev/null | grep :{$port}");
+            if (!trim((string) $inUse)) {
+                return true;
+            }
+            usleep(200_000); // 200ms
+        }
+        Log::warning("[Ingest] Port {$port} still in use after {$maxSeconds}s — proceeding anyway");
         return false;
     }
 
