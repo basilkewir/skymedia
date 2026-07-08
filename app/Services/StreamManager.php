@@ -569,11 +569,17 @@ class StreamManager
         $cmd = [
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
-            '-re',
+            // No -re: HLS input already paces itself at live rate.
+            // -re on an HLS file input causes freeze-burst stalls at segment
+            // boundaries when the next segment isn't written yet.
             '-fflags',             '+genpts+discardcorrupt',
             '-live_start_index',   '-3',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
+            '-timeout',            '10000000',
+            '-reconnect',          '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max','5',
             '-i',                  $playlist,
             '-max_muxing_queue_size', '9999',
             '-c:v', 'copy',
