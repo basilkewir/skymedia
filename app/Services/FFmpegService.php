@@ -820,13 +820,17 @@ class FFmpegService
                     '-probesize',       $probesize,
                     '-analyzeduration', $analyze,
                     '-timeout',         '10000000',
+                    '-reconnect',       '1',
+                    '-reconnect_at_eof','1',
+                    '-reconnect_streamed', '1',
+                    '-reconnect_delay_max', '5',
                 ];
 
-                $ua = $this->httpUserAgent();
-                if ($ua) {
-                    $flags[] = '-user_agent';
-                    $flags[] = $ua;
-                }
+                // Use a browser UA — many IPTV providers block the default ffmpeg UA
+                $ua = $this->httpUserAgent()
+                    ?? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+                $flags[] = '-user_agent';
+                $flags[] = $ua;
 
                 $flags[] = '-i';
                 $flags[] = $url;
@@ -866,6 +870,18 @@ class FFmpegService
                     '-i',               $url,
                 ];
         }
+    }
+
+    /**
+     * True when the channel source is an HTTP MPEG-TS IPTV stream.
+     * These streams must never be probed with ffprobe during monitoring —
+     * doing so opens a second TCP connection which providers detect as a
+     * duplicate session and terminate the primary ingest connection.
+     */
+    public function isIptvStream(Channel $channel): bool
+    {
+        if ($channel->isPushIngest()) return false;
+        return $this->isHttpMpegts($channel->source_url, $channel->source_type);
     }
 
     /**

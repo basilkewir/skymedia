@@ -155,9 +155,13 @@ class StreamManager
         // Primary health signal: is the ingest process running and writing fresh segments?
         $ingestRunning = $this->ingest->isRunning($channel);
         $recentSegments = $this->ffmpeg->hasRecentSegments($channel, 20);
-        // A listener cannot be probed without consuming its single incoming
-        // connection. Fresh output segments are its health signal instead.
-        $probeHealthy = $channel->isPushIngest() ? false : $this->ffmpeg->checkSourceHealth($channel);
+
+        // For push-ingest listeners and HTTP MPEG-TS IPTV streams, never call
+        // ffprobe on the source URL — it opens a second connection which IPTV
+        // providers detect as a duplicate session and kill the ingest stream.
+        // Segment freshness is the sole health signal for these source types.
+        $skipProbe = $channel->isPushIngest() || $this->ffmpeg->isIptvStream($channel);
+        $probeHealthy = $skipProbe ? false : $this->ffmpeg->checkSourceHealth($channel);
 
         $sourceLive = ($ingestRunning && $recentSegments) || $probeHealthy;
 
@@ -170,7 +174,7 @@ class StreamManager
 
         $sourceRecovered = $channel->isPushIngest()
             ? ($ingestRunning && $recentSegments && $liveM3u8Fresh)
-            : $probeHealthy;
+            : ($skipProbe ? ($ingestRunning && $recentSegments) : $probeHealthy);
 
         if ($sourceRecovered && !$channel->source_live) {
             $this->onSourceRecovered($channel->fresh());
