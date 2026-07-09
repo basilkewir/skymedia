@@ -66,8 +66,8 @@ class MonitorStreams extends Command
                                     // If it's alive and listening, leave it alone —
                                     // killing it interrupts vMix/encoder connections.
                                     $port = (int) ($ch->ingest_port ?? 0);
-                                    $ssOut = $port > 0 ? shell_exec("ss -tlnp 2>/dev/null | grep :{$port} | grep -o 'pid=[0-9]*' | head -1") : '';
-                                    $portInUse = $ssOut && preg_match('/pid=(\d+)/', trim($ssOut), $m);
+                                    $ssOut = $port > 0 ? shell_exec("ss -tnl 2>/dev/null | grep ':{$port} '") : '';
+                                    $portInUse = ! empty($ssOut);
                                     if (! $portInUse) {
                                         $manager->restartChannel($ch);
                                         $this->lastAutoRestart[$ch->id] = time();

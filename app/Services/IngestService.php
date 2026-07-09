@@ -173,18 +173,19 @@ class IngestService
         // monitor stops trying to restart it.
         if ($channel->isPushIngest() && $channel->ingest_port) {
             $port = (int) $channel->ingest_port;
-            $out  = shell_exec("ss -tlnp 2>/dev/null | grep :{$port} | grep -o 'pid=[0-9]*' | head -1");
-            if (! $out) {
-                $out = shell_exec("ss -ulnp 2>/dev/null | grep :{$port} | grep -o 'pid=[0-9]*' | head -1");
-            }
-            if ($out && preg_match('/pid=(\d+)/', trim($out), $m)) {
-                $livePid = (int) $m[1];
-                if ($livePid > 0 && $this->ffmpeg->isRunning($livePid)) {
-                    // Adopt: write the PID file so future checks work normally.
-                    file_put_contents($this->ffmpeg->pidFile($channel, 'ingest'), $livePid);
-                    $channel->update(['pid' => $livePid]);
+            // Use ss -tnl (no -p) to avoid CAP_SYS_PTRACE issues in Docker.
+            // Just check if something is listening on the port.
+            $out  = shell_exec("ss -tnl 2>/dev/null | grep ':{$port} '");
+            if ($out) {
+                // Port is in use — find the PID via /proc/net/tcp or just
+                // try to read the PID file again (it may have been written
+                // between the first check and now).
+                $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'ingest'));
+                if ($pid > 0 && $this->ffmpeg->isRunning($pid)) {
                     return true;
                 }
+                // PID file missing but port is occupied — assume it's ours
+                return true;
             }
         }
 
