@@ -42,52 +42,83 @@ class YoutubeService
 
     /**
      * Run yt-dlp and return the best HLS URL.
+     * Tries multiple player clients with retries to handle YouTube anti-bot detection.
      */
     private function extract(Channel $channel): string
     {
         $ytdlp = $this->findBin();
         $url   = $channel->source_url;
 
-        $cmd = [$ytdlp, '--js-runtimes', 'node', '--no-warnings', '-g',
-                '--format', 'best[protocol=m3u8_native]/best',
-                '--no-playlist'];
+        // Player clients to try: web (default), android, ios — different fingerprints
+        $playerClients = ['web', 'android', 'ios'];
+        $maxAttempts = count($playerClients) * 2; // 2 attempts per client
 
-        // Write cookies to a temp file if provided
         $cookieFile = null;
         if (!empty($channel->youtube_cookies)) {
             $cookieFile = tempnam(sys_get_temp_dir(), 'yt_cookies_');
             file_put_contents($cookieFile, trim($channel->youtube_cookies));
-            array_push($cmd, '--cookies', $cookieFile);
         }
 
-        $cmd[] = $url;
+        $lastError = '';
+        $attempt = 0;
 
-        $escaped = implode(' ', array_map('escapeshellarg', $cmd));
-        $output  = [];
-        $code    = 0;
-        exec($escaped . ' 2>&1', $output, $code);
+        foreach ($playerClients as $client) {
+            for ($i = 0; $i < 2; $i++) {
+                $attempt++;
+                Log::debug("[YouTube] Attempt {$attempt}: trying player_client={$client} for channel {$channel->id}");
+
+                $cmd = [$ytdlp, '--js-runtimes', 'node', '--no-warnings', '-g',
+                        '--format', 'best[protocol=m3u8_native]/best',
+                        '--no-playlist',
+                        '--extractor-args', "youtube:player_client={$client}"];
+
+                if ($cookieFile) {
+                    $cmd[] = '--cookies';
+                    $cmd[] = $cookieFile;
+                }
+
+                $cmd[] = $url;
+
+                $escaped = implode(' ', array_map('escapeshellarg', $cmd));
+                $output  = [];
+                $code    = 0;
+                exec($escaped . ' 2>&1', $output, $code);
+
+                $outputStr = implode("\n", $output);
+
+                if ($code === 0) {
+                    // Check for valid URL in output
+                    foreach ($output as $line) {
+                        $line = trim($line);
+                        if (str_starts_with($line, 'https://') || str_starts_with($line, 'http://')) {
+                            if ($cookieFile) {
+                                @unlink($cookieFile);
+                            }
+                            Log::debug("[YouTube] Resolved {$url} → {$line} (client={$client}, attempt={$attempt})");
+                            return $line;
+                        }
+                    }
+                    // Got exit 0 but no URL — treat as failure
+                    $lastError = "yt-dlp returned no URL. Output: {$outputStr}";
+                } else {
+                    $lastError = "yt-dlp failed (exit {$code}): {$outputStr}";
+                }
+
+                Log::warning("[YouTube] Attempt {$attempt} failed for channel {$channel->id}: {$lastError}");
+
+                // Small delay between retries to let YouTube cool down
+                if ($attempt < $maxAttempts) {
+                    usleep(500_000); // 500ms
+                }
+            }
+        }
 
         if ($cookieFile) {
             @unlink($cookieFile);
         }
 
-        $outputStr = implode("\n", $output);
-
-        if ($code !== 0) {
-            Log::warning("[YouTube] yt-dlp failed for channel {$channel->id}: {$outputStr}");
-            throw new \RuntimeException("yt-dlp failed (exit {$code}): {$outputStr}");
-        }
-
-        // yt-dlp may return multiple lines (audio+video) — take the first https line
-        foreach ($output as $line) {
-            $line = trim($line);
-            if (str_starts_with($line, 'https://') || str_starts_with($line, 'http://')) {
-                Log::debug("[YouTube] Resolved {$url} → {$line}");
-                return $line;
-            }
-        }
-
-        throw new \RuntimeException("yt-dlp returned no URL. Output: {$outputStr}");
+        Log::error("[YouTube] All {$attempt} attempts failed for channel {$channel->id}: {$lastError}");
+        throw new \RuntimeException("yt-dlp failed after {$attempt} attempts: {$lastError}");
     }
 
     private function findBin(): string
