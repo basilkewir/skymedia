@@ -514,21 +514,21 @@ class ChannelController extends Controller
 
     // ── Recording management ────────────────────────────────────────────────
 
-    public function startRecording(Channel $channel): RedirectResponse
+    public function startRecording(Channel $channel): JsonResponse
     {
         $this->ensureChannelAccess($channel);
         if ($channel->isPushIngest()) {
-            return back()->withErrors(['recording' => 'Push-ingest channels cannot record']);
+            return response()->json(['success' => false, 'error' => 'Push-ingest channels cannot record']);
         }
 
         $fresh = $channel->fresh();
         $liveM3u8 = $fresh->dvr_directory . '/live.m3u8';
         if (!file_exists($liveM3u8)) {
-            return back()->withErrors(['recording' => 'Channel is not live — no live.m3u8 available']);
+            return response()->json(['success' => false, 'error' => 'Channel is not live — no live.m3u8 available']);
         }
 
         if ($this->recording->isRunning($fresh)) {
-            return back()->with('info', 'Recording is already running');
+            return response()->json(['success' => true, 'message' => 'Recording is already running']);
         }
 
         // Set a default record_duration if not configured
@@ -537,24 +537,24 @@ class ChannelController extends Controller
         }
 
         if ($this->recording->start($fresh)) {
-            return back()->with('success', 'Recording started');
+            return response()->json(['success' => true, 'message' => 'Recording started']);
         }
 
-        return back()->withErrors(['recording' => 'Failed to start recording']);
+        return response()->json(['success' => false, 'error' => 'Failed to start recording']);
     }
 
-    public function stopRecording(Channel $channel): RedirectResponse
+    public function stopRecording(Channel $channel): JsonResponse
     {
         $this->ensureChannelAccess($channel);
         $fresh = $channel->fresh();
 
         if (!$this->recording->isRunning($fresh)) {
-            return back()->with('info', 'No recording is running');
+            return response()->json(['success' => true, 'message' => 'No recording is running']);
         }
 
         $this->recording->stop($fresh);
 
-        return back()->with('success', 'Recording stopped');
+        return response()->json(['success' => true, 'message' => 'Recording stopped']);
     }
 
     public function deleteRecording(Recording $recording): RedirectResponse

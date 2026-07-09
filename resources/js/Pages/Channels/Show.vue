@@ -186,18 +186,19 @@
                     </div>
 
                     <!-- Recording layer -->
-                    <div v-if="!isManaged" class="flex flex-wrap items-center gap-3">
+                    <div v-if="isAdmin" class="flex flex-wrap items-center gap-3">
                         <span class="text-xs text-slate-500 w-16">Recording</span>
                         <StatusBadge :status="state.record_status" :pulse="state.record_status === 'recording'" />
                         <span v-if="state.record_pid" class="text-xs text-slate-500 font-mono">PID {{ state.record_pid }}</span>
-                        <Link :href="route('channels.recording.start', channel.id)" method="post" as="button"
-                               class="px-3 py-1.5 text-xs bg-green-600/20 text-green-400 border border-green-500/30 rounded-lg hover:bg-green-600/30 transition-colors">
-                            ⏺ Start Recording
-                        </Link>
-                        <Link :href="route('channels.recording.stop', channel.id)" method="post" as="button"
-                               class="px-3 py-1.5 text-xs bg-red-600/20 text-red-400 border border-red-500/30 rounded-lg hover:bg-red-600/30 transition-colors">
-                            ■ Stop Recording
-                        </Link>
+                        <button @click="startRecording" :disabled="recordingStarting"
+                                class="px-3 py-1.5 text-xs bg-green-600/20 text-green-400 border border-green-500/30 rounded-lg hover:bg-green-600/30 transition-colors disabled:opacity-40">
+                            {{ recordingStarting ? 'Starting…' : '⏺ Start Recording' }}
+                        </button>
+                        <button @click="stopRecording" :disabled="recordingStopping"
+                                class="px-3 py-1.5 text-xs bg-red-600/20 text-red-400 border border-red-500/30 rounded-lg hover:bg-red-600/30 transition-colors disabled:opacity-40">
+                            {{ recordingStopping ? 'Stopping…' : '■ Stop Recording' }}
+                        </button>
+                        <span v-if="recordingError" class="text-xs text-red-400">{{ recordingError }}</span>
                     </div>
 
                 </div>
@@ -429,6 +430,9 @@ const showPushLog  = ref(false)
 const pushLog      = ref('')
 const pushLogLoading = ref(false)
 const refreshing   = ref(false)
+const recordingStarting = ref(false)
+const recordingStopping = ref(false)
+const recordingError    = ref('')
 let timer = null
 
 async function poll() {
@@ -512,6 +516,58 @@ async function refreshIngest() {
         console.error('Failed to refresh ingest', e)
     } finally {
         refreshing.value = false
+    }
+}
+
+async function startRecording() {
+    recordingStarting.value = true
+    recordingError.value = ''
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.recording.start', props.channel.id), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+        })
+        const data = await res.json()
+        if (data.success) {
+            await poll()
+        } else {
+            recordingError.value = data.error || 'Failed to start recording'
+        }
+    } catch (e) {
+        recordingError.value = 'Failed to start recording: ' + e.message
+    } finally {
+        recordingStarting.value = false
+    }
+}
+
+async function stopRecording() {
+    recordingStopping.value = true
+    recordingError.value = ''
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.recording.stop', props.channel.id), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+        })
+        const data = await res.json()
+        if (data.success) {
+            await poll()
+        } else {
+            recordingError.value = data.error || 'Failed to stop recording'
+        }
+    } catch (e) {
+        recordingError.value = 'Failed to stop recording: ' + e.message
+    } finally {
+        recordingStopping.value = false
     }
 }
 
