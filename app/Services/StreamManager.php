@@ -246,10 +246,9 @@ class StreamManager
                 'record_status' => 'idle',
             ]);
 
-            // ── Multi-source failover: try the next source before VOD ──
+            // ── Multi-source failover: try ALL remaining sources before VOD ──
             if ($channel->hasMultipleSources()) {
-                $next = $channel->nextSource();
-                if ($next) {
+                while ($next = $channel->nextSource()) {
                     $channel->activateSource($next);
                     try {
                         $this->ingest->start($channel);
@@ -259,13 +258,13 @@ class StreamManager
                         return;
                     } catch (\Throwable $e) {
                         $this->log($channel, 'error', 'source_switch_failed',
-                            "Backup source [{$next->id}] also failed: " . $e->getMessage());
+                            "Backup source [{$next->id}] failed: " . $e->getMessage());
                         $next->update(['last_error' => $e->getMessage()]);
+                        $channel->refresh();
                     }
-                } else {
-                    $this->log($channel, 'info', 'all_sources_exhausted',
-                        'All backup sources exhausted — falling back to VOD');
                 }
+                $this->log($channel, 'info', 'all_sources_exhausted',
+                    'All backup sources exhausted — falling back to VOD');
             }
         }
 
@@ -407,28 +406,16 @@ class StreamManager
 
         // ── Push watchdog ────────────────────────────────────────────────
         // Push reads output.m3u8 (stable path). It only needs restart
-        // if the ffmpeg process has died unexpectedly. Retry throttle
-        // prevents burning CPU on a bad RTMP connection.
+        // if the ffmpeg process has died unexpectedly. Push must always
+        // be running — always retry unless credentials are rejected.
         if (!$this->push->isRunning($channel)) {
-            // Backoff: after 5 consecutive failures, wait 60s before retry
-            // to avoid burning CPU on a permanently broken destination.
-            $consecutiveFails = $channel->retry_count ?? 0;
-            if ($consecutiveFails >= 5) {
-                $lastError = $channel->last_error ?? '';
-                if (str_contains($lastError, 'authfailed') || str_contains($lastError, 'AccessManager')) {
-                    // Auth error — don't retry until credentials are fixed
-                    if ($channel->push_status !== 'error') {
-                        $channel->update(['push_status' => 'error']);
-                        $this->log($channel, 'error', 'push_auth_failed',
-                            'Push destination rejected credentials — will not retry until fixed');
-                    }
-                    // Skip restart
-                } else {
-                    $playlist = $this->playout->outputPlaylist($channel);
-                    if (file_exists($playlist) && $this->ffmpeg->hlsReady($channel, 2)) {
-                        $this->log($channel, 'warning', 'push_died_offline', 'Push died during fallback — restarting');
-                        $this->push->start($channel);
-                    }
+            $lastError = $channel->last_error ?? '';
+            if (str_contains($lastError, 'authfailed') || str_contains($lastError, 'AccessManager')) {
+                // Auth error — don't retry until credentials are fixed
+                if ($channel->push_status !== 'error') {
+                    $channel->update(['push_status' => 'error']);
+                    $this->log($channel, 'error', 'push_auth_failed',
+                        'Push destination rejected credentials — will not retry until fixed');
                 }
             } else {
                 $playlist = $this->playout->outputPlaylist($channel);
@@ -447,7 +434,6 @@ class StreamManager
                         $reason = $ch->last_error ?: 'Unknown — check push log';
                         $channel->update(['push_status' => 'error', 'last_error' => $reason]);
                         $this->log($channel, 'error', 'push_failed', "Push failed: {$reason}");
-                        $channel->incrementRetry('Push failed');
                     }
                 }
             }
@@ -537,27 +523,19 @@ class StreamManager
         }
 
         // ── Push watchdog ────────────────────────────────────────────────
+        // Push must always be running — always retry unless auth failed.
         if (!$this->push->isRunning($channel)) {
-            $consecutiveFails = $channel->retry_count ?? 0;
-            if ($consecutiveFails >= 5) {
-                $lastError = $channel->last_error ?? '';
-                if (str_contains($lastError, 'authfailed') || str_contains($lastError, 'AccessManager')) {
-                    if ($channel->push_status !== 'error') {
-                        $channel->update(['push_status' => 'error']);
-                        $this->log($channel, 'error', 'push_auth_failed',
-                            'Push destination rejected credentials — will not retry until fixed');
-                    }
-                } else {
-                    $playlist = $this->playout->outputPlaylist($channel);
-                    if (file_exists($playlist) && $this->ffmpeg->hlsReady($channel, 2)) {
-                        $this->log($channel, 'warning', 'push_died_offline', 'Push died during fallback — restarting');
-                        $this->push->start($channel);
-                    }
+            $lastError = $channel->last_error ?? '';
+            if (str_contains($lastError, 'authfailed') || str_contains($lastError, 'AccessManager')) {
+                if ($channel->push_status !== 'error') {
+                    $channel->update(['push_status' => 'error']);
+                    $this->log($channel, 'error', 'push_auth_failed',
+                        'Push destination rejected credentials — will not retry until fixed');
                 }
             } else {
                 $playlist = $this->playout->outputPlaylist($channel);
                 if (file_exists($playlist) && $this->ffmpeg->hlsReady($channel, 2)) {
-                    $this->log($channel, 'warning', 'push_died_offline', 'Push died during fallback — restarting');
+                    $this->log($channel, 'warning', 'push_died_offline', 'Push died — restarting');
                     if ($this->push->start($channel)) {
                         $channel->resetRetries();
                     }

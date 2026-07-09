@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Services\DVRService;
 use App\Services\FFmpegService;
 use App\Services\PlayoutService;
+use App\Services\RecordingService;
 use App\Services\StreamManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -27,6 +28,7 @@ class ChannelController extends Controller
         protected StreamManager $manager,
         protected DVRService $dvr,
         protected PlayoutService $playout,
+        protected RecordingService $recording,
     ) {}
 
     public function index(): Response
@@ -508,6 +510,74 @@ class ChannelController extends Controller
             'Accept-Ranges' => 'bytes',
             'Cache-Control' => 'no-cache',
         ]);
+    }
+
+    // ── Recording management ────────────────────────────────────────────────
+
+    public function startRecording(Channel $channel): RedirectResponse
+    {
+        $this->ensureChannelAccess($channel);
+        if ($channel->isPushIngest()) {
+            return back()->withErrors(['recording' => 'Push-ingest channels cannot record']);
+        }
+
+        $fresh = $channel->fresh();
+        $liveM3u8 = $fresh->dvr_directory . '/live.m3u8';
+        if (!file_exists($liveM3u8)) {
+            return back()->withErrors(['recording' => 'Channel is not live — no live.m3u8 available']);
+        }
+
+        if ($this->recording->isRunning($fresh)) {
+            return back()->with('info', 'Recording is already running');
+        }
+
+        // Set a default record_duration if not configured
+        if ($fresh->record_duration <= 0) {
+            $fresh->update(['record_duration' => 3600]);
+        }
+
+        if ($this->recording->start($fresh)) {
+            return back()->with('success', 'Recording started');
+        }
+
+        return back()->withErrors(['recording' => 'Failed to start recording']);
+    }
+
+    public function stopRecording(Channel $channel): RedirectResponse
+    {
+        $this->ensureChannelAccess($channel);
+        $fresh = $channel->fresh();
+
+        if (!$this->recording->isRunning($fresh)) {
+            return back()->with('info', 'No recording is running');
+        }
+
+        $this->recording->stop($fresh);
+
+        return back()->with('success', 'Recording stopped');
+    }
+
+    public function deleteRecording(Recording $recording): RedirectResponse
+    {
+        $channel = $recording->channel;
+        $this->ensureChannelAccess($channel);
+
+        if ($recording->status === 'recording') {
+            return back()->withErrors(['recording' => 'Cannot delete an active recording — stop it first']);
+        }
+
+        if ($channel->fallback_recording_path === $recording->filepath) {
+            $channel->update(['fallback_recording_path' => null]);
+        }
+
+        $size = filesize($recording->filepath) ?? 0;
+        @unlink($recording->filepath);
+        if ($size > 0) {
+            $channel->decrement('storage_used_bytes', $size);
+        }
+        $recording->delete();
+
+        return back()->with('success', 'Recording deleted');
     }
 
     // ── Validation rules ──────────────────────────────────────────────────────

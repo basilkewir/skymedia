@@ -185,6 +185,21 @@
                         </button>
                     </div>
 
+                    <!-- Recording layer -->
+                    <div v-if="!isManaged" class="flex flex-wrap items-center gap-3">
+                        <span class="text-xs text-slate-500 w-16">Recording</span>
+                        <StatusBadge :status="state.record_status" :pulse="state.record_status === 'recording'" />
+                        <span v-if="state.record_pid" class="text-xs text-slate-500 font-mono">PID {{ state.record_pid }}</span>
+                        <Link :href="route('channels.recording.start', channel.id)" method="post" as="button"
+                               class="px-3 py-1.5 text-xs bg-green-600/20 text-green-400 border border-green-500/30 rounded-lg hover:bg-green-600/30 transition-colors">
+                            ⏺ Start Recording
+                        </Link>
+                        <Link :href="route('channels.recording.stop', channel.id)" method="post" as="button"
+                               class="px-3 py-1.5 text-xs bg-red-600/20 text-red-400 border border-red-500/30 rounded-lg hover:bg-red-600/30 transition-colors">
+                            ■ Stop Recording
+                        </Link>
+                    </div>
+
                 </div>
                 <p v-if="state.fallback_recording_path" class="mt-3 text-xs text-slate-500 font-mono truncate">
                     Fallback file: {{ state.fallback_recording_path }}
@@ -282,12 +297,19 @@
                                 {{ rec.completed_at ? new Date(rec.completed_at).toLocaleString() : '—' }}
                             </td>
                             <td class="px-6 py-3">
-                                <a v-if="rec.status === 'completed'"
-                                   :href="route('recordings.play', rec.id)"
-                                   target="_blank"
-                                   class="px-2 py-1 text-xs bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded hover:bg-indigo-600/30 transition-colors">
-                                    ▶ Play
-                                </a>
+                                <div class="flex items-center gap-2">
+                                    <a v-if="rec.status === 'completed'"
+                                       :href="route('recordings.play', rec.id)"
+                                       target="_blank"
+                                       class="px-2 py-1 text-xs bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded hover:bg-indigo-600/30 transition-colors">
+                                        ▶ Play
+                                    </a>
+                                    <button v-if="rec.status !== 'recording'"
+                                            @click="deleteRecording(rec.id)"
+                                            class="px-2 py-1 text-xs bg-red-600/20 text-red-400 border border-red-500/30 rounded hover:bg-red-600/30 transition-colors">
+                                        🗑 Delete
+                                    </button>
+                                </div>
                             </td>
                         </tr>
                         <tr v-if="!state.recordings?.length">
@@ -364,7 +386,7 @@
 
 <script setup>
 import { onMounted, onUnmounted, ref, reactive } from 'vue'
-import { Link, useForm } from '@inertiajs/vue3'
+import { Link, useForm, router } from '@inertiajs/vue3'
 import AppLayout from '@/Layouts/AppLayout.vue'
 import StatusBadge from '@/Components/StatusBadge.vue'
 import StatusCard from '@/Components/StatusCard.vue'
@@ -491,6 +513,11 @@ async function refreshIngest() {
     } finally {
         refreshing.value = false
     }
+}
+
+function deleteRecording(id) {
+    if (!confirm('Delete this recording?')) return
+    router.delete(route('recordings.delete', id))
 }
 
 onMounted(async () => {

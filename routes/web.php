@@ -55,6 +55,11 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::delete('channels/{channel}/sources/{source}', [\App\Http\Controllers\ChannelSourceController::class, 'destroy'])->name('channels.sources.destroy');
     Route::post('channels/{channel}/sources/{source}/activate', [\App\Http\Controllers\ChannelSourceController::class, 'activate'])->name('channels.sources.activate');
 
+    // ── Recording management ────────────────────────────────────────────────
+    Route::post('channels/{channel}/recording/start', [ChannelController::class, 'startRecording'])->name('channels.recording.start');
+    Route::post('channels/{channel}/recording/stop', [ChannelController::class, 'stopRecording'])->name('channels.recording.stop');
+    Route::delete('recordings/{recording}', [ChannelController::class, 'deleteRecording'])->name('recordings.delete');
+
     // ── Channels CRUD resource ────────────────────────────────────────────────
     Route::resource('channels', ChannelController::class);
 
