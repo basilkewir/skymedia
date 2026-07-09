@@ -276,6 +276,24 @@ class PlayoutService
         return file_exists($slate) && filesize($slate) > 1024;
     }
 
+    /**
+     * Ensure a slate MP4 exists for this channel so fallback always has
+     * something to play. Called at channel startup.
+     */
+    public function ensureSlate(Channel $channel): void
+    {
+        $slate = $channel->dvr_directory . '/slate.mp4';
+        if (file_exists($slate) && filesize($slate) > 1024) {
+            return;
+        }
+        try {
+            app(GenerateSlate::class)->generateSlate($channel);
+            Log::info("[Playout] Slate generated for {$channel->name}");
+        } catch (\Throwable $e) {
+            Log::error("[Playout] Slate generation failed for {$channel->name}: {$e->getMessage()}");
+        }
+    }
+
     // ── Internal ────────────────────────────────────────────────────────
 
     private function stopFallbackProcess(Channel $channel): void

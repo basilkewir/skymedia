@@ -36,6 +36,9 @@ class StreamManager
                 mkdir($dvrDir, 0755, true);
             }
 
+            // Ensure a slate exists so fallback always has something to play.
+            $this->playout->ensureSlate($channel);
+
             // Kill any orphan listeners from a previous run before starting fresh.
             if ($channel->isPushIngest()) {
                 $this->ingest->stopAllListeners($channel);
@@ -268,24 +271,21 @@ class StreamManager
 
         $this->alert->sendOfflineAlert($channel->fresh(), 'Source unreachable', $this->playout->hasFallback($channel));
 
-        if ($this->playout->hasFallback($channel->fresh())) {
-            if ($this->playout->switchToFallback($channel->fresh())) {
-                $channel->update(['playout_status' => 'fallback']);
-                $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
-                event(new StreamStatusChanged($channel, 'offline'));
-                // Only restart push if branding overlay (logo/ticker) needs to change.
-                // Without branding the ffmpeg command is identical for live and fallback
-                // (-c:v copy -c:a copy), so the atomic symlink swap is sufficient.
-                if ($this->hasBranding($channel->fresh())) {
-                    $this->push->stop($channel->fresh());
-                    $this->startPushIfReady($channel->fresh());
-                }
-            } else {
-                $this->log($channel, 'error', 'fallback_failed', 'Fallback playout failed to start');
-                event(new StreamStatusChanged($channel, 'offline'));
+        // Always try to switch to fallback — switchToFallback will generate
+        // a slate on-demand if no recordings/VOD exist yet.
+        if ($this->playout->switchToFallback($channel->fresh())) {
+            $channel->update(['playout_status' => 'fallback']);
+            $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
+            event(new StreamStatusChanged($channel, 'offline'));
+            // Only restart push if branding overlay (logo/ticker) needs to change.
+            // Without branding the ffmpeg command is identical for live and fallback
+            // (-c:v copy -c:a copy), so the atomic symlink swap is sufficient.
+            if ($this->hasBranding($channel->fresh())) {
+                $this->push->stop($channel->fresh());
+                $this->startPushIfReady($channel->fresh());
             }
         } else {
-            $this->log($channel, 'warning', 'no_fallback', 'No recording yet — will retry fallback each tick');
+            $this->log($channel, 'error', 'fallback_failed', 'Fallback playout failed to start');
             event(new StreamStatusChanged($channel, 'offline'));
         }
     }
@@ -509,8 +509,7 @@ class StreamManager
         }
 
         // ── If no fallback was available when source dropped, keep trying ──
-        if ($channel->playout_status !== 'fallback' && $this->playout->hasFallback($channel)) {
-            $this->log($channel, 'info', 'fallback_now_available', 'Recording ready — switching to VOD loop');
+        if ($channel->playout_status !== 'fallback') {
             if ($this->playout->switchToFallback($channel)) {
                 $channel->update(['playout_status' => 'fallback', 'stream_status' => 'offline']);
                 $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');

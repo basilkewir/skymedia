@@ -354,7 +354,6 @@ class ChannelController extends Controller
     public function toggle(Channel $channel): RedirectResponse
     {
         $this->ensureChannelAccess($channel);
-        if ($channel->isPushIngest()) abort_unless(auth()->user()->is_admin ?? false, 403);
         if ($channel->is_active) {
             $this->manager->stopChannel($channel);
             $msg = "{$channel->name} stopped";
@@ -370,7 +369,6 @@ class ChannelController extends Controller
     public function restart(Channel $channel): RedirectResponse
     {
         $this->ensureChannelAccess($channel);
-        if ($channel->isPushIngest()) abort_unless(auth()->user()->is_admin ?? false, 403);
         $this->manager->restartChannel($channel);
 
         return back()->with('success', 'Channel restarted');

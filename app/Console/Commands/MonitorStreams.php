@@ -46,6 +46,39 @@ class MonitorStreams extends Command
                             $ch->source_live ? 'LIVE' : 'DOWN'
                         ));
                     }
+
+                    // Auto-recovery: if channel is offline and hasn't recovered
+                    // within 30 seconds, restart the ingest to accept reconnections.
+                    $ch = $channel->fresh();
+                    if ($ch->stream_status === 'offline' && !$ch->source_live) {
+                        $lastLive = $ch->last_live_at ? $ch->last_live_at->timestamp : 0;
+                        $offlineDuration = time() - $lastLive;
+                        if ($offlineDuration >= 30) {
+                            try {
+                                if ($ch->isPushIngest()) {
+                                    // Managed channel: restart listener to accept reconnection
+                                    $manager->restartChannel($ch);
+                                    $this->line(sprintf(
+                                        '[%s] %-22s  AUTO-RESTART: listener restarted after %ds offline',
+                                        now()->format('H:i:s'),
+                                        mb_substr($ch->name, 0, 22),
+                                        $offlineDuration
+                                    ));
+                                } else {
+                                    // Pull channel: restart ingest to retry source
+                                    $manager->restartChannel($ch);
+                                    $this->line(sprintf(
+                                        '[%s] %-22s  AUTO-RESTART: ingest restarted after %ds offline',
+                                        now()->format('H:i:s'),
+                                        mb_substr($ch->name, 0, 22),
+                                        $offlineDuration
+                                    ));
+                                }
+                            } catch (\Throwable $e) {
+                                Log::error("Auto-restart failed for {$ch->name}: {$e->getMessage()}");
+                            }
+                        }
+                    }
                 });
 
             } catch (\Throwable $e) {
