@@ -56,14 +56,21 @@ class MonitorStreams extends Command
                         if ($offlineDuration >= 30) {
                             try {
                                 if ($ch->isPushIngest()) {
-                                    // Managed channel: restart listener to accept reconnection
-                                    $manager->restartChannel($ch);
-                                    $this->line(sprintf(
-                                        '[%s] %-22s  AUTO-RESTART: listener restarted after %ds offline',
-                                        now()->format('H:i:s'),
-                                        mb_substr($ch->name, 0, 22),
-                                        $offlineDuration
-                                    ));
+                                    // Managed channel: only restart if the listener died.
+                                    // If it's alive and listening, leave it alone —
+                                    // killing it interrupts vMix/encoder connections.
+                                    $port = (int) ($ch->ingest_port ?? 0);
+                                    $ssOut = $port > 0 ? shell_exec("ss -tlnp sport = :{$port} 2>/dev/null") : '';
+                                    $portInUse = $ssOut && str_contains($ssOut, 'pid=');
+                                    if (! $portInUse) {
+                                        $manager->restartChannel($ch);
+                                        $this->line(sprintf(
+                                            '[%s] %-22s  AUTO-RESTART: listener restarted after %ds offline',
+                                            now()->format('H:i:s'),
+                                            mb_substr($ch->name, 0, 22),
+                                            $offlineDuration
+                                        ));
+                                    }
                                 } else {
                                     // Pull channel: restart ingest to retry source
                                     $manager->restartChannel($ch);
