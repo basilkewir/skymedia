@@ -169,22 +169,26 @@ class IngestService
 
         // For push-ingest channels the PID file may be missing (e.g. after a
         // container restart) while an ffmpeg listener still holds the port.
-        // Detect this by checking ss/netstat and adopt the running PID so the
-        // monitor stops trying to restart it.
+        // Docker's bridge networking hides sockets from ss inside the container,
+        // so we parse /proc/net/tcp directly to detect LISTEN sockets.
         if ($channel->isPushIngest() && $channel->ingest_port) {
             $port = (int) $channel->ingest_port;
-            // Use ss -tnl (no -p) to avoid CAP_SYS_PTRACE issues in Docker.
-            // Just check if something is listening on the port.
-            $out  = shell_exec("ss -tnl 2>/dev/null | grep ':{$port} '");
-            if ($out) {
-                // Port is in use — find the PID via /proc/net/tcp or just
-                // try to read the PID file again (it may have been written
-                // between the first check and now).
+            $hexPort = strtoupper(dechex($port));
+            // state 0A = LISTEN
+            $tcpContent = @file_get_contents('/proc/net/tcp');
+            if ($tcpContent !== false && str_contains($tcpContent, ":{$hexPort} ")) {
+                // Port is occupied — try to re-read PID file (it may have been
+                // written between the first check and now).
                 $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'ingest'));
                 if ($pid > 0 && $this->ffmpeg->isRunning($pid)) {
                     return true;
                 }
                 // PID file missing but port is occupied — assume it's ours
+                return true;
+            }
+            // Also check tcp6 for IPv6 listeners
+            $tcp6Content = @file_get_contents('/proc/net/tcp6');
+            if ($tcp6Content !== false && str_contains($tcp6Content, ":{$hexPort} ")) {
                 return true;
             }
         }
@@ -199,20 +203,18 @@ class IngestService
      */
     protected function killPortOrphan(int $port): void
     {
-        // Try ss first (faster), fall back to fuser
-        $out = shell_exec("ss -tlnp 2>/dev/null | grep :{$port} | grep -o 'pid=[0-9]*' | head -1");
-        if (!$out) {
-            $out = shell_exec("ss -ulnp 2>/dev/null | grep :{$port} | grep -o 'pid=[0-9]*' | head -1");
-        }
-        if ($out && preg_match('/pid=(\d+)/', trim($out), $m)) {
-            $pid = (int) $m[1];
-            if ($pid > 0) {
-                $this->ffmpeg->stopProcess($pid, 4);
-                Log::info("[Ingest] Killed orphan PID {$pid} holding port {$port}");
-            }
+        // Check if port is in use via /proc/net/tcp (works inside Docker)
+        $hexPort = strtoupper(dechex($port));
+        $tcpContent = @file_get_contents('/proc/net/tcp');
+        $tcp6Content = @file_get_contents('/proc/net/tcp6');
+        $portInUse = ($tcpContent !== false && str_contains($tcpContent, ":{$hexPort} "))
+                  || ($tcp6Content !== false && str_contains($tcp6Content, ":{$hexPort} "));
+
+        if (! $portInUse) {
             return;
         }
-        // fuser fallback
+
+        // Try fuser to get the PID
         $fuser = trim((string) shell_exec("fuser {$port}/tcp 2>/dev/null"));
         if ($fuser) {
             foreach (preg_split('/\s+/', $fuser) as $pid) {
@@ -220,6 +222,19 @@ class IngestService
                 if ($pid > 0) {
                     $this->ffmpeg->stopProcess($pid, 4);
                     Log::info("[Ingest] Killed orphan PID {$pid} holding port {$port} (fuser)");
+                }
+            }
+            return;
+        }
+
+        // Last resort: find ffmpeg processes that reference this port
+        $grep = trim((string) shell_exec("ps aux 2>/dev/null | grep ':{$port}' | grep -v grep"));
+        if ($grep) {
+            if (preg_match('/^\S+\s+(\d+)\s/', $grep, $m)) {
+                $pid = (int) $m[1];
+                if ($pid > 0) {
+                    $this->ffmpeg->stopProcess($pid, 4);
+                    Log::info("[Ingest] Killed orphan PID {$pid} holding port {$port} (ps grep)");
                 }
             }
         }
@@ -231,11 +246,14 @@ class IngestService
      */
     protected function waitForPortFree(int $port, int $maxSeconds = 8): bool
     {
+        $hexPort = strtoupper(dechex($port));
         $deadline = time() + $maxSeconds;
         while (time() < $deadline) {
-            $inUse = shell_exec("ss -tlnp 2>/dev/null | grep :{$port}") ?:
-                     shell_exec("ss -ulnp 2>/dev/null | grep :{$port}");
-            if (!trim((string) $inUse)) {
+            $tcpContent = @file_get_contents('/proc/net/tcp');
+            $tcp6Content = @file_get_contents('/proc/net/tcp6');
+            $inUse = ($tcpContent !== false && str_contains($tcpContent, ":{$hexPort} "))
+                   || ($tcp6Content !== false && str_contains($tcp6Content, ":{$hexPort} "));
+            if (! $inUse) {
                 return true;
             }
             usleep(200_000); // 200ms

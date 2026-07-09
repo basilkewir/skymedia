@@ -66,8 +66,16 @@ class MonitorStreams extends Command
                                     // If it's alive and listening, leave it alone —
                                     // killing it interrupts vMix/encoder connections.
                                     $port = (int) ($ch->ingest_port ?? 0);
-                                    $ssOut = $port > 0 ? shell_exec("ss -tnl 2>/dev/null | grep ':{$port} '") : '';
-                                    $portInUse = ! empty($ssOut);
+                                    $portInUse = false;
+                                    if ($port > 0) {
+                                        $hexPort = strtoupper(dechex($port));
+                                        $tcpContent = @file_get_contents('/proc/net/tcp');
+                                        $portInUse = $tcpContent !== false && str_contains($tcpContent, ":{$hexPort} ");
+                                        if (! $portInUse) {
+                                            $tcp6Content = @file_get_contents('/proc/net/tcp6');
+                                            $portInUse = $tcp6Content !== false && str_contains($tcp6Content, ":{$hexPort} ");
+                                        }
+                                    }
                                     if (! $portInUse) {
                                         $manager->restartChannel($ch);
                                         $this->lastAutoRestart[$ch->id] = time();
