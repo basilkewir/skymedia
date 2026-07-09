@@ -14,6 +14,7 @@ class MonitorStreams extends Command
     protected $description = 'Long-running stream monitor daemon — never leave the output offline';
 
     private array $lastChecked = [];
+    private array $lastAutoRestart = [];
 
     public function handle(StreamManager $manager): void
     {
@@ -54,16 +55,22 @@ class MonitorStreams extends Command
                         $lastLive = $ch->last_live_at ? $ch->last_live_at->timestamp : 0;
                         $offlineDuration = time() - $lastLive;
                         if ($offlineDuration >= 30) {
+                            $lastRestart = $this->lastAutoRestart[$ch->id] ?? 0;
+                            if ((time() - $lastRestart) < 60) {
+                                return; // Cooldown: don't restart more than once per 60s
+                            }
+
                             try {
                                 if ($ch->isPushIngest()) {
                                     // Managed channel: only restart if the listener died.
                                     // If it's alive and listening, leave it alone —
                                     // killing it interrupts vMix/encoder connections.
                                     $port = (int) ($ch->ingest_port ?? 0);
-                                    $ssOut = $port > 0 ? shell_exec("ss -tlnp sport = :{$port} 2>/dev/null") : '';
-                                    $portInUse = $ssOut && str_contains($ssOut, 'pid=');
+                                    $ssOut = $port > 0 ? shell_exec("ss -tlnp 2>/dev/null | grep :{$port} | grep -o 'pid=[0-9]*' | head -1") : '';
+                                    $portInUse = $ssOut && preg_match('/pid=(\d+)/', trim($ssOut), $m);
                                     if (! $portInUse) {
                                         $manager->restartChannel($ch);
+                                        $this->lastAutoRestart[$ch->id] = time();
                                         $this->line(sprintf(
                                             '[%s] %-22s  AUTO-RESTART: listener restarted after %ds offline',
                                             now()->format('H:i:s'),
@@ -74,6 +81,7 @@ class MonitorStreams extends Command
                                 } else {
                                     // Pull channel: restart ingest to retry source
                                     $manager->restartChannel($ch);
+                                    $this->lastAutoRestart[$ch->id] = time();
                                     $this->line(sprintf(
                                         '[%s] %-22s  AUTO-RESTART: ingest restarted after %ds offline',
                                         now()->format('H:i:s'),
