@@ -54,6 +54,11 @@
                     </div>
                 </div>
             </div>
+            <div class="px-4 pb-4 border-t border-slate-800 pt-3">
+                <p class="text-[10px] text-slate-600 text-center">
+                    Developed by <a href="https://kewirdev.com" target="_blank" class="text-slate-500 hover:text-slate-400">KewirDev</a>
+                </p>
+            </div>
         </aside>
 
         <!-- Main -->

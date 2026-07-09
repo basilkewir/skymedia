@@ -45,6 +45,11 @@
                                 class="px-3 py-1.5 text-xs text-slate-300 border border-slate-700 rounded-lg hover:border-slate-500 transition-colors disabled:opacity-40">
                             {{ probing ? 'Probing…' : '🔍 Probe Source' }}
                         </button>
+                        <button v-if="isAdmin || !isManaged" @click="refreshIngest" :disabled="refreshing"
+                                class="px-3 py-1.5 text-xs text-cyan-400 border border-cyan-500/30 rounded-lg hover:bg-cyan-500/10 transition-colors disabled:opacity-40"
+                                title="Kill and restart the ingest process (source → HLS)">
+                            {{ refreshing ? 'Refreshing…' : '↻ Refresh Ingest' }}
+                        </button>
                         <button v-if="isAdmin || !isManaged" @click="diagnoseIngest" :disabled="diagnosing"
                                 class="px-3 py-1.5 text-xs text-orange-400 border border-orange-500/30 rounded-lg hover:bg-orange-500/10 transition-colors disabled:opacity-40"
                                 title="Runs ffmpeg for 5s and shows the exact error output">
@@ -401,6 +406,7 @@ const diagnoseData = ref(null)
 const showPushLog  = ref(false)
 const pushLog      = ref('')
 const pushLogLoading = ref(false)
+const refreshing   = ref(false)
 let timer = null
 
 async function poll() {
@@ -464,6 +470,26 @@ async function diagnoseIngest() {
         diagnoseData.value = { exit_code: -1, success: false, stderr: e.message, stdout: '', command: '' }
     } finally {
         diagnosing.value = false
+    }
+}
+
+async function refreshIngest() {
+    refreshing.value = true
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        await fetch(route('ingest.restart', props.channel.id), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+        })
+        await poll()
+    } catch (e) {
+        console.error('Failed to refresh ingest', e)
+    } finally {
+        refreshing.value = false
     }
 }
 
