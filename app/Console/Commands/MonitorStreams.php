@@ -50,8 +50,11 @@ class MonitorStreams extends Command
 
                     // Auto-recovery: if channel is offline and hasn't recovered
                     // within 30 seconds, restart the ingest to accept reconnections.
+                    // Skip channels already in fallback mode — they're playing VOD
+                    // content and restarting would kill the playout for no benefit.
                     $ch = $channel->fresh();
-                    if ($ch->stream_status === 'offline' && !$ch->source_live) {
+                    if ($ch->stream_status === 'offline' && !$ch->source_live
+                        && $ch->playout_status !== 'fallback') {
                         $lastLive = $ch->last_live_at ? $ch->last_live_at->timestamp : 0;
                         $offlineDuration = time() - $lastLive;
                         if ($offlineDuration >= 30) {

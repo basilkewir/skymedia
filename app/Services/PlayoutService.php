@@ -52,9 +52,23 @@ class PlayoutService
             mkdir($dvrDir, 0755, true);
         }
 
-        // Publish live first. The fallback loop is kept running in the
-        // background so it can be swapped back in with zero startup delay.
-        $this->atomicPoint($link, 'live.m3u8');
+        // Publish live. If live.m3u8 doesn't exist yet (ingest just started
+        // or source is dead), point to the fallback playlist so push can
+        // start immediately instead of failing with "playlist not ready".
+        $liveFile = $dvrDir . '/live.m3u8';
+        if (file_exists($liveFile)) {
+            $this->atomicPoint($link, 'live.m3u8');
+        } else {
+            $playoutA = $dvrDir . '/playout_a.m3u8';
+            $playoutB = $dvrDir . '/playout_b.m3u8';
+            if (file_exists($playoutA)) {
+                $this->atomicPoint($link, 'playout_a.m3u8');
+            } elseif (file_exists($playoutB)) {
+                $this->atomicPoint($link, 'playout_b.m3u8');
+            } else {
+                $this->atomicPoint($link, 'live.m3u8');
+            }
+        }
         $channel->update(['playout_status' => 'live']);
         Log::info("[Playout] {$channel->name} switched to live → output.m3u8");
     }
