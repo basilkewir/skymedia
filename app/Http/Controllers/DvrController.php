@@ -18,8 +18,8 @@ class DvrController extends Controller
         $channels = Channel::withCount('dvrSegments')
             ->withSum('dvrSegments', 'duration')
             ->withSum('dvrSegments', 'filesize')
-            ->get()
-            ->map(function ($c) {
+            ->paginate(15)
+            ->through(function ($c) {
                 $dbSize = $c->dvr_segments_sum_filesize ?? 0;
 
                 if ($dbSize === 0 && $c->dvr_segments_count > 0) {
@@ -38,7 +38,19 @@ class DvrController extends Controller
                 return $c;
             });
 
-        return Inertia::render('DVR/Index', ['channels' => $channels]);
+        $totals = Channel::withSum('dvrSegments', 'duration')
+            ->withSum('dvrSegments', 'filesize')
+            ->get()
+            ->reduce(function ($acc, $c) {
+                $acc['hours'] += round(($c->dvr_segments_sum_duration ?? 0) / 3600, 2);
+                $acc['mb'] += round(($c->dvr_segments_sum_filesize ?? 0) / 1_048_576, 1);
+                return $acc;
+            }, ['hours' => 0, 'mb' => 0]);
+
+        return Inertia::render('DVR/Index', [
+            'channels' => $channels,
+            'totals'   => $totals,
+        ]);
     }
 
     public function show(Channel $channel): Response

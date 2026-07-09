@@ -6,9 +6,9 @@
 
         <div class="space-y-4">
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-2">
-                <StatCard title="Channels with DVR" :value="channels.length" color="indigo" />
-                <StatCard title="Total Recorded" :value="totalHours + ' hours'" color="blue" />
-                <StatCard title="Total Storage" :value="totalMb + ' MB'" color="slate" />
+                <StatCard title="Channels with DVR" :value="channels.total" color="indigo" />
+                <StatCard title="Total Recorded" :value="totals.hours + ' hours'" color="blue" />
+                <StatCard title="Total Storage" :value="totals.mb + ' MB'" color="slate" />
             </div>
 
             <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
@@ -16,7 +16,7 @@
                     <h2 class="text-sm font-semibold text-white">Channel DVR Overview</h2>
                 </div>
                 <div class="divide-y divide-slate-800/50">
-                    <div v-for="ch in channels" :key="ch.id"
+                    <div v-for="ch in channels.data" :key="ch.id"
                          class="px-6 py-5 hover:bg-slate-800/20 transition-colors">
                         <div class="flex items-center justify-between mb-3">
                             <div>
@@ -42,26 +42,24 @@
                                  :style="{ width: ch.dvr_pct + '%' }" />
                         </div>
                     </div>
-                    <div v-if="channels.length === 0" class="px-6 py-16 text-center text-slate-500 text-sm">
+                    <div v-if="channels.data?.length === 0" class="px-6 py-16 text-center text-slate-500 text-sm">
                         No DVR data. Channels will begin recording when they go live.
                     </div>
                 </div>
+                <Pagination :links="channels.links" />
             </div>
         </div>
     </AppLayout>
 </template>
 
 <script setup>
-import { computed } from 'vue'
 import { Link } from '@inertiajs/vue3'
 import AppLayout from '@/Layouts/AppLayout.vue'
 import StatusBadge from '@/Components/StatusBadge.vue'
 import StatCard from '@/Components/StatCard.vue'
+import Pagination from '@/Components/Pagination.vue'
 
-const props = defineProps({ channels: Array })
-
-const totalHours = computed(() => props.channels.reduce((s, c) => s + c.dvr_hours, 0).toFixed(1))
-const totalMb    = computed(() => props.channels.reduce((s, c) => s + c.dvr_mb, 0).toFixed(0))
+const props = defineProps({ channels: Object, totals: Object })
 
 function formatDuration(s) {
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60)

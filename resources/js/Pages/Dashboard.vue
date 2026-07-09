@@ -85,7 +85,7 @@
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-800/50">
-                    <tr v-for="ch in liveChannels" :key="ch.id" class="hover:bg-slate-800/30 transition-colors">
+                    <tr v-for="ch in paginatedChannels" :key="ch.id" class="hover:bg-slate-800/30 transition-colors">
                         <td class="px-6 py-4">
                             <Link :href="route('channels.show', ch.id)" class="text-sm font-medium text-indigo-400 hover:text-indigo-300">
                                 {{ ch.name }}
@@ -124,7 +124,7 @@
                             </div>
                         </td>
                     </tr>
-                    <tr v-if="liveChannels.length === 0">
+                    <tr v-if="paginatedChannels.length === 0">
                         <td colspan="8" class="px-6 py-12 text-center text-slate-500 text-sm">
                             No channels yet.
                             <Link :href="route('channels.create')" class="text-indigo-400 hover:underline ml-1">Create one</Link>
@@ -132,6 +132,33 @@
                     </tr>
                 </tbody>
             </table>
+            <div v-if="totalPages > 1" class="px-6 py-4 border-t border-slate-800">
+                <div class="flex items-center justify-between">
+                    <span class="text-xs text-slate-500">
+                        Showing {{ (currentPage - 1) * perPage + 1 }}–{{ Math.min(currentPage * perPage, liveChannels.length) }} of {{ liveChannels.length }}
+                    </span>
+                    <div class="flex items-center gap-1">
+                        <button @click="currentPage = Math.max(1, currentPage - 1)" :disabled="currentPage <= 1"
+                                class="px-3 py-1.5 text-xs border border-slate-700 rounded-lg hover:border-slate-500 disabled:opacity-40 disabled:cursor-not-allowed text-slate-400 hover:text-white transition-colors">
+                            ← Prev
+                        </button>
+                        <template v-for="p in visiblePages" :key="p">
+                            <button v-if="p === '...'" disabled class="px-2 py-1.5 text-xs text-slate-600">…</button>
+                            <button v-else @click="currentPage = p"
+                                    class="px-3 py-1.5 text-xs border rounded-lg transition-colors"
+                                    :class="p === currentPage
+                                        ? 'bg-indigo-600 text-white border-indigo-600'
+                                        : 'text-slate-400 border-slate-700 hover:border-slate-500 hover:text-white'">
+                                {{ p }}
+                            </button>
+                        </template>
+                        <button @click="currentPage = Math.min(totalPages, currentPage + 1)" :disabled="currentPage >= totalPages"
+                                class="px-3 py-1.5 text-xs border border-slate-700 rounded-lg hover:border-slate-500 disabled:opacity-40 disabled:cursor-not-allowed text-slate-400 hover:text-white transition-colors">
+                            Next →
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Recent events -->
@@ -174,6 +201,27 @@ const props = defineProps({
 })
 
 const liveChannels = ref(props.channels.map(c => ({ ...c })))
+
+const currentPage = ref(1)
+const perPage = 20
+
+const totalPages = computed(() => Math.ceil(liveChannels.value.length / perPage))
+const paginatedChannels = computed(() => {
+    const start = (currentPage.value - 1) * perPage
+    return liveChannels.value.slice(start, start + perPage)
+})
+const visiblePages = computed(() => {
+    const total = totalPages.value
+    const cur = currentPage.value
+    if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
+    const pages = []
+    pages.push(1)
+    if (cur > 3) pages.push('...')
+    for (let i = Math.max(2, cur - 1); i <= Math.min(total - 1, cur + 1); i++) pages.push(i)
+    if (cur < total - 2) pages.push('...')
+    pages.push(total)
+    return pages
+})
 
 const counts = reactive({
     live:     props.stats.live,
