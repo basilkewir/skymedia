@@ -296,6 +296,12 @@ class FFmpegService
             // an atomic symlink swap (live ↔ fallback transition).
             '-max_reload',         '1000',
             '-m3u8_hold_counters', '1000',
+            // Reconnect when the local HLS playlist is briefly unavailable
+            // (segment rotation gap). Without these, ffmpeg gives up after
+            // the first failed segment fetch and exits with Broken pipe.
+            '-reconnect_at_eof',   '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '2',
             '-i',                  $playlistPath,
         ];
 
@@ -321,11 +327,15 @@ class FFmpegService
             $cmd = array_merge($cmd, $this->hlsOutputFlags($channel, $destination));
             $cmd[] = $pushUrl;
         } else {
-            // RTMP: add connection timeout so ffmpeg reconnects instead of hanging
+            // RTMP: buffer absorbs brief HLS input gaps so the connection stays
+            // alive during segment rotation. Without a buffer, a 200ms gap
+            // in the local HLS causes Broken pipe on the RTMP output.
             $cmd[] = '-f';
             $cmd[] = 'flv';
             $cmd[] = '-rtmp_live';
             $cmd[] = 'live';
+            $cmd[] = '-rtmp_buffer';
+            $cmd[] = '3000';
             $cmd[] = '-rtmp_conn';
             $cmd[] = 'O:1';
             $cmd[] = $pushUrl;
