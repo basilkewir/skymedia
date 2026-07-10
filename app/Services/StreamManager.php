@@ -729,7 +729,10 @@ class StreamManager
             '-i',                  $playlist,
             '-max_muxing_queue_size', '4096',
             '-c:v', 'copy',
-            '-c:a', 'copy',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-ar',  '48000',
+            '-ac',  '2',
             '-f',   'flv',
             '-rtmp_live', 'live',
             // LLOD v3 — low-latency flags for instant playback on nginx-rtmp

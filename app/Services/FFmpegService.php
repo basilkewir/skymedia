@@ -301,21 +301,31 @@ class FFmpegService
             '-i',                  $playlistPath,
         ];
 
-        // Push ALWAYS uses stream copy — branding is applied in PlayoutService
-        // on the fallback content, not in the push process. This means push
-        // never needs to restart for live↔fallback transitions.
+        // Push uses stream copy for video — branding is applied in PlayoutService.
+        // Audio is re-encoded to AAC for RTMP/SRT to guarantee compatibility with
+        // IPTV panels (Wowza, XUI ONE) which require AAC for HLS output.
         $cmd[] = '-max_muxing_queue_size';
         $cmd[] = '99999';
         $cmd[] = '-thread_queue_size';
         $cmd[] = '1024';
         $cmd[] = '-c:v';
         $cmd[] = 'copy';
-        $cmd[] = '-c:a';
-        $cmd[] = 'copy';
+
+        $audioBitrate = ((int) ($channel->push_audio_bitrate ?? 128)) . 'k';
+        $audioSamplerate = (string) (int) ($channel->push_audio_samplerate ?? 48000);
+        $audioChannels = (string) (int) ($channel->push_audio_channels ?? 2);
 
         $pushUrl = $destination ? $this->buildDestinationPushUrl($destination) : $this->pushUrl($channel);
 
         if ($protocol === 'srt') {
+            $cmd[] = '-c:a';
+            $cmd[] = 'aac';
+            $cmd[] = '-b:a';
+            $cmd[] = $audioBitrate;
+            $cmd[] = '-ar';
+            $cmd[] = $audioSamplerate;
+            $cmd[] = '-ac';
+            $cmd[] = $audioChannels;
             $cmd[] = '-f';
             $cmd[] = 'mpegts';
             // LLOD v3 — SRT low-latency flags.
@@ -329,11 +339,27 @@ class FFmpegService
             $cmd[] = '0';
             $cmd[] = $pushUrl;
         } elseif ($protocol === 'hls') {
+            $cmd[] = '-c:a';
+            $cmd[] = 'aac';
+            $cmd[] = '-b:a';
+            $cmd[] = $audioBitrate;
+            $cmd[] = '-ar';
+            $cmd[] = $audioSamplerate;
+            $cmd[] = '-ac';
+            $cmd[] = $audioChannels;
             $cmd = array_merge($cmd, $this->hlsOutputFlags($channel, $destination));
             $cmd[] = $pushUrl;
         } else {
             // RTMP LLOD v3: Low-Latency On-Demand optimisations for fast
             // Time-To-First-Frame on external IPTV panels / media servers.
+            $cmd[] = '-c:a';
+            $cmd[] = 'aac';
+            $cmd[] = '-b:a';
+            $cmd[] = $audioBitrate;
+            $cmd[] = '-ar';
+            $cmd[] = $audioSamplerate;
+            $cmd[] = '-ac';
+            $cmd[] = $audioChannels;
             $cmd[] = '-f';
             $cmd[] = 'flv';
             $cmd[] = '-rtmp_live';
