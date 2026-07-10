@@ -37,22 +37,26 @@ class FinalizeRecording implements ShouldQueue
         if ($recording->status !== 'recording') return;
 
         $filepath = $recording->filepath;
+        $filesize = file_exists($filepath) ? (int) filesize($filepath) : 0;
+
+        // Delete zero/near-zero byte files immediately — they are garbage
+        if ($filesize < 1024) {
+            @unlink($filepath);
+            $recording->delete();
+            Log::warning("[FinalizeRecording] {$channel->name}: deleted empty file {$filepath}");
+            return;
+        }
 
         $ffmpeg = app(FFmpegService::class);
 
         if (! $ffmpeg->isPlayableFile($filepath)) {
-            $recording->update([
-                'status'       => 'failed',
-                'completed_at' => now(),
-            ]);
-            $channel->update(['record_pid' => null, 'record_status' => 'idle']);
+            $recording->update(['status' => 'failed', 'completed_at' => now()]);
             @unlink($filepath);
             Log::warning("[FinalizeRecording] {$channel->name}: file not playable {$filepath}");
             return;
         }
 
         $duration = $this->probeDuration($filepath) ?? (float) $channel->record_duration;
-        $filesize = filesize($filepath);
 
         $recording->update([
             'status'       => 'completed',
@@ -62,10 +66,12 @@ class FinalizeRecording implements ShouldQueue
         ]);
 
         $channel->update([
-            'record_pid'              => null,
-            'record_status'           => 'idle',
             'fallback_recording_path' => $filepath,
         ]);
+
+        if ($filesize > 0) {
+            $channel->increment('storage_used_bytes', $filesize);
+        }
 
         // Prune old VODs — use channel's retention policy
         $keep = max(1, (int) ($channel->keep_recordings ?? 3));

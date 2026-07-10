@@ -23,6 +23,14 @@ use Illuminate\Support\Facades\Log;
  */
 class PushService
 {
+    // Per-channel push restart backoff state (in-memory, per daemon process)
+    private array $pushBackoff   = [];  // channel_id => backoff seconds
+    private array $pushLastRetry = [];  // channel_id => timestamp
+
+    // Per-destination backoff state
+    private array $destBackoff   = [];  // dest_id => backoff seconds
+    private array $destLastRetry = [];  // dest_id => timestamp
+
     public function __construct(
         protected FFmpegService $ffmpeg,
         protected PlayoutService $playout,
@@ -36,13 +44,11 @@ class PushService
     {
         if (empty($channel->push_url)) {
             Log::warning("[Push] {$channel->name}: push_url is empty");
-
             return false;
         }
 
-        // If already running, do nothing — push reads output.m3u8 which
-        // the playout module swaps underneath. Never restart push for
-        // playlist changes.
+        // Already running — push reads output.m3u8 which the playout module
+        // swaps atomically underneath. Never restart for playlist changes.
         if ($this->isRunning($channel)) {
             return true;
         }
@@ -50,7 +56,6 @@ class PushService
         $playlist = $this->playout->outputPlaylist($channel);
         if (! file_exists($playlist)) {
             Log::warning("[Push] {$channel->name}: playlist not ready ({$playlist})");
-
             return false;
         }
 
@@ -60,24 +65,27 @@ class PushService
         $pid = $this->launchPush($cmd, $channel, 'push');
 
         if ($pid === null) {
-            // Log the failing command and tail of the log for diagnostics
             $logTail = $this->ffmpeg->readLogTail($this->ffmpeg->logFile($channel, 'push'), 20);
-            $cmdStr = implode(' ', $cmd);
-            Log::error("[Push] {$channel->name} failed — command: {$cmdStr}");
+            Log::error("[Push] {$channel->name} failed — cmd: " . implode(' ', $cmd));
             if ($logTail && ! str_starts_with($logTail, '(log not found')) {
                 Log::error("[Push] {$channel->name} log tail:\n{$logTail}");
             }
-            $channel->update(['push_pid' => null, 'push_status' => 'error', 'last_error' => substr("ffmpeg failed to start\n{$logTail}", 0, 1000)]);
-
+            $channel->update([
+                'push_pid'    => null,
+                'push_status' => 'error',
+                'last_error'  => substr("ffmpeg failed to start\n{$logTail}", 0, 1000),
+            ]);
             return false;
         }
+
+        // Reset backoff on successful start
+        $this->pushBackoff[$channel->id]   = 2;
+        $this->pushLastRetry[$channel->id] = time();
 
         $channel->update(['push_pid' => $pid, 'push_status' => 'live']);
         Log::info("[Push] {$channel->name} started — PID {$pid} — reading {$playlist}");
 
-        // Start all enabled secondary destinations
         $this->startDestinations($channel, $playlist);
-
         return true;
     }
 
@@ -85,14 +93,80 @@ class PushService
     {
         $this->stopDestinations($channel);
         $this->stopPrimary($channel);
+        unset($this->pushBackoff[$channel->id], $this->pushLastRetry[$channel->id]);
         $channel->update(['push_status' => 'stopped']);
     }
 
     public function isRunning(Channel $channel): bool
     {
         $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'push'));
-
         return $pid > 0 && $this->ffmpeg->isRunning($pid);
+    }
+
+    /**
+     * Watchdog: called every monitor tick. Restarts push if it died,
+     * using exponential backoff (2s → 4s → 8s … capped at 30s).
+     * Auth failures are NOT retried until the operator fixes credentials.
+     * Returns true if push is running after this call.
+     */
+    public function ensureRunning(Channel $channel): bool
+    {
+        if (empty($channel->push_url)) return false;
+
+        if ($this->isRunning($channel)) {
+            // Running fine — reset backoff
+            $this->pushBackoff[$channel->id] = 2;
+            return true;
+        }
+
+        // Auth failure: do not retry automatically
+        $lastError = $channel->last_error ?? '';
+        if (str_contains($lastError, 'authfailed') || str_contains($lastError, 'AccessManager')) {
+            if ($channel->push_status !== 'error') {
+                $channel->update(['push_status' => 'error']);
+                Log::error("[Push] {$channel->name}: auth rejected — fix credentials to resume");
+            }
+            return false;
+        }
+
+        // Enforce backoff window
+        $backoff   = $this->pushBackoff[$channel->id]   ?? 2;
+        $lastRetry = $this->pushLastRetry[$channel->id] ?? 0;
+        if ((time() - $lastRetry) < $backoff) {
+            return false; // still in cooldown
+        }
+
+        // Attempt restart
+        $playlist = $this->playout->outputPlaylist($channel);
+        if (! file_exists($playlist)) {
+            return false;
+        }
+
+        Log::warning("[Push] {$channel->name}: not running — restarting (backoff={$backoff}s)");
+        $this->stopPrimary($channel);
+        $cmd = $this->ffmpeg->buildPushCommand($channel, $playlist);
+        $pid = $this->launchPush($cmd, $channel, 'push');
+
+        // Update backoff: double it, cap at 30s
+        $this->pushLastRetry[$channel->id] = time();
+        $this->pushBackoff[$channel->id]   = min(30, $backoff * 2);
+
+        if ($pid === null) {
+            $logTail = $this->ffmpeg->readLogTail($this->ffmpeg->logFile($channel, 'push'), 10);
+            $channel->update([
+                'push_pid'    => null,
+                'push_status' => 'error',
+                'last_error'  => substr("push restart failed\n{$logTail}", 0, 1000),
+            ]);
+            Log::error("[Push] {$channel->name}: restart failed (backoff now {$this->pushBackoff[$channel->id]}s)");
+            return false;
+        }
+
+        // Reset backoff on success
+        $this->pushBackoff[$channel->id] = 2;
+        $channel->update(['push_pid' => $pid, 'push_status' => 'live', 'last_error' => null]);
+        Log::info("[Push] {$channel->name}: restarted — PID {$pid}");
+        return true;
     }
 
     public function startDvrPlayback(Channel $channel): bool
@@ -100,12 +174,10 @@ class PushService
         $concat = $channel->dvr_directory . '/concat.txt';
         if (! file_exists($concat)) {
             Log::warning("[Push] {$channel->name}: concat.txt not available");
-
             return false;
         }
 
         $this->stopPrimary($channel);
-
         $pid = $this->launchPush(
             $this->ffmpeg->buildDvrPlaybackCommand($channel),
             $channel,
@@ -114,13 +186,11 @@ class PushService
 
         if ($pid === null) {
             $channel->update(['push_pid' => null, 'push_status' => 'error']);
-
             return false;
         }
 
         $channel->update(['push_pid' => $pid, 'push_status' => 'dvr_playback']);
         Log::info("[Push] {$channel->name} DVR playback started — PID {$pid}");
-
         return true;
     }
 
@@ -167,16 +237,32 @@ class PushService
     public function watchDestinations(Channel $channel, string $playlist): void
     {
         foreach ($channel->pushDestinations()->where('enabled', true)->get() as $dest) {
-            if ($dest->pid && ! $this->ffmpeg->isRunning((int) $dest->pid)) {
-                Log::warning("[Push] {$channel->name} → {$dest->name} died — restarting");
-                $cmd = $this->ffmpeg->buildPushCommand($channel, $playlist, $dest->protocol, $dest);
+            $pid = (int) ($dest->pid ?? 0);
+            if ($pid > 0 && $this->ffmpeg->isRunning($pid)) {
+                // Running fine — reset backoff
+                $this->destBackoff[$dest->id] = 2;
+                continue;
+            }
 
-                $pid = $this->launchPush($cmd, $channel, "push_dest_{$dest->id}");
-                if ($pid !== null) {
-                    $dest->update(['pid' => $pid, 'status' => 'live', 'last_active_at' => now()]);
-                } else {
-                    $dest->update(['status' => 'error']);
-                }
+            // Enforce per-destination backoff
+            $backoff   = $this->destBackoff[$dest->id]   ?? 2;
+            $lastRetry = $this->destLastRetry[$dest->id] ?? 0;
+            if ((time() - $lastRetry) < $backoff) {
+                continue;
+            }
+
+            Log::warning("[Push] {$channel->name} → {$dest->name}: died — restarting (backoff={$backoff}s)");
+            $cmd = $this->ffmpeg->buildPushCommand($channel, $playlist, $dest->protocol, $dest);
+            $newPid = $this->launchPush($cmd, $channel, "push_dest_{$dest->id}");
+
+            $this->destLastRetry[$dest->id] = time();
+            $this->destBackoff[$dest->id]   = min(30, $backoff * 2);
+
+            if ($newPid !== null) {
+                $this->destBackoff[$dest->id] = 2;
+                $dest->update(['pid' => $newPid, 'status' => 'live', 'last_active_at' => now()]);
+            } else {
+                $dest->update(['status' => 'error']);
             }
         }
     }

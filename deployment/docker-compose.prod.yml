@@ -35,7 +35,7 @@ services:
     restart: unless-stopped
     ports:
       - "1935:1935"
-      - "8081:8081"
+      - "8082:8081"
     volumes:
       - ./nginx-rtmp.conf:/etc/nginx/nginx.conf
 

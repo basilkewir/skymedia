@@ -48,59 +48,43 @@ class MonitorStreams extends Command
                         ));
                     }
 
-                    // Auto-recovery: if channel is offline and hasn't recovered
-                    // within 30 seconds, refresh ingest to try next source.
-                    // Pull channels: use refreshIngest() — push stays running.
-                    // Push-ingest channels: restart only if listener died.
+                    // Auto-recovery: if channel is offline, refresh ingest to try
+                    // next source. Cooldown is 15s to avoid hammering dead sources
+                    // while still recovering quickly when a source comes back.
                     $ch = $channel->fresh();
-                    if ($ch->stream_status === 'offline' && !$ch->source_live) {
-                        $lastLive = $ch->last_live_at ? $ch->last_live_at->timestamp : 0;
-                        $offlineDuration = time() - $lastLive;
-                        if ($offlineDuration >= 30) {
-                            $lastRestart = $this->lastAutoRestart[$ch->id] ?? 0;
-                            if ((time() - $lastRestart) < 30) {
-                                return; // Cooldown: don't restart more than once per 30s
-                            }
+                    if ($ch->stream_status === 'offline' && ! $ch->source_live) {
+                        $lastRestart = $this->lastAutoRestart[$ch->id] ?? 0;
+                        // Cooldown: 15s for pull channels, 20s for push-ingest
+                        $cooldown = $ch->isPushIngest() ? 20 : 15;
+                        if ((time() - $lastRestart) < $cooldown) {
+                            return;
+                        }
 
-                            try {
-                                if ($ch->isPushIngest()) {
-                                    // Managed push-ingest: only restart if the listener died.
-                                    $port = (int) ($ch->ingest_port ?? 0);
-                                    $portInUse = false;
-                                    if ($port > 0) {
-                                        $hexPort = strtoupper(dechex($port));
-                                        $tcpContent = @file_get_contents('/proc/net/tcp');
-                                        $portInUse = $tcpContent !== false && str_contains($tcpContent, ":{$hexPort} ");
-                                        if (! $portInUse) {
-                                            $tcp6Content = @file_get_contents('/proc/net/tcp6');
-                                            $portInUse = $tcp6Content !== false && str_contains($tcp6Content, ":{$hexPort} ");
-                                        }
-                                    }
-                                    if (! $portInUse) {
-                                        $manager->restartChannel($ch);
-                                        $this->lastAutoRestart[$ch->id] = time();
-                                        $this->line(sprintf(
-                                            '[%s] %-22s  AUTO-RESTART: listener restarted after %ds offline',
-                                            now()->format('H:i:s'),
-                                            mb_substr($ch->name, 0, 22),
-                                            $offlineDuration
-                                        ));
-                                    }
-                                } else {
-                                    // Pull channel: refresh ingest without stopping push.
-                                    // Tries next source in failover chain.
-                                    $manager->refreshIngest($ch);
+                        try {
+                            if ($ch->isPushIngest()) {
+                                // The loop wrapper keeps the listener alive automatically.
+                                // Only restart if the loop process itself has died.
+                                if (! $manager->isListenerLoopRunning($ch)) {
+                                    $manager->restartChannel($ch);
                                     $this->lastAutoRestart[$ch->id] = time();
                                     $this->line(sprintf(
-                                        '[%s] %-22s  AUTO-REFRESH: ingest refreshed after %ds offline',
+                                        '[%s] %-22s  AUTO-RESTART: listener loop restarted',
                                         now()->format('H:i:s'),
-                                        mb_substr($ch->name, 0, 22),
-                                        $offlineDuration
+                                        mb_substr($ch->name, 0, 22)
                                     ));
                                 }
-                            } catch (\Throwable $e) {
-                                Log::error("Auto-recovery failed for {$ch->name}: {$e->getMessage()}");
+                            } else {
+                                // Pull channel: refresh ingest without stopping push.
+                                $manager->refreshIngest($ch);
+                                $this->lastAutoRestart[$ch->id] = time();
+                                $this->line(sprintf(
+                                    '[%s] %-22s  AUTO-REFRESH: trying next source',
+                                    now()->format('H:i:s'),
+                                    mb_substr($ch->name, 0, 22)
+                                ));
                             }
+                        } catch (\Throwable $e) {
+                            Log::error("Auto-recovery failed for {$ch->name}: {$e->getMessage()}");
                         }
                     }
                 });

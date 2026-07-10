@@ -121,19 +121,29 @@ class IngestService
      */
     public function stopAllListeners(Channel $channel): int
     {
-        // Extract port from ingest_listen_url (e.g. rtmp://0.0.0.0:20001/live/...)
+        // Extract port from ingest_listen_url
         $url = $channel->ingest_listen_url ?? '';
         if (preg_match('/:(\d+)\//', $url, $m)) {
             $port = $m[1];
         } else {
-            // Fallback: derive port from channel ID
             $port = 20000 + $channel->id;
         }
 
-        // Kill all ffmpeg processes referencing this port as a listener.
-        // Use grep -F for literal string match (avoids regex escaping issues).
+        // Write the sentinel stop file FIRST so the loop does not restart
+        // ffmpeg after we kill it.
+        $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
+        @touch($pidFile . '.stop');
+
+        // Kill the loop process (shell wrapper) and its ffmpeg child
+        $loopPid = $this->ffmpeg->readPid($pidFile);
+        if ($loopPid > 0) {
+            exec("pkill -KILL -P {$loopPid} 2>/dev/null"); // kill ffmpeg child first
+            exec("kill -KILL {$loopPid} 2>/dev/null");     // then kill the loop
+        }
+
+        // Kill any remaining ffmpeg processes holding this port
         $count = 0;
-        exec("ps aux | grep -F 'listen' | grep -F '0.0.0.0:{$port}' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
+        exec("ps aux | grep -F '0.0.0.0:{$port}' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
         foreach ($lines as $line) {
             $pid = (int) trim($line);
             if ($pid > 0) {
@@ -142,21 +152,14 @@ class IngestService
             }
         }
 
-        // Also kill by PID file entry (belt and suspenders)
-        $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
-        $pid     = $this->ffmpeg->readPid($pidFile);
-        if ($pid > 0) {
-            exec("kill -KILL {$pid} 2>/dev/null");
-            $this->ffmpeg->clearPid($pidFile);
+        $this->ffmpeg->clearPid($pidFile); // also removes .stop file
+        $channel->update(['pid' => null]);
+
+        if ($count > 0 || $loopPid > 0) {
+            Log::info("[Ingest] {$channel->name} stopped listener loop (PID {$loopPid}) + {$count} orphan(s) on port {$port}");
         }
 
-        if ($count > 0) {
-            Log::info("[Ingest] {$channel->name} killed {$count} orphan listener(s) on port {$port}");
-        }
-
-        // Brief pause to let the kernel release the port
-        usleep(200_000);
-
+        usleep(300_000); // 300ms for kernel to release port
         return $count;
     }
 
@@ -167,28 +170,15 @@ class IngestService
             return true;
         }
 
-        // For push-ingest channels the PID file may be missing (e.g. after a
-        // container restart) while an ffmpeg listener still holds the port.
-        // Docker's bridge networking hides sockets from ss inside the container,
-        // so we parse /proc/net/tcp directly to detect LISTEN sockets.
+        // For push-ingest channels the loop wrapper may have restarted ffmpeg
+        // with a new child PID. Check if the port is still bound.
         if ($channel->isPushIngest() && $channel->ingest_port) {
             $port = (int) $channel->ingest_port;
             $hexPort = strtoupper(dechex($port));
-            // state 0A = LISTEN
-            $tcpContent = @file_get_contents('/proc/net/tcp');
-            if ($tcpContent !== false && str_contains($tcpContent, ":{$hexPort} ")) {
-                // Port is occupied — try to re-read PID file (it may have been
-                // written between the first check and now).
-                $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'ingest'));
-                if ($pid > 0 && $this->ffmpeg->isRunning($pid)) {
-                    return true;
-                }
-                // PID file missing but port is occupied — assume it's ours
-                return true;
-            }
-            // Also check tcp6 for IPv6 listeners
+            $tcpContent  = @file_get_contents('/proc/net/tcp');
             $tcp6Content = @file_get_contents('/proc/net/tcp6');
-            if ($tcp6Content !== false && str_contains($tcp6Content, ":{$hexPort} ")) {
+            if (($tcpContent  !== false && str_contains($tcpContent,  ":{$hexPort} "))
+             || ($tcp6Content !== false && str_contains($tcp6Content, ":{$hexPort} "))) {
                 return true;
             }
         }
