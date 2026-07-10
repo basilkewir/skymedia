@@ -724,7 +724,6 @@ class StreamManager
             '-live_start_index',   '-3',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
-            // Survive atomic symlink swaps (live ↔ fallback) without dying
             '-max_reload',         '1000',
             '-m3u8_hold_counters', '1000',
             '-i',                  $playlist,
@@ -733,6 +732,12 @@ class StreamManager
             '-c:a', 'copy',
             '-f',   'flv',
             '-rtmp_live', 'live',
+            // LLOD v3 — low-latency flags for instant playback on nginx-rtmp
+            '-flvflags',           'no_duration_filesize',
+            '-flags',              '+global_header',
+            '-bsf:v',              'h264_mp4toannexb',
+            '-force_key_frames',   'expr:gte(t,n_forced*2)',
+            '-bf',                 '0',
             $rtmpUrl,
         ];
 

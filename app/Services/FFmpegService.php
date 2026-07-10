@@ -241,22 +241,24 @@ class FFmpegService
             ],
             $this->inputFlags($channel),
             [
-                '-c:v', 'copy',
-                '-c:a', 'copy',
-                '-f',                    'hls',
-                '-hls_time',             (string) max(1, (int) $channel->segment_duration),
-                '-hls_list_size',        $dvrEnabled ? '15' : '10',
-                '-hls_flags',            'delete_segments+omit_endlist',
-                '-hls_delete_threshold', $dvrEnabled ? '4' : '3',
-                '-hls_segment_type',     'mpegts',
-                '-hls_segment_filename', $segPattern,
-                '-hls_allow_cache',      '0',
-                // Epoch-derived numbering prevents sequence rollback when
-                // switching between independently generated live/VOD HLS.
-                '-hls_start_number_source', 'epoch',
-                // Increase muxing queue to handle bursts without dropping packets
-                '-max_muxing_queue_size', '4096',
-                $m3u8,
+            '-c:v', 'copy',
+            '-c:a', 'copy',
+            '-f',                    'hls',
+            '-hls_time',             (string) max(1, (int) $channel->segment_duration),
+            '-hls_list_size',        $dvrEnabled ? '15' : '10',
+            '-hls_flags',            'delete_segments+omit_endlist+append_list',
+            '-hls_delete_threshold', $dvrEnabled ? '4' : '3',
+            '-hls_segment_type',     'mpegts',
+            '-hls_segment_filename', $segPattern,
+            '-hls_allow_cache',      '0',
+            '-hls_start_number_source', 'epoch',
+            '-max_muxing_queue_size', '4096',
+            // LLOD v3 — force keyframes every 2 seconds for clean
+            // segment splits and instant playback on the player side.
+            '-force_key_frames',     'expr:gte(t,n_forced*2)',
+            // LLOD v3 — skip B-frames to reduce decoder latency.
+            '-bf',                   '0',
+            $m3u8,
             ]
         );
     }
@@ -316,14 +318,22 @@ class FFmpegService
         if ($protocol === 'srt') {
             $cmd[] = '-f';
             $cmd[] = 'mpegts';
+            // LLOD v3 — SRT low-latency flags.
+            $cmd[] = '-flags';
+            $cmd[] = '+global_header';
+            $cmd[] = '-bsf:v';
+            $cmd[] = 'h264_mp4toannexb';
+            $cmd[] = '-force_key_frames';
+            $cmd[] = 'expr:gte(t,n_forced*2)';
+            $cmd[] = '-bf';
+            $cmd[] = '0';
             $cmd[] = $pushUrl;
         } elseif ($protocol === 'hls') {
             $cmd = array_merge($cmd, $this->hlsOutputFlags($channel, $destination));
             $cmd[] = $pushUrl;
         } else {
-            // RTMP: buffer absorbs brief HLS input gaps so the connection stays
-            // alive during segment rotation. Without a buffer, a 200ms gap
-            // in the local HLS causes Broken pipe on the RTMP output.
+            // RTMP LLOD v3: Low-Latency On-Demand optimisations for fast
+            // Time-To-First-Frame on external IPTV panels / media servers.
             $cmd[] = '-f';
             $cmd[] = 'flv';
             $cmd[] = '-rtmp_live';
@@ -332,6 +342,22 @@ class FFmpegService
             $cmd[] = '3000';
             $cmd[] = '-rtmp_conn';
             $cmd[] = 'O:1';
+            // LLOD v3 — instant handshake: skip FLV duration recalculation
+            // so the receiving server gets the stream header immediately.
+            $cmd[] = '-flvflags';
+            $cmd[] = 'no_duration_filesize';
+            // LLOD v3 — store codec config in the stream header so the
+            // player can decode the first frame without extra requests.
+            $cmd[] = '-flags';
+            $cmd[] = '+global_header';
+            // LLOD v3 — Annex B bitstream filter ensures correct TS framing
+            // inside FLV, preventing buffering delays on the receiving end.
+            $cmd[] = '-bsf:v';
+            $cmd[] = 'h264_mp4toannexb';
+            // LLOD v3 — force keyframes every 2 seconds so the receiving
+            // server can split segments cleanly without transcoding.
+            $cmd[] = '-force_key_frames';
+            $cmd[] = 'expr:gte(t,n_forced*2)';
             $cmd[] = $pushUrl;
         }
 
@@ -397,7 +423,14 @@ class FFmpegService
             $this->videoEncodeFlags($channel),
             $this->audioEncodeFlags($channel),
             ['-f', $channel->push_protocol === 'srt' ? 'mpegts' : 'flv'],
-            $channel->push_protocol === 'rtmp' ? ['-flvflags', 'no_duration_filesize'] : [],
+            $channel->push_protocol === 'rtmp' ? [
+                // LLOD v3 — instant handshake for the receiving server.
+                '-flvflags', 'no_duration_filesize',
+                '-flags',    '+global_header',
+                '-bsf:v',    'h264_mp4toannexb',
+                '-force_key_frames', 'expr:gte(t,n_forced*2)',
+                '-bf',       '0',
+            ] : [],
             [$this->pushUrl($channel)]
         );
     }
@@ -1129,6 +1162,11 @@ class FFmpegService
             '-hls_segment_type',     'mpegts',
             '-hls_segment_filename', $segPattern,
             '-hls_allow_cache',      '0',
+            // LLOD v3 — force keyframes every 2 seconds for instant
+            // playback and clean segment splits on the player side.
+            '-force_key_frames',     'expr:gte(t,n_forced*2)',
+            // LLOD v3 — skip B-frames to reduce decoder latency.
+            '-bf',                   '0',
         ];
 
         // If the target is an HTTP(S) endpoint, tell ffmpeg to PUT the files.

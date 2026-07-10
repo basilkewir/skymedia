@@ -421,8 +421,6 @@ class PlayoutService
         $hasBranding = ! empty($branding['video']);
 
         if ($useCopy && ! $hasBranding) {
-            // Stream-copy concat: preserves original encoding and loops the
-            // playlist forever via -stream_loop -1 so the VOD never ends.
             return [
                 $this->ffmpeg->getBin(),
                 '-y', '-loglevel', 'warning', '-stats',
@@ -442,6 +440,11 @@ class PlayoutService
                 '-hls_segment_filename', $segPattern,
                 '-hls_allow_cache',      '0',
                 '-hls_start_number_source', 'epoch',
+                // LLOD v3 — force keyframes every 2 seconds for instant
+                // playback and clean segment splits on the player side.
+                '-force_key_frames',     'expr:gte(t,n_forced*2)',
+                // LLOD v3 — skip B-frames to reduce decoder latency.
+                '-bf',                   '0',
                 $m3u8Out,
             ];
         }
@@ -477,6 +480,11 @@ class PlayoutService
             '-hls_segment_filename', $segPattern,
             '-hls_allow_cache',      '0',
             '-hls_start_number_source', 'epoch',
+            // LLOD v3 — force keyframes every 2 seconds for instant
+            // playback and clean segment splits on the player side.
+            '-force_key_frames',     'expr:gte(t,n_forced*2)',
+            // LLOD v3 — skip B-frames to reduce decoder latency.
+            '-bf',                   '0',
             $m3u8Out,
         ]);
 
