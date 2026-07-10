@@ -12,13 +12,13 @@ use Illuminate\Support\Facades\Log;
 class StreamManager
 {
     public function __construct(
-        protected FFmpegService    $ffmpeg,
-        protected IngestService    $ingest,
-        protected PlayoutService   $playout,
-        protected PushService      $push,
-        protected DVRService       $dvr,
+        protected FFmpegService $ffmpeg,
+        protected IngestService $ingest,
+        protected PlayoutService $playout,
+        protected PushService $push,
+        protected DVRService $dvr,
         protected RecordingService $recording,
-        protected AlertService     $alert,
+        protected AlertService $alert,
     ) {}
 
     // ═══════════════════════════════════════════════════════════════════
@@ -32,7 +32,7 @@ class StreamManager
 
         try {
             $dvrDir = $channel->dvr_directory;
-            if (!is_dir($dvrDir)) {
+            if (! is_dir($dvrDir)) {
                 mkdir($dvrDir, 0755, true);
             }
 
@@ -42,7 +42,7 @@ class StreamManager
             // 2. Start the fallback loop as warm standby (non-blocking).
             //    This ensures output.m3u8 → playout_X.m3u8 is always ready
             //    the instant the source goes offline.
-            if (!$channel->isPushIngest()) {
+            if (! $channel->isPushIngest()) {
                 try {
                     $this->playout->ensureFallbackRunning($channel);
                     $this->log($channel, 'info', 'fallback_standyby',
@@ -77,15 +77,17 @@ class StreamManager
             $status = $channel->isPushIngest() ? 'starting' : 'live';
             $channel->update(['stream_status' => $status]);
             event(new StreamStatusChanged($channel, $status));
+
             return true;
 
         } catch (\Throwable $e) {
             $channel->update([
                 'stream_status' => 'error',
-                'last_error'    => substr($e->getMessage(), 0, 1000),
+                'last_error' => substr($e->getMessage(), 0, 1000),
             ]);
             $this->log($channel, 'error', 'stream_start_failed', $e->getMessage());
             Log::error("[Channel {$channel->id}] startChannel: {$e->getMessage()}");
+
             return false;
         }
     }
@@ -97,7 +99,9 @@ class StreamManager
      */
     private function startPushAlways(Channel $channel): void
     {
-        if (empty($channel->push_url)) return;
+        if (empty($channel->push_url)) {
+            return;
+        }
 
         $lastError = $channel->last_error ?? '';
         if (str_contains($lastError, 'authfailed') || str_contains($lastError, 'AccessManager')) {
@@ -106,21 +110,22 @@ class StreamManager
                 $this->log($channel, 'error', 'push_auth_failed',
                     'Push destination rejected credentials — will not retry until fixed');
             }
+
             return;
         }
 
-        // Try to start push. If the playlist isn't ready yet, the push
-        // watchdog in onSourceStillLive/onSourceStillDown will retry.
         $playlist = $this->playout->outputPlaylist($channel);
-        if (file_exists($playlist)) {
-            if ($this->push->start($channel)) {
-                $channel->update(['push_status' => 'live']);
-                $this->log($channel, 'info', 'push_started', 'Push started — 24/7 mode');
-            } else {
-                $reason = $channel->fresh()->last_error ?: 'Unknown — check push log';
-                $channel->update(['push_status' => 'error', 'last_error' => $reason]);
-                $this->log($channel, 'error', 'push_failed', "Push failed: {$reason}");
-            }
+        if (! file_exists($playlist)) {
+            return;
+        }
+
+        if ($this->push->start($channel)) {
+            $channel->update(['push_status' => 'live']);
+            $this->log($channel, 'info', 'push_started', 'Push started — 24/7 mode');
+        } else {
+            $reason = $channel->fresh()->last_error ?: 'Unknown — check push log';
+            $channel->update(['push_status' => 'error', 'last_error' => $reason]);
+            $this->log($channel, 'error', 'push_failed', "Push failed: {$reason}");
         }
     }
 
@@ -137,21 +142,22 @@ class StreamManager
         }
 
         $channel->update([
-            'pid'            => null,
-            'playout_pid'    => null,
-            'push_pid'       => null,
-            'record_pid'     => null,
-            'stream_status'  => 'stopped',
+            'pid' => null,
+            'playout_pid' => null,
+            'push_pid' => null,
+            'record_pid' => null,
+            'stream_status' => 'stopped',
             'playout_status' => 'stopped',
-            'push_status'    => 'stopped',
-            'dvr_status'     => 'idle',
-            'record_status'  => 'idle',
-            'source_live'    => false,
-            'is_active'      => false,
+            'push_status' => 'stopped',
+            'dvr_status' => 'idle',
+            'record_status' => 'idle',
+            'source_live' => false,
+            'is_active' => false,
         ]);
 
         $this->log($channel, 'info', 'channel_stopped', 'Channel stopped by operator');
         event(new StreamStatusChanged($channel, 'stopped'));
+
         return true;
     }
 
@@ -165,6 +171,7 @@ class StreamManager
             $reason = $ch->last_error ?: 'Unknown — check push log for details';
             $this->log($channel, 'error', 'push_failed', "Push failed: {$reason}");
         }
+
         return $ok;
     }
 
@@ -172,6 +179,7 @@ class StreamManager
     {
         $this->push->stop($channel);
         $this->log($channel, 'info', 'push_stopped', 'Push stopped by operator');
+
         return true;
     }
 
@@ -179,6 +187,7 @@ class StreamManager
     {
         $this->stopChannel($channel);
         $channel->update(['is_active' => true]);
+
         return $this->startChannel($channel->fresh());
     }
 
@@ -223,7 +232,9 @@ class StreamManager
                         $start = time();
                         $maxWait = max(10, (int) $channel->segment_duration * 3 + 2);
                         while (time() - $start < $maxWait) {
-                            if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) break;
+                            if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) {
+                                break;
+                            }
                             usleep(250_000);
                         }
 
@@ -232,9 +243,9 @@ class StreamManager
                             $channel->activateSource($next);
                             $this->playout->switchToLive($channel->fresh());
                             $channel->update([
-                                'source_live'    => true,
-                                'last_live_at'   => now(),
-                                'stream_status'  => 'live',
+                                'source_live' => true,
+                                'last_live_at' => now(),
+                                'stream_status' => 'live',
                                 'playout_status' => 'live',
                             ]);
                             $channel->resetRetries();
@@ -242,6 +253,7 @@ class StreamManager
                             event(new StreamStatusChanged($channel, 'live'));
                             $this->log($channel, 'info', 'refresh_recovered',
                                 'Ingest refreshed — source recovered');
+
                             return true;
                         }
                         // live.m3u8 not ready — this source is also dead, revert
@@ -263,8 +275,7 @@ class StreamManager
                 $this->log($channel, 'info', 'all_sources_exhausted',
                     'Refresh: all backup sources exhausted — staying in fallback');
                 // Reset current_source_id so next refresh cycles from priority 1
-                $channel->update(['current_source_id' => null, 'source_url' =>
-                    $channel->channelSources()->where('is_active', true)->orderBy('priority')->first()?->source_url
+                $channel->update(['current_source_id' => null, 'source_url' => $channel->channelSources()->where('is_active', true)->orderBy('priority')->first()?->source_url
                     ?? $channel->source_url]);
             } else {
                 // No multiple sources — try restarting the same source
@@ -273,16 +284,18 @@ class StreamManager
                     $start = time();
                     $maxWait = max(10, (int) $channel->segment_duration * 3 + 2);
                     while (time() - $start < $maxWait) {
-                        if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) break;
+                        if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) {
+                            break;
+                        }
                         usleep(250_000);
                     }
 
                     if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) {
                         $this->playout->switchToLive($channel->fresh());
                         $channel->update([
-                            'source_live'    => true,
-                            'last_live_at'   => now(),
-                            'stream_status'  => 'live',
+                            'source_live' => true,
+                            'last_live_at' => now(),
+                            'stream_status' => 'live',
                             'playout_status' => 'live',
                         ]);
                         $channel->resetRetries();
@@ -290,6 +303,7 @@ class StreamManager
                         event(new StreamStatusChanged($channel, 'live'));
                         $this->log($channel, 'info', 'refresh_recovered',
                             'Ingest refreshed — source recovered');
+
                         return true;
                     }
                     $this->log($channel, 'warning', 'source_refresh_no_segments',
@@ -306,6 +320,7 @@ class StreamManager
         } catch (\Throwable $e) {
             $this->log($channel, 'error', 'refresh_error', $e->getMessage());
             Log::error("[Channel {$channel->id}] refreshIngest: {$e->getMessage()}");
+
             return false;
         }
     }
@@ -314,7 +329,7 @@ class StreamManager
     {
         Channel::where('is_active', true)
             ->whereIn('stream_status', ['idle', 'stopped', 'error', 'offline'])
-            ->each(fn(Channel $c) => $this->startChannel($c));
+            ->each(fn (Channel $c) => $this->startChannel($c));
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -323,7 +338,9 @@ class StreamManager
 
     public function monitorChannel(Channel $channel): void
     {
-        if (!$channel->is_active) return;
+        if (! $channel->is_active) {
+            return;
+        }
 
         $channel->update(['last_check_at' => now()]);
 
@@ -351,9 +368,9 @@ class StreamManager
             ? ($ingestRunning && $recentSegments && $liveM3u8Fresh)
             : ($skipProbe ? ($ingestRunning && $recentSegments) : $probeHealthy);
 
-        if ($sourceRecovered && !$channel->source_live) {
+        if ($sourceRecovered && ! $channel->source_live) {
             $this->onSourceRecovered($channel->fresh());
-        } elseif (!$sourceLive && $channel->source_live) {
+        } elseif (! $sourceLive && $channel->source_live) {
             $this->onSourceLost($channel->fresh());
         } elseif ($sourceLive) {
             $this->onSourceStillLive($channel->fresh());
@@ -368,9 +385,9 @@ class StreamManager
     //  24/7 PUSH RULES:
     //  - Push NEVER stops once started (except operator manual stop)
     //  - Push reads output.m3u8 — atomic symlink swap handles live↔fallback
+    //  - Push always uses -c:v copy (no branding) — no restart for transitions
+    //  - Branding (logo/ticker) is baked into fallback content by PlayoutService
     //  - Fallback loop runs as warm standby — always ready for instant swap
-    //  - If branding overlay changes between live/fallback, push MUST restart
-    //    (different ffmpeg filter chain for branded live vs branded fallback)
     // ═══════════════════════════════════════════════════════════════════
 
     protected function onSourceLost(Channel $channel): void
@@ -378,42 +395,31 @@ class StreamManager
         $this->log($channel, 'warning', 'source_lost',
             'Source offline — switching playout to fallback');
 
-        $this->recording->stop($channel);
+        // Recording reads from live.m3u8. When source drops, the recording
+        // ffmpeg will fail naturally (no more segments). Do NOT proactively
+        // stop it — let it die on its own to record as much as possible.
+        // Stale recording detection in onSourceStillDown handles cleanup.
 
         if ($channel->isPushIngest()) {
-            // Push ingest (listener): with -listen 1, the ffmpeg process stays
-            // alive after the encoder disconnects (waiting for -timeout 120s).
-            // During that window it holds the port but won't accept new
-            // connections — causing vMix "Failed to connect to server".
-            // Kill ALL orphan listeners on this port, then start a fresh one.
-            // Skip segment cleaning to avoid breaking the push process that
-            // reads from output.m3u8 → live.m3u8.
-            try {
-                $this->ingest->stopAllListeners($channel);
-                $this->ingest->start($channel, cleanSegments: false);
-                $this->log($channel, 'info', 'listener_restarted',
-                    'RTMP listener force-restarted for reconnection');
-            } catch (\Throwable $e) {
-                $this->log($channel, 'error', 'listener_restart_failed',
-                    'Failed to restart listener: ' . $e->getMessage());
-            }
+            // Push ingest (loop wrapper): the shell loop keeps ffmpeg restarting
+            // automatically after the encoder disconnects — do NOT kill and
+            // restart the loop here. Just update state and let the loop handle it.
+            // Killing the loop is what caused "Failed to connect to server".
             $channel->update([
-                'source_live'   => false,
-                'record_pid'    => null,
+                'source_live' => false,
                 'stream_status' => 'offline',
-                'dvr_status'    => 'idle',
-                'record_status' => 'idle',
+                'dvr_status' => 'idle',
             ]);
+            $this->log($channel, 'info', 'listener_waiting',
+                'Encoder disconnected — listener loop waiting for reconnect');
         } else {
             // Pull ingest: stop the failed source.
             $this->ingest->stop($channel);
             $channel->update([
-                'source_live'   => false,
-                'pid'           => null,
-                'record_pid'    => null,
+                'source_live' => false,
+                'pid' => null,
                 'stream_status' => 'offline',
-                'dvr_status'    => 'idle',
-                'record_status' => 'idle',
+                'dvr_status' => 'idle',
             ]);
 
             // ── Multi-source failover: try ALL remaining sources before VOD ──
@@ -424,7 +430,8 @@ class StreamManager
                         $this->ingest->start($channel);
                         $this->log($channel, 'info', 'source_switched',
                             "Switched to backup source [{$next->id}]: {$next->source_url}");
-                        $this->alert->sendOfflineAlert($channel->fresh(), "Primary source down — using backup", $this->playout->hasFallback($channel));
+                        $this->alert->sendOfflineAlert($channel->fresh(), 'Primary source down — using backup', $this->playout->hasFallback($channel));
+
                         return;
                     } catch (\Throwable $e) {
                         $this->log($channel, 'error', 'source_switch_failed',
@@ -447,13 +454,8 @@ class StreamManager
             $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
             event(new StreamStatusChanged($channel, 'offline'));
 
-            // Branding overlay uses different ffmpeg flags for live vs fallback.
-            // Must restart push so it picks up the correct filter chain.
-            if ($this->hasBranding($channel->fresh())) {
-                $this->push->stop($channel->fresh());
-                $this->startPushAlways($channel->fresh());
-            }
-            // Without branding: push keeps running — symlink swap is sufficient.
+            // Branding is now baked into fallback content at the playout level.
+            // Push always uses -c:v copy — no restart needed for transitions.
         } else {
             $this->log($channel, 'error', 'fallback_failed', 'Fallback playout failed to start');
             event(new StreamStatusChanged($channel, 'offline'));
@@ -462,13 +464,14 @@ class StreamManager
 
     protected function onSourceRecovered(Channel $channel): void
     {
-        if (!$channel->isPushIngest()) {
+        if (! $channel->isPushIngest()) {
             // Pull ingest: restart to pick up the new stream
             $this->ingest->stop($channel);
             try {
                 $this->ingest->start($channel);
             } catch (\Throwable $e) {
                 $this->log($channel, 'error', 'ingest_restart_failed', $e->getMessage());
+
                 return;
             }
         } else {
@@ -483,13 +486,16 @@ class StreamManager
         $start = time();
         $maxWait = max(10, (int) $channel->segment_duration * 3 + 2);
         while (time() - $start < $maxWait) {
-            if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) break;
+            if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) {
+                break;
+            }
             usleep(250_000);
         }
 
         if (! $this->ffmpeg->liveHlsReady($channel->fresh(), 2)) {
             $this->log($channel, 'warning', 'live_playout_not_ready',
                 'Live source returned but its playback buffer is not ready; fallback remains on air');
+
             return;
         }
 
@@ -497,13 +503,8 @@ class StreamManager
         // Fallback loop stays running in the background for instant switch-back.
         $this->playout->switchToLive($channel->fresh());
 
-        // Branding overlay uses different ffmpeg flags for live vs fallback.
-        // Must restart push so it picks up the correct filter chain.
-        if ($this->hasBranding($channel->fresh())) {
-            $this->push->stop($channel->fresh());
-            $this->startPushAlways($channel->fresh());
-        }
-        // Without branding: push keeps running — symlink swap is sufficient.
+        // Branding is now baked into fallback content at the playout level.
+        // Push always uses -c:v copy — no restart needed for transitions.
 
         $channel->update([
             'source_live' => true, 'last_live_at' => now(),
@@ -547,44 +548,32 @@ class StreamManager
         }
 
         // ── Ingest watchdog ──────────────────────────────────────────────
-        if (!$channel->isPushIngest() && !$this->ingest->isRunning($channel)) {
+        if (! $channel->isPushIngest() && ! $this->ingest->isRunning($channel)) {
             $this->log($channel, 'warning', 'ingest_died', 'Ingest died — restarting');
             try {
                 $this->ingest->start($channel);
             } catch (\Throwable $e) {
                 $this->log($channel, 'error', 'ingest_restart_failed', $e->getMessage());
+
                 return;
             }
         }
 
         // ── Playout: always make sure output.m3u8 points to live.m3u8 ─
-        if (!$this->playout->isLiveOutput($channel) && $this->ffmpeg->liveHlsReady($channel, 2)) {
+        if (! $this->playout->isLiveOutput($channel) && $this->ffmpeg->liveHlsReady($channel, 2)) {
             $fresh = $channel->fresh();
             $this->playout->switchToLive($fresh);
-            if ($this->hasBranding($fresh)) {
-                $this->push->stop($fresh);
-                $this->startPushAlways($fresh);
-            }
+            // Branding is now baked into fallback content — no push restart needed
             $this->log($channel, 'info', 'playout_forced_live',
                 'output.m3u8 was not pointing to live — corrected');
         }
 
         // ── Push watchdog: push MUST always be running 24/7 ─────────────
-        if (!$this->push->isRunning($channel)) {
-            $lastError = $channel->last_error ?? '';
-            if (str_contains($lastError, 'authfailed') || str_contains($lastError, 'AccessManager')) {
-                if ($channel->push_status !== 'error') {
-                    $channel->update(['push_status' => 'error']);
-                    $this->log($channel, 'error', 'push_auth_failed',
-                        'Push destination rejected credentials — will not retry until fixed');
-                }
-            } else {
-                $wasPreviouslyLive = $channel->push_status === 'live';
-                $this->log($channel, 'warning',
-                    $wasPreviouslyLive ? 'push_died' : 'push_not_running',
-                    $wasPreviouslyLive ? 'Push died — restarting (24/7)' : 'Push not running — starting');
-                $this->startPushAlways($channel->fresh());
-                if ($this->push->isRunning($channel->fresh())) {
+        if (! empty($channel->push_url)) {
+            $wasRunning = $channel->push_status === 'live';
+            if ($this->push->ensureRunning($channel->fresh())) {
+                if (! $wasRunning) {
+                    $this->log($channel, 'info', 'push_restarted', 'Push restarted by watchdog (24/7)');
                     $channel->resetRetries();
                 }
             }
@@ -602,7 +591,7 @@ class StreamManager
         }
 
         // ── Fallback loop warm standby: keep alive for instant failover ──
-        if (!$channel->isPushIngest() && !$this->playout->isFallbackRunning($channel)) {
+        if (! $channel->isPushIngest() && ! $this->playout->isFallbackRunning($channel)) {
             try {
                 $this->playout->ensureFallbackRunning($channel);
                 $this->log($channel, 'info', 'fallback_standyby_restored',
@@ -629,20 +618,31 @@ class StreamManager
 
     protected function onSourceStillDown(Channel $channel): void
     {
-        // Stop any stale recording from a previous onSourceStillLive cycle.
-        if ($this->recording->isRunning($channel)) {
+        // Detect stale recording: ffmpeg process running but output file not
+        // growing (source dropped, live.m3u8 stopped getting segments).
+        if ($this->recording->isStale($channel)) {
+            $this->log($channel, 'warning', 'recording_stale',
+                'Recording file stopped growing — stopping stale recording');
             $this->recording->stop($channel);
+            $channel->refresh();
         }
 
         // Keep RTMP/SRT listeners available while the publisher is offline.
-        if ($channel->isPushIngest() && ! $this->ingest->isRunning($channel)) {
-            try {
-                $this->ingest->stopAllListeners($channel);
-                $this->ingest->start($channel, cleanSegments: false);
-                $this->log($channel, 'info', 'listener_restarted_in_stilldown',
-                    'Listener was dead — restarted');
-            } catch (\Throwable $e) {
-                $this->log($channel, 'error', 'ingest_listener_restart_failed', $e->getMessage());
+        // The loop wrapper restarts ffmpeg automatically — only restart the
+        // loop itself if the loop process has completely died (not just because
+        // the encoder disconnected, which is normal and handled by the loop).
+        if ($channel->isPushIngest()) {
+            $loopPid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'ingest'));
+            $loopDead = ! ($loopPid > 0 && $this->ffmpeg->isRunning($loopPid));
+            if ($loopDead && ! $this->ingest->isRunning($channel)) {
+                try {
+                    $this->ingest->stopAllListeners($channel);
+                    $this->ingest->start($channel, cleanSegments: false);
+                    $this->log($channel, 'info', 'listener_loop_restarted',
+                        'Listener loop was dead — restarted');
+                } catch (\Throwable $e) {
+                    $this->log($channel, 'error', 'ingest_listener_restart_failed', $e->getMessage());
+                }
             }
         }
 
@@ -652,41 +652,28 @@ class StreamManager
                 $channel->update(['playout_status' => 'fallback', 'stream_status' => 'offline']);
                 $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
                 event(new StreamStatusChanged($channel, 'offline'));
-                if ($this->hasBranding($channel->fresh())) {
-                    $this->push->stop($channel->fresh());
-                    $this->startPushAlways($channel->fresh());
-                }
+                // Branding is now baked into fallback content — no push restart needed
             }
         }
 
         // ── Fallback watchdog: restart loop if it died (NO retry limit) ──
-        if ($channel->playout_status === 'fallback' && !$this->playout->isFallbackRunning($channel)) {
+        if ($channel->playout_status === 'fallback' && ! $this->playout->isFallbackRunning($channel)) {
             $this->log($channel, 'warning', 'fallback_restart', 'Fallback loop died — restarting');
             if ($this->playout->switchToFallback($channel)) {
                 $channel->update(['playout_status' => 'fallback', 'stream_status' => 'offline']);
                 $this->log($channel, 'info', 'fallback_restarted', 'Fallback loop restarted');
-                if ($this->hasBranding($channel->fresh())) {
-                    $this->push->stop($channel->fresh());
-                    $this->startPushAlways($channel->fresh());
-                }
+                // Branding is now baked into fallback content — no push restart needed
             } else {
                 $this->log($channel, 'error', 'fallback_restart_failed', 'Fallback restart failed');
             }
         }
 
         // ── Push watchdog: push MUST always be running 24/7 ─────────────
-        if (!$this->push->isRunning($channel)) {
-            $lastError = $channel->last_error ?? '';
-            if (str_contains($lastError, 'authfailed') || str_contains($lastError, 'AccessManager')) {
-                if ($channel->push_status !== 'error') {
-                    $channel->update(['push_status' => 'error']);
-                    $this->log($channel, 'error', 'push_auth_failed',
-                        'Push destination rejected credentials — will not retry until fixed');
-                }
-            } else {
-                $this->log($channel, 'warning', 'push_died_offline', 'Push died — restarting (24/7)');
-                $this->startPushAlways($channel);
-                if ($this->push->isRunning($channel)) {
+        if (! empty($channel->push_url)) {
+            $wasRunning = $channel->push_status === 'live';
+            if ($this->push->ensureRunning($channel->fresh())) {
+                if (! $wasRunning) {
+                    $this->log($channel, 'info', 'push_restarted', 'Push restarted by watchdog (24/7)');
                     $channel->resetRetries();
                 }
             }
@@ -733,17 +720,15 @@ class StreamManager
         $cmd = [
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
-            // No -re: HLS input already paces itself at live rate.
-            // -re on an HLS file input causes freeze-burst stalls at segment
-            // boundaries when the next segment isn't written yet.
-            // No -timeout/-reconnect: output.m3u8 is a local file symlink —
-            // those flags are HTTP-only and cause "Option not found" on file://.
             '-fflags',             '+genpts+discardcorrupt',
             '-live_start_index',   '-3',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
+            // Survive atomic symlink swaps (live ↔ fallback) without dying
+            '-max_reload',         '1000',
+            '-m3u8_hold_counters', '1000',
             '-i',                  $playlist,
-            '-max_muxing_queue_size', '9999',
+            '-max_muxing_queue_size', '4096',
             '-c:v', 'copy',
             '-c:a', 'copy',
             '-f',   'flv',
@@ -759,10 +744,12 @@ class StreamManager
             $this->log($channel, 'info', 'hls_relay_started',
                 "HLS relay started — PID {$pid} → {$rtmpUrl}");
             Log::info("[HLS Relay] {$channel->name} started — PID {$pid} → {$rtmpUrl}");
+
             return true;
         } catch (\Throwable $e) {
             Log::error("[HLS Relay] {$channel->name} failed: {$e->getMessage()}");
             $this->log($channel, 'error', 'hls_relay_failed', $e->getMessage());
+
             return false;
         }
     }
@@ -781,6 +768,7 @@ class StreamManager
     public function isHlsRelayRunning(Channel $channel): bool
     {
         $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'hls_relay'));
+
         return $pid > 0 && $this->ffmpeg->isRunning($pid);
     }
 
@@ -789,19 +777,18 @@ class StreamManager
     // ═══════════════════════════════════════════════════════════════════
 
     /**
-     * True when the channel has a logo or ticker overlay configured.
-     * When branding is present, live and fallback modes use different ffmpeg
-     * encoding flags, so the push process must be restarted on transitions.
-     * Without branding both modes use -c:v copy, so the symlink swap is
-     * sufficient and no restart is needed.
+     * True when the listener loop process (shell wrapper) for a push-ingest
+     * channel is still running. The loop keeps ffmpeg restarting automatically
+     * after encoder disconnects — we only need to intervene if the loop dies.
      */
-    private function hasBranding(Channel $channel): bool
+    public function isListenerLoopRunning(Channel $channel): bool
     {
-        $channel->loadMissing('logoMedia');
-        $logo = $channel->logoMedia;
+        if (! $channel->isPushIngest()) {
+            return false;
+        }
+        $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'ingest'));
 
-        return ($logo && file_exists($logo->filepath))
-            || ($channel->ticker_enabled && trim((string) $channel->ticker_text) !== '');
+        return $pid > 0 && $this->ffmpeg->isRunning($pid);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -813,10 +800,10 @@ class StreamManager
         try {
             StreamLog::create([
                 'channel_id' => $channel->id,
-                'level'      => $level,
-                'event'      => $event,
-                'message'    => $message,
-                'metadata'   => $meta,
+                'level' => $level,
+                'event' => $event,
+                'message' => $message,
+                'metadata' => $meta,
             ]);
         } catch (\Throwable $e) {
             Log::error("StreamLog write: {$e->getMessage()}");

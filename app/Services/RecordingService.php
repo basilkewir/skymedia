@@ -99,25 +99,25 @@ class RecordingService
         $this->ffmpeg->clearPid($pidFile);
 
         // Finalize any in-progress recording — mark completed if file is usable,
-        // failed only if the file is missing or empty.
+        // delete if the file is missing, empty, or not playable (0-byte records).
         $recording = Recording::where('channel_id', $channel->id)
             ->where('status', 'recording')
             ->latest('started_at')
             ->first();
 
         if ($recording) {
-            $isPlayable = $this->ffmpeg->isPlayableFile($recording->filepath);
-            if ($isPlayable) {
-                $size = filesize($recording->filepath);
+            $size = file_exists($recording->filepath) ? (int) filesize($recording->filepath) : 0;
+            if ($size < 1024) {
+                // Zero or near-zero byte file — delete it, don't keep garbage
+                @unlink($recording->filepath);
+                $recording->delete();
+            } elseif ($this->ffmpeg->isPlayableFile($recording->filepath)) {
                 $recording->update([
                     'status' => 'completed',
                     'filesize' => $size,
                     'completed_at' => now(),
                 ]);
-                // Always promote latest completed recording as fallback
                 $channel->update(['fallback_recording_path' => $recording->filepath]);
-                
-                // Increment channel storage usage
                 if ($size > 0) {
                     $channel->increment('storage_used_bytes', $size);
                 }
@@ -192,6 +192,14 @@ class RecordingService
             $recording->id,
             $channel->timezone ?? 'UTC'
         );
+
+        // Immediately start the next recording segment so there is zero gap.
+        // shouldRecord() will return true because record_pid is now null and
+        // record_status is idle. The monitor tick also calls this, but doing
+        // it here avoids waiting up to check_interval seconds for the next tick.
+        if ($channel->record_duration > 0 && $channel->source_live) {
+            $this->start($channel->fresh());
+        }
     }
 
     public function isRunning(Channel $channel): bool
@@ -199,6 +207,35 @@ class RecordingService
         $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'record'));
 
         return $pid > 0 && $this->ffmpeg->isRunning($pid);
+    }
+
+    /**
+     * Detect a stale recording: the ffmpeg process is running but the output
+     * file hasn't grown in $staleSeconds. This happens when the source drops
+     * and live.m3u8 stops getting new segments — ffmpeg hangs reading EOF.
+     * Returns true if the recording is stale and should be stopped.
+     */
+    public function isStale(Channel $channel, int $staleSeconds = 60): bool
+    {
+        if (! $this->isRunning($channel)) {
+            return false;
+        }
+
+        $recording = Recording::where('channel_id', $channel->id)
+            ->where('status', 'recording')
+            ->latest('started_at')
+            ->first();
+
+        if (! $recording || ! file_exists($recording->filepath)) {
+            return false;
+        }
+
+        $lastModified = filemtime($recording->filepath);
+        if ($lastModified === false) {
+            return false;
+        }
+
+        return (time() - $lastModified) >= $staleSeconds;
     }
 
     public function hasFallback(Channel $channel): bool

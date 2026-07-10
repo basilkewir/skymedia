@@ -182,7 +182,7 @@ class FFmpegServiceTest extends TestCase
     }
 
     /** @test */
-    public function it_includes_video_encoding_flags_when_not_copy(): void
+    public function it_always_uses_copy_codec_for_push(): void
     {
         $channel = $this->makeChannel('hls', 'https://example.com/stream.m3u8');
         $channel->push_video_codec = 'h264';
@@ -192,12 +192,13 @@ class FFmpegServiceTest extends TestCase
         $cmd = $this->ffmpeg->buildPushCommand($channel, '/tmp/test.m3u8');
         $cmdStr = implode(' ', $cmd);
 
-        $this->assertStringContainsString('libx264', $cmdStr);
-        $this->assertStringContainsString('4000k', $cmdStr);
+        // Push always uses -c:v copy (branding is in playout, not push)
+        $this->assertStringContainsString('-c:v copy', $cmdStr);
+        $this->assertStringNotContainsString('libx264', $cmdStr);
     }
 
     /** @test */
-    public function it_includes_audio_encoding_flags(): void
+    public function it_always_uses_copy_audio_for_push(): void
     {
         $channel = $this->makeChannel('hls', 'https://example.com/stream.m3u8');
         $channel->push_audio_codec = 'mp3';
@@ -208,8 +209,9 @@ class FFmpegServiceTest extends TestCase
         $cmd = $this->ffmpeg->buildPushCommand($channel, '/tmp/test.m3u8');
         $cmdStr = implode(' ', $cmd);
 
-        $this->assertStringContainsString('libmp3lame', $cmdStr);
-        $this->assertStringContainsString('192k', $cmdStr);
+        // Push always uses -c:a copy (branding is in playout, not push)
+        $this->assertStringContainsString('-c:a copy', $cmdStr);
+        $this->assertStringNotContainsString('libmp3lame', $cmdStr);
     }
 
     /** @test */

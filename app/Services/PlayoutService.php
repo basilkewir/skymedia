@@ -7,6 +7,7 @@ namespace App\Services;
 use App\Console\Commands\GenerateSlate;
 use App\Models\Channel;
 use App\Models\DvrSegment;
+use App\Models\Recording;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\Process\Process;
 
@@ -82,7 +83,9 @@ class PlayoutService
         $this->stopFallbackProcess($channel);
         $nextPidFile = $this->ffmpeg->pidFile($channel, 'playout_next');
         $nextPid = $this->ffmpeg->readPid($nextPidFile);
-        if ($nextPid > 0) $this->ffmpeg->stopProcess($nextPid);
+        if ($nextPid > 0) {
+            $this->ffmpeg->stopProcess($nextPid);
+        }
         $this->ffmpeg->clearPid($nextPidFile);
         $this->cleanupSlot($channel, 'a');
         $this->cleanupSlot($channel, 'b');
@@ -95,26 +98,45 @@ class PlayoutService
     public function ensureFallbackRunning(Channel $channel): bool
     {
         $files = $this->resolveFallbackFiles($channel);
-        if (empty($files)) return false;
+        if (empty($files)) {
+            return false;
+        }
 
         // Check if either slot is alive
         $pidFile = $this->ffmpeg->pidFile($channel, 'playout');
         $pid = $this->ffmpeg->readPid($pidFile);
-        if ($pid > 0 && $this->ffmpeg->isRunning($pid)) return true;
+        if ($pid > 0 && $this->ffmpeg->isRunning($pid)) {
+            return true;
+        }
 
         $nextPidFile = $this->ffmpeg->pidFile($channel, 'playout_next');
         $nextPid = $this->ffmpeg->readPid($nextPidFile);
-        if ($nextPid > 0 && $this->ffmpeg->isRunning($nextPid)) return true;
+        if ($nextPid > 0 && $this->ffmpeg->isRunning($nextPid)) {
+            return true;
+        }
 
         // Both dead — start a fresh fallback. switchToFallback will do
         // the warm-standby dance and bring one slot up.
-        foreach (['a', 'b'] as $slot) $this->cleanupSlot($channel, $slot);
+        $branding = $this->ffmpeg->brandingFlags($channel);
+        $hasBranding = ! empty($branding['video']);
+
+        foreach (['a', 'b'] as $slot) {
+            $this->cleanupSlot($channel, $slot);
+        }
         $concatFile = $this->buildConcatList($channel, $files, slot: 'a');
-        $copyCmd = $this->buildFallbackCommand($channel, $concatFile, useCopy: true, slot: 'a');
-        $pid = $this->tryStartFallback($channel, $copyCmd, $pidFile, $this->ffmpeg->logFile($channel, 'playout'));
+
+        if ($hasBranding) {
+            // Branding requires re-encoding — go straight to re-encode
+            $pid = null;
+        } else {
+            $copyCmd = $this->buildFallbackCommand($channel, $concatFile, useCopy: true, slot: 'a');
+            $pid = $this->tryStartFallback($channel, $copyCmd, $pidFile, $this->ffmpeg->logFile($channel, 'playout'));
+        }
         if ($pid === null) {
             $loopAsset = $this->buildFallbackLoopAsset($channel, $files, 'a');
-            if ($loopAsset === null) return false;
+            if ($loopAsset === null) {
+                return false;
+            }
             $pid = $this->tryStartFallback(
                 $channel,
                 $this->buildFallbackCommand($channel, $loopAsset, useCopy: false, slot: 'a'),
@@ -122,20 +144,29 @@ class PlayoutService
                 $this->ffmpeg->logFile($channel, 'playout')
             );
         }
-        if ($pid === null) return false;
+        if ($pid === null) {
+            return false;
+        }
 
         // Wait for the playlist to appear
         $m3u8Out = $channel->dvr_directory . '/playout_a.m3u8';
         $waited = 0;
         $maxWait = max(6, (int) $channel->segment_duration * 2 + 1);
-        while (! file_exists($m3u8Out) && $waited < $maxWait) { sleep(1); $waited++; }
+        while (! file_exists($m3u8Out) && $waited < $maxWait) {
+            sleep(1);
+            $waited++;
+        }
         if (! file_exists($m3u8Out)) {
-            if ($pid > 0) $this->ffmpeg->stopProcess($pid);
+            if ($pid > 0) {
+                $this->ffmpeg->stopProcess($pid);
+            }
             $this->ffmpeg->clearPid($pidFile);
+
             return false;
         }
         $channel->update(['playout_pid' => $pid]);
         Log::info("[Playout] {$channel->name} background fallback started — PID {$pid}");
+
         return true;
     }
 
@@ -179,18 +210,30 @@ class PlayoutService
         // quality and plays recordings oldest→newest like a TV playlist.
         // If the files are incompatible (e.g. different codec params), fall
         // back to re-encoding a single loopable asset.
+        // When branding is configured, skip copy-concat entirely — branding
+        // requires re-encoding so the overlay can be applied.
+        $branding = $this->ffmpeg->brandingFlags($channel);
+        $hasBranding = ! empty($branding['video']);
+
         $this->cleanupSlot($channel, $slot);
         $concatFile = $this->buildConcatList($channel, $files, slot: $slot);
-        $copyCmd = $this->buildFallbackCommand($channel, $concatFile, useCopy: true, slot: $slot);
 
-        $pid = $this->tryStartFallback($channel, $copyCmd, $pidFile, $logFile);
+        if ($hasBranding) {
+            // Branding requires re-encoding — go straight to re-encode path
+            $pid = null;
+        } else {
+            $copyCmd = $this->buildFallbackCommand($channel, $concatFile, useCopy: true, slot: $slot);
+            $pid = $this->tryStartFallback($channel, $copyCmd, $pidFile, $logFile);
+        }
 
         if ($pid === null) {
             Log::warning("[Playout] {$channel->name}: copy-concat fallback failed, trying re-encode loop");
             $loopAsset = $this->buildFallbackLoopAsset($channel, $files, $slot);
             if ($loopAsset === null) {
                 Log::error("[Playout] {$channel->name}: could not build fallback loop asset");
-                if (! $hasWorkingFallback) $channel->update(['playout_pid' => null, 'playout_status' => 'error']);
+                if (! $hasWorkingFallback) {
+                    $channel->update(['playout_pid' => null, 'playout_status' => 'error']);
+                }
 
                 return false;
             }
@@ -204,7 +247,9 @@ class PlayoutService
 
         if ($pid === null) {
             Log::error("[Playout] {$channel->name} fallback failed to start");
-            if (! $hasWorkingFallback) $channel->update(['playout_pid' => null, 'playout_status' => 'error']);
+            if (! $hasWorkingFallback) {
+                $channel->update(['playout_pid' => null, 'playout_status' => 'error']);
+            }
 
             return false;
         }
@@ -223,9 +268,13 @@ class PlayoutService
         if (! file_exists($m3u8Out)) {
             Log::warning("[Playout] {$channel->name} fallback playlist never appeared");
             $nextPid = $this->ffmpeg->readPid($pidFile);
-            if ($nextPid > 0) $this->ffmpeg->stopProcess($nextPid);
+            if ($nextPid > 0) {
+                $this->ffmpeg->stopProcess($nextPid);
+            }
             $this->ffmpeg->clearPid($pidFile);
-            if (! $hasWorkingFallback) $channel->update(['playout_pid' => null, 'playout_status' => 'error']);
+            if (! $hasWorkingFallback) {
+                $channel->update(['playout_pid' => null, 'playout_status' => 'error']);
+            }
 
             return false;
         }
@@ -233,7 +282,9 @@ class PlayoutService
         // The standby playlist is now primed. Switch in one filesystem rename,
         // then stop the previous fallback process—not the other way around.
         $this->atomicPoint($link, "playout_{$slot}.m3u8");
-        if ($oldPid > 0 && $oldPid !== $pid) $this->ffmpeg->stopProcess($oldPid);
+        if ($oldPid > 0 && $oldPid !== $pid) {
+            $this->ffmpeg->stopProcess($oldPid);
+        }
         file_put_contents($oldPidFile, (string) $pid);
         $this->ffmpeg->clearPid($pidFile);
         // Keep the retired slot's files until that slot is prepared again.
@@ -253,7 +304,9 @@ class PlayoutService
         $this->stopFallbackProcess($channel);
         $nextPidFile = $this->ffmpeg->pidFile($channel, 'playout_next');
         $nextPid = $this->ffmpeg->readPid($nextPidFile);
-        if ($nextPid > 0) $this->ffmpeg->stopProcess($nextPid);
+        if ($nextPid > 0) {
+            $this->ffmpeg->stopProcess($nextPid);
+        }
         $this->ffmpeg->clearPid($nextPidFile);
         @unlink($this->outputPlaylist($channel));
         $this->cleanupSlot($channel, 'a');
@@ -280,7 +333,7 @@ class PlayoutService
     public function hasFallback(Channel $channel): bool
     {
         // Recordings or DVR segments provide real fallback content.
-        if (!empty($this->resolveFallbackFiles($channel, false))) {
+        if (! empty($this->resolveFallbackFiles($channel, false))) {
             return true;
         }
 
@@ -332,7 +385,9 @@ class PlayoutService
     {
         @unlink($channel->dvr_directory . "/playout_{$slot}.m3u8");
         @unlink($channel->dvr_directory . "/playout_concat_{$slot}.txt");
-        foreach (glob($channel->dvr_directory . "/playout_{$slot}_*.ts") ?: [] as $file) @unlink($file);
+        foreach (glob($channel->dvr_directory . "/playout_{$slot}_*.ts") ?: [] as $file) {
+            @unlink($file);
+        }
     }
 
     private function tryStartFallback(Channel $channel, array $cmd, string $pidFile, string $logFile): ?int
@@ -353,7 +408,19 @@ class PlayoutService
         $m3u8Out = "{$dvrDir}/playout_{$slot}.m3u8";
         $segDur = max(1, (int) $channel->segment_duration);
 
-        if ($useCopy) {
+        // Common HLS output flags — omit_endlist is CRITICAL: without it ffmpeg
+        // writes EXT-X-ENDLIST when the concat list ends, which causes the push
+        // process to see the stream as finished and stop. With -stream_loop -1
+        // and omit_endlist the playlist stays "live" forever.
+        $hlsFlags = 'delete_segments+omit_endlist+append_list';
+
+        // Check if branding (logo/ticker) is configured for this channel.
+        // When branding is present, we MUST re-encode to apply the overlay,
+        // so skip the copy-concat path entirely.
+        $branding = $this->ffmpeg->brandingFlags($channel);
+        $hasBranding = ! empty($branding['video']);
+
+        if ($useCopy && ! $hasBranding) {
             // Stream-copy concat: preserves original encoding and loops the
             // playlist forever via -stream_loop -1 so the VOD never ends.
             return [
@@ -369,7 +436,7 @@ class PlayoutService
                 '-f',                    'hls',
                 '-hls_time',             (string) $segDur,
                 '-hls_list_size',        '10',
-                '-hls_flags',            'delete_segments+omit_endlist+append_list',
+                '-hls_flags',            $hlsFlags,
                 '-hls_delete_threshold', '3',
                 '-hls_segment_type',     'mpegts',
                 '-hls_segment_filename', $segPattern,
@@ -379,31 +446,46 @@ class PlayoutService
             ];
         }
 
-        // Re-encoded single-asset loop. Used only when copy-concat fails.
-        return [
+        // Re-encoded fallback: used when copy-concat fails OR when branding
+        // overlay (logo/ticker) needs to be baked into the fallback content.
+        // Branding is applied here so push always uses -c:v copy (no restart).
+        $cmd = [
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
             '-stream_loop', '-1',
             '-re',
             '-i',     $input,
-            '-c:v', 'copy',
-            '-c:a', 'copy',
+        ];
+
+        // Apply branding overlay (logo + ticker) to fallback content
+        if ($hasBranding) {
+            $cmd = array_merge($cmd, $branding['inputs']);
+            $cmd = array_merge($cmd, $branding['video']);
+        } else {
+            $cmd[] = '-c:v';
+            $cmd[] = 'copy';
+        }
+
+        $cmd = array_merge($cmd, [
+            '-c:a',  'copy',
             '-f',                    'hls',
             '-hls_time',             (string) $segDur,
             '-hls_list_size',        '10',
-            '-hls_flags',            'delete_segments+append_list',
+            '-hls_flags',            $hlsFlags,
             '-hls_delete_threshold', '2',
             '-hls_segment_type',     'mpegts',
             '-hls_segment_filename', $segPattern,
             '-hls_allow_cache',      '0',
             '-hls_start_number_source', 'epoch',
             $m3u8Out,
-        ];
+        ]);
+
+        return $cmd;
     }
 
     /**
-     * Build a single MP4 that contains all fallback files concatenated.
-     * Used as a last resort when stream-copy concat is not possible.
+     * Build a single re-encoded MP4 containing all fallback files concatenated.
+     * Used only when stream-copy concat fails (incompatible codecs/params).
      * Returns the path to the loop asset, or null on failure.
      */
     private function buildFallbackLoopAsset(Channel $channel, array $files, string $slot = 'a'): ?string
@@ -411,11 +493,8 @@ class PlayoutService
         $dvrDir = $channel->dvr_directory;
         $output = "{$dvrDir}/fallback_loop_{$slot}.mp4";
 
-        // If there is only one file, use it directly.
-        if (count($files) === 1) {
-            return $files[0];
-        }
-
+        // Always build a proper concat even for a single file — re-encoding
+        // normalises codec params so the loop plays cleanly.
         $concatFile = $this->buildConcatList($channel, $files, repeat: 1, slot: $slot);
 
         $cmd = [
@@ -439,12 +518,13 @@ class PlayoutService
         ];
 
         $proc = new Process($cmd);
-        $proc->setTimeout(120);
+        $proc->setTimeout(300);
         $proc->run();
 
         if (! $proc->isSuccessful() || ! file_exists($output) || filesize($output) < 1024) {
             Log::error("[Playout] {$channel->name} fallback loop asset failed: " . $proc->getErrorOutput());
 
+            // Last resort: return the first file so something plays
             return $files[0] ?? null;
         }
 
@@ -452,40 +532,41 @@ class PlayoutService
     }
 
     /**
-     * Write a concat list file: recordings oldest-first, then slate if available.
-     * Repeats the whole playlist enough times to give the player a long,
-     * playlist-style buffer. Returns the path to the concat file.
+     * Write a concat list file: recordings oldest→newest, looped enough times
+     * to cover at least 2 hours of continuous playout without restarting ffmpeg.
+     * Returns the path to the concat file.
      */
     private function buildConcatList(Channel $channel, array $files, int $repeat = 0, string $slot = 'a'): string
     {
         $path = $channel->dvr_directory . "/playout_concat_{$slot}.txt";
 
         if ($repeat <= 0) {
-            $repeat = $this->fallbackPlaylistRepetitions($files, $channel);
+            $repeat = $this->fallbackPlaylistRepetitions($files);
         }
 
-        $repeated = [];
+        $lines = [];
         for ($i = 0; $i < $repeat; $i++) {
             foreach ($files as $f) {
-                $repeated[] = $f;
+                $lines[] = "file '" . str_replace("'", "'\\''", $f) . "'";
             }
         }
 
-        $lines = array_map(fn ($f) => "file '" . str_replace("'", "'\\''", $f) . "'", $repeated);
         file_put_contents($path, implode("\n", $lines));
 
         return $path;
     }
 
     /**
-     * How many times to repeat the fallback file list so the generated
-     * playlist covers a reasonable outage window (10–30 min).
+     * How many times to repeat the file list so the concat covers at least
+     * 2 hours. This prevents ffmpeg from reaching the end of the concat list
+     * and exiting before -stream_loop kicks in for the next iteration.
+     * Minimum 3 repetitions regardless of duration.
      */
-    private function fallbackPlaylistRepetitions(array $files, Channel $channel): int
+    private function fallbackPlaylistRepetitions(array $files): int
     {
-        $targetSeconds = min(1800, max(600, (int) $channel->record_duration * 6));
-
+        $targetSeconds = 7200; // 2 hours
         $totalDuration = 0.0;
+
         foreach ($files as $f) {
             $dur = $this->probeDuration($f);
             if ($dur > 0) {
@@ -499,7 +580,7 @@ class PlayoutService
 
         $repeat = (int) ceil($targetSeconds / $totalDuration);
 
-        return min(max($repeat, 2), 50);
+        return max(3, min($repeat, 100));
     }
 
     private function probeDuration(string $file): float
@@ -527,22 +608,34 @@ class PlayoutService
     }
 
     /**
-     * Returns ordered list of files to loop: recordings oldest→newest, then DVR
-     * segments, then slate. Set $generateSlate to false when only probing.
+     * Returns ordered list of files to loop: recordings oldest→newest (by
+     * completion time from DB), then DVR segments, then slate as last resort.
+     *
+     * Ordering rules:
+     *  1. Operator-curated VOD playlist (sort_order ASC) — takes full precedence
+     *  2. Operator-uploaded single VOD (fallback_vod_name) — single file loop
+     *  3. Completed recordings from DB ordered by completed_at ASC (oldest→newest)
+     *     so playout plays like a chronological TV archive
+     *  4. DVR rolling-window segments (sequence ASC) if no recordings exist
+     *  5. Slate MP4 appended only when no recordings AND no DVR segments exist
+     *
+     * Set $generateSlate=false when only probing availability (no side effects).
      */
     private function resolveFallbackFiles(Channel $channel, bool $generateSlate = true): array
     {
-        $files = [];
-
-        // Manager-curated playlist takes precedence over generated recordings.
+        // 1. Operator-curated VOD playlist
         $playlist = $channel->media()->where('type', 'vod')->where('is_active', true)->orderBy('sort_order')->get();
+        $files = [];
         foreach ($playlist as $media) {
-            if (file_exists($media->filepath) && filesize($media->filepath) > 1024) $files[] = $media->filepath;
+            if (file_exists($media->filepath) && filesize($media->filepath) > 1024) {
+                $files[] = $media->filepath;
+            }
         }
-        if ($files !== []) return $files;
+        if ($files !== []) {
+            return $files;
+        }
 
-        // An operator-uploaded VOD explicitly replaces stream recordings as
-        // fallback content. Removing it restores the original recording/DVR flow.
+        // 2. Single operator-uploaded VOD
         if ($channel->fallback_vod_name
             && $channel->fallback_recording_path
             && file_exists($channel->fallback_recording_path)
@@ -550,41 +643,66 @@ class PlayoutService
             return [$channel->fallback_recording_path];
         }
 
-        // Collect all completed recordings, oldest first
-        $recs = glob($channel->dvr_directory . '/rec_*.mp4') ?: [];
-        usort($recs, fn ($a, $b) => filemtime($a) - filemtime($b)); // oldest first
-        foreach ($recs as $f) {
-            if (file_exists($f) && filesize($f) > 1024) {
-                $files[] = $f;
+        // 3. Completed recordings from DB, oldest→newest by completed_at
+        //    Using DB ordering is more reliable than filemtime which can be
+        //    affected by filesystem operations (copies, moves, etc.)
+        $recordings = Recording::where('channel_id', $channel->id)
+            ->where('status', 'completed')
+            ->orderBy('completed_at', 'asc')
+            ->get();
+
+        foreach ($recordings as $rec) {
+            if (file_exists($rec->filepath) && filesize($rec->filepath) > 1024) {
+                $files[] = $rec->filepath;
             }
         }
 
-        // No recordings? Use the DVR rolling-window segments as fallback.
+        // Also pick up any rec_*.mp4 files on disk not yet in DB (e.g. after
+        // a container restart before finalization ran). Sort by filename which
+        // encodes the recording timestamp (rec_YYYYMMDD_HHMMSS.mp4).
         if (empty($files)) {
-            $segments = DvrSegment::where('channel_id', $channel->id)
-                ->where('is_available', true)
-                ->orderBy('sequence')
-                ->get();
-
-            foreach ($segments as $seg) {
-                if (file_exists($seg->filepath) && filesize($seg->filepath) > 1024) {
-                    $files[] = $seg->filepath;
-                }
-            }
-
-            // Fall back to a raw disk glob if the database has no entries yet.
-            if (empty($files)) {
-                $diskFiles = glob($channel->dvr_directory . '/seg_*.ts') ?: [];
-                natsort($diskFiles);
-                foreach ($diskFiles as $f) {
-                    if (filesize($f) > 1024) {
-                        $files[] = $f;
-                    }
+            $diskRecs = glob($channel->dvr_directory . '/rec_*.mp4') ?: [];
+            sort($diskRecs, SORT_NATURAL); // natural sort = chronological by filename
+            foreach ($diskRecs as $f) {
+                if (filesize($f) > 1024) {
+                    $files[] = $f;
                 }
             }
         }
 
-        // Append slate as final entry so there is always something to show
+        if (! empty($files)) {
+            // We have recordings — return them without appending slate.
+            // The playlist loops oldest→newest then repeats from the start.
+            return $files;
+        }
+
+        // 4. DVR rolling-window segments (no recordings yet)
+        $segments = DvrSegment::where('channel_id', $channel->id)
+            ->where('is_available', true)
+            ->orderBy('sequence', 'asc')
+            ->get();
+
+        foreach ($segments as $seg) {
+            if (file_exists($seg->filepath) && filesize($seg->filepath) > 1024) {
+                $files[] = $seg->filepath;
+            }
+        }
+
+        if (empty($files)) {
+            $diskSegs = glob($channel->dvr_directory . '/seg_*.ts') ?: [];
+            natsort($diskSegs);
+            foreach ($diskSegs as $f) {
+                if (filesize($f) > 1024) {
+                    $files[] = $f;
+                }
+            }
+        }
+
+        if (! empty($files)) {
+            return $files;
+        }
+
+        // 5. Last resort: slate only
         $slate = $channel->dvr_directory . '/slate.mp4';
         if ($generateSlate && (! file_exists($slate) || filesize($slate) < 1024)) {
             try {

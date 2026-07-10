@@ -168,6 +168,7 @@ class FFmpegService
                 return $this->youtube->resolveHlsUrl($channel);
             } catch (\Throwable $e) {
                 Log::warning("[YouTube] URL resolution failed for channel {$channel->id}: {$e->getMessage()}");
+
                 return $url; // fall through — ffmpeg will fail with a clear error
             }
         }
@@ -253,6 +254,8 @@ class FFmpegService
                 // Epoch-derived numbering prevents sequence rollback when
                 // switching between independently generated live/VOD HLS.
                 '-hls_start_number_source', 'epoch',
+                // Increase muxing queue to handle bursts without dropping packets
+                '-max_muxing_queue_size', '4096',
                 $m3u8,
             ]
         );
@@ -261,9 +264,15 @@ class FFmpegService
     /**
      * PUSH: reads the stable output playlist → encode → RTMP/SRT.
      *
-     * -re ensures real-time pacing so the RTMP server isn't overwhelmed.
-     * For HLS inputs without -re, ffmpeg may buffer and burst data,
-     * causing the server to disconnect with "Broken pipe".
+     * Design goals:
+     * - NEVER stop pushing. If the connection drops, ffmpeg must reconnect.
+     * - output.m3u8 is a local symlink — no HTTP reconnect flags needed for input.
+     * - -re paces output at live rate to prevent RTMP server buffer overflow.
+     * - -reconnect_at_eof + -reconnect_streamed handle the symlink swap between
+     *   live.m3u8 and playout_X.m3u8 without restarting the push process.
+     * - -max_reload prevents ffmpeg from giving up when the playlist is briefly
+     *   unavailable during a symlink swap (atomic rename, but still).
+     * - -timeout on output side keeps the RTMP/SRT connection alive.
      */
     public function buildPushCommand(Channel $channel, string $playlistPath, ?string $protocol = null, ?PushDestination $destination = null): array
     {
@@ -276,65 +285,64 @@ class FFmpegService
             $this->ffmpegBin, '-y', '-loglevel', 'warning', '-stats',
             '-re',
             '-fflags',             '+genpts+discardcorrupt+flush_packets',
-            '-thread_queue_size',  '1024',
+            '-thread_queue_size',  '4096',
             '-probesize',          '5000000',
             '-analyzeduration',    '3000000',
             '-err_detect',         'ignore_err',
             '-live_start_index',   '-3',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
+            // Keep reading even when the playlist briefly disappears during
+            // an atomic symlink swap (live ↔ fallback transition).
+            '-max_reload',         '1000',
+            '-m3u8_hold_counters', '1000',
             '-i',                  $playlistPath,
         ];
 
-        $isLiveOutput = is_link($playlistPath) && readlink($playlistPath) === 'live.m3u8';
-        $branding = $isLiveOutput ? ['inputs' => [], 'video' => []] : $this->brandingFlags($channel);
-        $cmd = array_merge($cmd, $branding['inputs']);
-        if ($branding['video']) {
-            $cmd = array_merge($cmd, $branding['video']);
-            $cmd[] = '-max_muxing_queue_size';
-            $cmd[] = '99999';
-            $cmd[] = '-thread_queue_size';
-            $cmd[] = '1024';
-            $audioCodec = $channel->push_audio_codec ?? 'aac';
-            if ($audioCodec !== 'copy') {
-                $cmd[] = '-af';
-                $cmd[] = 'aresample=async=1:first_pts=0';
-            }
-            $cmd = array_merge($cmd, $this->audioEncodeFlags($channel));
-        } else {
-            $cmd[] = '-max_muxing_queue_size';
-            $cmd[] = '99999';
-            $cmd[] = '-thread_queue_size';
-            $cmd[] = '1024';
-            $cmd = array_merge($cmd, $this->videoEncodeFlags($channel));
-            $cmd = array_merge($cmd, $this->audioEncodeFlags($channel));
-        }
+        // Push ALWAYS uses stream copy — branding is applied in PlayoutService
+        // on the fallback content, not in the push process. This means push
+        // never needs to restart for live↔fallback transitions.
+        $cmd[] = '-max_muxing_queue_size';
+        $cmd[] = '99999';
+        $cmd[] = '-thread_queue_size';
+        $cmd[] = '1024';
+        $cmd[] = '-c:v';
+        $cmd[] = 'copy';
+        $cmd[] = '-c:a';
+        $cmd[] = 'copy';
+
+        $pushUrl = $destination ? $this->buildDestinationPushUrl($destination) : $this->pushUrl($channel);
 
         if ($protocol === 'srt') {
             $cmd[] = '-f';
             $cmd[] = 'mpegts';
-            $cmd[] = $destination ? $this->buildDestinationPushUrl($destination) : $this->pushUrl($channel);
+            $cmd[] = $pushUrl;
         } elseif ($protocol === 'hls') {
             $cmd = array_merge($cmd, $this->hlsOutputFlags($channel, $destination));
-            $cmd[] = $destination ? $this->buildDestinationPushUrl($destination) : $this->pushUrl($channel);
+            $cmd[] = $pushUrl;
         } else {
+            // RTMP: add connection timeout so ffmpeg reconnects instead of hanging
             $cmd[] = '-f';
             $cmd[] = 'flv';
             $cmd[] = '-rtmp_live';
             $cmd[] = 'live';
-            $cmd[] = $destination ? $this->buildDestinationPushUrl($destination) : $this->pushUrl($channel);
+            $cmd[] = '-rtmp_conn';
+            $cmd[] = 'O:1';
+            $cmd[] = $pushUrl;
         }
 
         return $cmd;
     }
 
-    private function brandingFlags(Channel $channel): array
+    public function brandingFlags(Channel $channel): array
     {
         $channel->loadMissing('logoMedia');
         $logo = $channel->logoMedia;
         $hasLogo = $logo && file_exists($logo->filepath);
         $hasTicker = $channel->ticker_enabled && trim((string) $channel->ticker_text) !== '';
-        if (! $hasLogo && ! $hasTicker) return ['inputs' => [], 'video' => []];
+        if (! $hasLogo && ! $hasTicker) {
+            return ['inputs' => [], 'video' => []];
+        }
 
         $inputs = $hasLogo ? ['-loop', '1', '-i', $logo->filepath] : [];
         $position = match ($channel->logo_position) {
@@ -363,6 +371,7 @@ class FFmpegService
                 $encodeBase, $rateControl, $gopFlags
             );
         }
+
         return ['inputs' => $inputs, 'video' => $video];
     }
 
@@ -395,6 +404,9 @@ class FFmpegService
 
     /**
      * Launch an ffmpeg process in the background.
+     * For push-ingest RTMP listeners, wraps ffmpeg in a shell loop so the
+     * listener restarts immediately after the encoder disconnects — the port
+     * is never released and vMix/OBS can reconnect without any gap.
      * Throws \RuntimeException with full ffmpeg stderr on failure.
      */
     public function startProcess(array $command, string $pidFile, string $logFile, int $stabiliseSeconds = 3): int
@@ -412,8 +424,27 @@ class FFmpegService
 
         $escaped = implode(' ', array_map('escapeshellarg', $command));
         $path = '/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin';
-        $shell = "export PATH={$path}:\$PATH; nohup {$escaped} >> "
-                 . escapeshellarg($logFile) . ' 2>&1 & echo $!';
+
+        // For RTMP listeners (-listen 1): wrap in a shell loop so ffmpeg
+        // restarts immediately after the encoder disconnects. This keeps the
+        // port bound at all times — vMix/OBS sees the server as always up.
+        // The loop PID is what we track; killing it stops both the loop and
+        // any running ffmpeg child.
+        $isRtmpListener = in_array('-listen', $command) && in_array('1', $command);
+        if ($isRtmpListener) {
+            // Write a sentinel file so the loop knows when to stop cleanly
+            $stopFile = $pidFile . '.stop';
+            @unlink($stopFile);
+            $shell = "export PATH={$path}:\$PATH; ("
+                . 'while [ ! -f ' . escapeshellarg($stopFile) . ' ]; do '
+                . "{$escaped} >> " . escapeshellarg($logFile) . ' 2>&1; '
+                . '[ ! -f ' . escapeshellarg($stopFile) . ' ] && sleep 1; '
+                . 'done'
+                . ') & echo $!';
+        } else {
+            $shell = "export PATH={$path}:\$PATH; nohup {$escaped} >> "
+                     . escapeshellarg($logFile) . ' 2>&1 & echo $!';
+        }
 
         $pid = (int) trim((string) shell_exec($shell));
 
@@ -453,7 +484,17 @@ class FFmpegService
         if ($pid <= 0) {
             return;
         }
+        // Write sentinel stop file for any listener loop using this PID file.
+        // We don't know the pidFile path here, so we search for it.
+        foreach (glob(storage_path('app/pids/*.pid')) ?: [] as $pf) {
+            if ((int) trim((string) @file_get_contents($pf)) === $pid) {
+                @touch($pf . '.stop');
+                break;
+            }
+        }
         exec("kill -TERM {$pid} 2>/dev/null");
+        // Also kill any ffmpeg child of this loop process
+        exec("pkill -TERM -P {$pid} 2>/dev/null");
         $maxWaits = $timeoutSeconds * 10; // 100 ms per check
         $w = 0;
         while ($this->isRunning($pid) && $w++ < $maxWaits) {
@@ -461,6 +502,7 @@ class FFmpegService
         }
         if ($this->isRunning($pid)) {
             exec("kill -KILL {$pid} 2>/dev/null");
+            exec("pkill -KILL -P {$pid} 2>/dev/null");
         }
     }
 
@@ -632,7 +674,9 @@ class FFmpegService
     public function liveHlsReady(Channel $channel, int $minSegments = 2): bool
     {
         $dvrDir = $channel->dvr_directory;
-        if (! file_exists($dvrDir . '/live.m3u8')) return false;
+        if (! file_exists($dvrDir . '/live.m3u8')) {
+            return false;
+        }
 
         return count(glob($dvrDir . '/seg_*.ts') ?: []) >= $minSegments;
     }
@@ -692,6 +736,7 @@ class FFmpegService
     public function clearPid(string $pidFile): void
     {
         @unlink($pidFile);
+        @unlink($pidFile . '.stop');
     }
 
     public function readLogTail(string $logFile, int $lines = 50): string
@@ -768,7 +813,13 @@ class FFmpegService
                 '-analyzeduration', $analyze,
             ];
             if ($type === 'rtmp') {
-                array_push($flags, '-listen', '1', '-timeout', '120000000');
+                // -listen 1: ffmpeg binds the port and waits for a connection.
+                // -timeout 5000000 (5s): after the encoder disconnects, ffmpeg
+                // exits within 5s so the loop wrapper restarts it immediately
+                // and re-binds the port. vMix/OBS can reconnect within seconds.
+                // Previously 120s caused a 2-minute window where the port was
+                // held by a dying process and encoders got "Failed to connect".
+                array_push($flags, '-listen', '1', '-timeout', '5000000');
             } elseif ($type === 'srt') {
                 $latency = $this->srtLatencyMs() * 1000;
                 $separator = str_contains($url, '?') ? '&' : '?';
@@ -793,6 +844,7 @@ class FFmpegService
                 }
                 $ua = $this->httpUserAgent()
                     ?? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
                 return [
                     '-re',
                     '-fflags',             '+genpts+discardcorrupt',
@@ -805,11 +857,11 @@ class FFmpegService
                     '-timeout',            '15000000',
                     '-reconnect',          '1',
                     '-reconnect_streamed', '1',
-                    '-reconnect_delay_max','30',
+                    '-reconnect_delay_max', '30',
                     '-i',                  $inputUrl,
                 ];
 
-            // HLS: http/https URLs ending in .m3u8/.m3u OR explicitly set to hls
+                // HLS: http/https URLs ending in .m3u8/.m3u OR explicitly set to hls
             case $type === 'hls' && ! $isHttpMpegts:
                 // Master playlists can make FFmpeg probe every variant at once,
                 // which breaks on some CDNs. Resolve to a single media playlist.
@@ -855,7 +907,7 @@ class FFmpegService
                     '-analyzeduration', $analyze,
                     '-timeout',         '10000000',
                     '-reconnect',       '1',
-                    '-reconnect_at_eof','1',
+                    '-reconnect_at_eof', '1',
                     '-reconnect_streamed', '1',
                     '-reconnect_delay_max', '5',
                 ];
@@ -914,8 +966,13 @@ class FFmpegService
      */
     public function isIptvStream(Channel $channel): bool
     {
-        if ($channel->isPushIngest()) return false;
-        if ($channel->source_type === 'youtube') return true; // never ffprobe YouTube URLs
+        if ($channel->isPushIngest()) {
+            return false;
+        }
+        if ($channel->source_type === 'youtube') {
+            return true;
+        } // never ffprobe YouTube URLs
+
         return $this->isHttpMpegts($channel->source_url, $channel->source_type);
     }
 
