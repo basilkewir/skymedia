@@ -49,25 +49,22 @@ class MonitorStreams extends Command
                     }
 
                     // Auto-recovery: if channel is offline and hasn't recovered
-                    // within 30 seconds, restart the ingest to accept reconnections.
-                    // Skip channels already in fallback mode — they're playing VOD
-                    // content and restarting would kill the playout for no benefit.
+                    // within 30 seconds, refresh ingest to try next source.
+                    // Pull channels: use refreshIngest() — push stays running.
+                    // Push-ingest channels: restart only if listener died.
                     $ch = $channel->fresh();
-                    if ($ch->stream_status === 'offline' && !$ch->source_live
-                        && $ch->playout_status !== 'fallback') {
+                    if ($ch->stream_status === 'offline' && !$ch->source_live) {
                         $lastLive = $ch->last_live_at ? $ch->last_live_at->timestamp : 0;
                         $offlineDuration = time() - $lastLive;
                         if ($offlineDuration >= 30) {
                             $lastRestart = $this->lastAutoRestart[$ch->id] ?? 0;
-                            if ((time() - $lastRestart) < 60) {
-                                return; // Cooldown: don't restart more than once per 60s
+                            if ((time() - $lastRestart) < 30) {
+                                return; // Cooldown: don't restart more than once per 30s
                             }
 
                             try {
                                 if ($ch->isPushIngest()) {
-                                    // Managed channel: only restart if the listener died.
-                                    // If it's alive and listening, leave it alone —
-                                    // killing it interrupts vMix/encoder connections.
+                                    // Managed push-ingest: only restart if the listener died.
                                     $port = (int) ($ch->ingest_port ?? 0);
                                     $portInUse = false;
                                     if ($port > 0) {
@@ -90,18 +87,19 @@ class MonitorStreams extends Command
                                         ));
                                     }
                                 } else {
-                                    // Pull channel: restart ingest to retry source
-                                    $manager->restartChannel($ch);
+                                    // Pull channel: refresh ingest without stopping push.
+                                    // Tries next source in failover chain.
+                                    $manager->refreshIngest($ch);
                                     $this->lastAutoRestart[$ch->id] = time();
                                     $this->line(sprintf(
-                                        '[%s] %-22s  AUTO-RESTART: ingest restarted after %ds offline',
+                                        '[%s] %-22s  AUTO-REFRESH: ingest refreshed after %ds offline',
                                         now()->format('H:i:s'),
                                         mb_substr($ch->name, 0, 22),
                                         $offlineDuration
                                     ));
                                 }
                             } catch (\Throwable $e) {
-                                Log::error("Auto-restart failed for {$ch->name}: {$e->getMessage()}");
+                                Log::error("Auto-recovery failed for {$ch->name}: {$e->getMessage()}");
                             }
                         }
                     }

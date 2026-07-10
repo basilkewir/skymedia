@@ -371,7 +371,12 @@ class ChannelController extends Controller
     public function restart(Channel $channel): RedirectResponse
     {
         $this->ensureChannelAccess($channel);
-        $this->manager->restartChannel($channel);
+
+        if ($channel->isPushIngest()) {
+            $this->manager->restartChannel($channel);
+        } else {
+            $this->manager->refreshIngest($channel);
+        }
 
         return back()->with('success', 'Channel restarted');
     }

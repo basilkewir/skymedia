@@ -182,6 +182,134 @@ class StreamManager
         return $this->startChannel($channel->fresh());
     }
 
+    /**
+     * Refresh ingest without stopping the external push.
+     * For pull channels: stops only the ingest, tries next source in failover
+     * chain, restarts ingest. Push continues running (pushing DVR/fallback).
+     * For push-ingest channels: falls back to full restartChannel().
+     */
+    public function refreshIngest(Channel $channel): bool
+    {
+        if ($channel->isPushIngest()) {
+            return $this->restartChannel($channel);
+        }
+
+        try {
+            $this->log($channel, 'info', 'refreshing_ingest',
+                'Refreshing ingest — push continues running');
+
+            // 1. Stop only the ingest (not push, not playout, not recording)
+            $this->ingest->stop($channel);
+            $channel->update(['pid' => null, 'source_live' => false]);
+
+            // 2. Try next sources in the failover chain
+            //    cleanSegments=false preserves live.m3u8 so push keeps running
+            if ($channel->hasMultipleSources()) {
+                while ($next = $channel->nextSource()) {
+                    try {
+                        // Temporarily set source_url for this attempt (don't activate yet)
+                        $prevUrl = $channel->source_url;
+                        $prevSourceId = $channel->current_source_id;
+                        $channel->update([
+                            'source_url' => $next->source_url,
+                            'source_type' => $next->source_type,
+                        ]);
+
+                        $this->ingest->start($channel, cleanSegments: false);
+                        $this->log($channel, 'info', 'source_switched',
+                            "Refresh: trying source [{$next->id}]: {$next->source_url}");
+
+                        // 3. Wait for live.m3u8 to have segments
+                        $start = time();
+                        $maxWait = max(10, (int) $channel->segment_duration * 3 + 2);
+                        while (time() - $start < $maxWait) {
+                            if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) break;
+                            usleep(250_000);
+                        }
+
+                        if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) {
+                            // Source is working — NOW activate it permanently
+                            $channel->activateSource($next);
+                            $this->playout->switchToLive($channel->fresh());
+                            $channel->update([
+                                'source_live'    => true,
+                                'last_live_at'   => now(),
+                                'stream_status'  => 'live',
+                                'playout_status' => 'live',
+                            ]);
+                            $channel->resetRetries();
+                            $this->alert->sendRecoveryAlert($channel->fresh());
+                            event(new StreamStatusChanged($channel, 'live'));
+                            $this->log($channel, 'info', 'refresh_recovered',
+                                'Ingest refreshed — source recovered');
+                            return true;
+                        }
+                        // live.m3u8 not ready — this source is also dead, revert
+                        $this->log($channel, 'warning', 'source_refresh_no_segments',
+                            "Source [{$next->id}] started but no segments — trying next");
+                        $this->ingest->stop($channel);
+                        $channel->update([
+                            'source_url' => $prevUrl,
+                            'current_source_id' => $prevSourceId,
+                            'pid' => null,
+                        ]);
+                    } catch (\Throwable $e) {
+                        $this->log($channel, 'error', 'source_refresh_failed',
+                            "Source [{$next->id}] failed: " . $e->getMessage());
+                        $next->update(['last_error' => $e->getMessage()]);
+                        $channel->refresh();
+                    }
+                }
+                $this->log($channel, 'info', 'all_sources_exhausted',
+                    'Refresh: all backup sources exhausted — staying in fallback');
+                // Reset current_source_id so next refresh cycles from priority 1
+                $channel->update(['current_source_id' => null, 'source_url' =>
+                    $channel->channelSources()->where('is_active', true)->orderBy('priority')->first()?->source_url
+                    ?? $channel->source_url]);
+            } else {
+                // No multiple sources — try restarting the same source
+                try {
+                    $this->ingest->start($channel, cleanSegments: false);
+                    $start = time();
+                    $maxWait = max(10, (int) $channel->segment_duration * 3 + 2);
+                    while (time() - $start < $maxWait) {
+                        if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) break;
+                        usleep(250_000);
+                    }
+
+                    if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) {
+                        $this->playout->switchToLive($channel->fresh());
+                        $channel->update([
+                            'source_live'    => true,
+                            'last_live_at'   => now(),
+                            'stream_status'  => 'live',
+                            'playout_status' => 'live',
+                        ]);
+                        $channel->resetRetries();
+                        $this->alert->sendRecoveryAlert($channel->fresh());
+                        event(new StreamStatusChanged($channel, 'live'));
+                        $this->log($channel, 'info', 'refresh_recovered',
+                            'Ingest refreshed — source recovered');
+                        return true;
+                    }
+                    $this->log($channel, 'warning', 'source_refresh_no_segments',
+                        'Refresh: source started but no segments — staying in fallback');
+                    $this->ingest->stop($channel);
+                    $channel->update(['pid' => null]);
+                } catch (\Throwable $e) {
+                    $this->log($channel, 'error', 'source_refresh_failed',
+                        'Refresh failed: ' . $e->getMessage());
+                }
+            }
+
+            return false;
+        } catch (\Throwable $e) {
+            $this->log($channel, 'error', 'refresh_error', $e->getMessage());
+            Log::error("[Channel {$channel->id}] refreshIngest: {$e->getMessage()}");
+            return false;
+        }
+    }
+
     public function activateAll(): void
     {
         Channel::where('is_active', true)

@@ -39,9 +39,13 @@ class IngestController extends Controller
     {
         $this->admin();
         try {
-            $this->manager->stopChannel($channel);
-            $channel->update(['is_active' => true]);
-            $ok = $this->manager->startChannel($channel->fresh());
+            if ($channel->isPushIngest()) {
+                $this->manager->stopChannel($channel);
+                $channel->update(['is_active' => true]);
+                $ok = $this->manager->startChannel($channel->fresh());
+            } else {
+                $ok = $this->manager->refreshIngest($channel);
+            }
         } catch (\Throwable $e) {
             return back()->with('error', 'Ingest restart failed: ' . $e->getMessage());
         }
