@@ -47,10 +47,15 @@ class PushService
             return false;
         }
 
-        // Already running — push reads output.m3u8 which the playout module
+        // Already running and healthy — push reads output.m3u8 which the playout module
         // swaps atomically underneath. Never restart for playlist changes.
-        if ($this->isRunning($channel)) {
+        if ($this->isHealthy($channel)) {
             return true;
+        }
+
+        // Process is alive but log shows a fatal error — stop it before restart.
+        if ($this->isRunning($channel)) {
+            $this->stopPrimary($channel);
         }
 
         $playlist = $this->playout->outputPlaylist($channel);
@@ -104,6 +109,19 @@ class PushService
     }
 
     /**
+     * True when the push process is running AND the log shows it is actually
+     * connected and streaming. A hung or auth-failed process is not healthy.
+     */
+    public function isHealthy(Channel $channel): bool
+    {
+        if (! $this->isRunning($channel)) {
+            return false;
+        }
+
+        return $this->ffmpeg->isPushConnected($this->ffmpeg->logFile($channel, 'push'));
+    }
+
+    /**
      * Watchdog: called every monitor tick. Restarts push if it died,
      * using exponential backoff (2s → 4s → 8s … capped at 30s).
      * Auth failures are NOT retried until the operator fixes credentials.
@@ -113,7 +131,7 @@ class PushService
     {
         if (empty($channel->push_url)) return false;
 
-        if ($this->isRunning($channel)) {
+        if ($this->isHealthy($channel)) {
             // Running fine — reset backoff
             $this->pushBackoff[$channel->id] = 2;
             return true;
@@ -121,7 +139,12 @@ class PushService
 
         // Auth failure: do not retry automatically
         $lastError = $channel->last_error ?? '';
-        if (str_contains($lastError, 'authfailed') || str_contains($lastError, 'AccessManager')) {
+        if (str_contains(strtolower($lastError), 'authfailed')
+            || str_contains(strtolower($lastError), 'accessmanager')
+            || str_contains(strtolower($lastError), 'authentication failed')
+            || str_contains(strtolower($lastError), 'unauthorized')
+            || str_contains(strtolower($lastError), 'incorrect key')
+            || str_contains(strtolower($lastError), 'no authority')) {
             if ($channel->push_status !== 'error') {
                 $channel->update(['push_status' => 'error']);
                 Log::error("[Push] {$channel->name}: auth rejected — fix credentials to resume");

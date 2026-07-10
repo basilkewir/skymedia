@@ -420,7 +420,11 @@ class PlayoutService
         $branding = $this->ffmpeg->brandingFlags($channel);
         $hasBranding = ! empty($branding['video']);
 
-        if ($useCopy && ! $hasBranding) {
+        // LLOD v3: when enabled, force re-encode so keyframes and B-frames are
+        // controlled precisely. This guarantees instant playback and clean splits.
+        $llodReencode = config('skymedia.llod_v3_reencode_fallback', false);
+
+        if ($useCopy && ! $hasBranding && ! $llodReencode) {
             return [
                 $this->ffmpeg->getBin(),
                 '-y', '-loglevel', 'warning', '-stats',
@@ -460,17 +464,41 @@ class PlayoutService
             '-i',     $input,
         ];
 
-        // Apply branding overlay (logo + ticker) to fallback content
+        // Apply branding overlay (logo + ticker) to fallback content, or
+        // re-encode for LLOD v3 when forced.
         if ($hasBranding) {
             $cmd = array_merge($cmd, $branding['inputs']);
             $cmd = array_merge($cmd, $branding['video']);
+        } elseif ($llodReencode) {
+            $fps = max(1, (int) ($channel->push_framerate ?? 25));
+            $cmd[] = '-c:v';
+            $cmd[] = 'libx264';
+            $cmd[] = '-preset';
+            $cmd[] = 'veryfast';
+            $cmd[] = '-tune';
+            $cmd[] = 'zerolatency';
+            $cmd[] = '-b:v';
+            $cmd[] = ((int) ($channel->push_video_bitrate ?? 2000)) . 'k';
+            $cmd[] = '-maxrate';
+            $cmd[] = ((int) (($channel->push_video_bitrate ?? 2000) * 1.2)) . 'k';
+            $cmd[] = '-bufsize';
+            $cmd[] = ((int) (($channel->push_video_bitrate ?? 2000) * 2)) . 'k';
+            $cmd[] = '-pix_fmt';
+            $cmd[] = 'yuv420p';
+            // LLOD v3 — strict 2-second GOP, no scene-cut keyframes, no B-frames
+            $cmd[] = '-g';
+            $cmd[] = (string) ($fps * 2);
+            $cmd[] = '-keyint_min';
+            $cmd[] = (string) ($fps * 2);
+            $cmd[] = '-sc_threshold';
+            $cmd[] = '0';
         } else {
             $cmd[] = '-c:v';
             $cmd[] = 'copy';
         }
 
         $cmd = array_merge($cmd, [
-            '-c:a',  'copy',
+            '-c:a',  $llodReencode || $hasBranding ? 'aac' : 'copy',
             '-f',                    'hls',
             '-hls_time',             (string) $segDur,
             '-hls_list_size',        '10',
@@ -513,12 +541,13 @@ class PlayoutService
             '-i',    $concatFile,
             '-c:v',  'libx264',
             '-preset', 'veryfast',
-            '-tune', 'film',
+            '-tune', 'zerolatency',
             '-crf',  '23',
             '-pix_fmt', 'yuv420p',
             '-g',    '60',
             '-keyint_min', '60',
             '-sc_threshold', '0',
+            '-bf',   '0',
             '-c:a',  'aac',
             '-b:a',  '128k',
             '-movflags', '+faststart',

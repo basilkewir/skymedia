@@ -447,7 +447,7 @@ class StreamManager
 
         $this->alert->sendOfflineAlert($channel->fresh(), 'Source unreachable', $this->playout->hasFallback($channel));
 
-        // ── Switch to fallback ──
+        // ── Switch to fallback immediately for both push and pull ingest ──
         // switchToFallback generates slate on-demand if no recordings/VOD exist yet.
         if ($this->playout->switchToFallback($channel->fresh())) {
             $channel->update(['playout_status' => 'fallback']);

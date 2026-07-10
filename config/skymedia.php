@@ -62,4 +62,25 @@ return [
      * Default: 24 hours
      */
     'min_recording_retention_hours' => env('SKYMEDIA_MIN_RECORDING_RETENTION_HOURS', 24),
+
+    /*
+     * LLOD v3 — Low-Latency On-Demand fallback mode.
+     * When true, fallback content is always re-encoded to H.264 with a
+     * fixed 2-second GOP and no B-frames. This guarantees instant playback
+     * startup and clean segment splits, at the cost of additional CPU.
+     * When false, fallback uses stream-copy when possible (lower CPU but
+     * segment quality depends on the source files' keyframe cadence).
+     * Default: false
+     */
+    'llod_v3_reencode_fallback' => env('SKYMEDIA_LLOD_V3_REENCODE_FALLBACK', false),
+
+    /*
+     * LLOD v3 — Low-Latency On-Demand ingest mode.
+     * When true, incoming streams are re-encoded to H.264 with a fixed
+     * 2-second GOP and AAC audio. This guarantees short HLS segments and
+     * instant playback on downstream players/panels, at the cost of
+     * additional CPU. Use for sources with long GOPs (e.g. > 5 seconds).
+     * Default: false
+     */
+    'llod_v3_reencode_ingest' => env('SKYMEDIA_LLOD_V3_REENCODE_INGEST', false),
 ];

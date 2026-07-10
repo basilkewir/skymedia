@@ -231,6 +231,35 @@ class FFmpegService
         // Managed RTMP/SRT publishers are relay-only. Keep only the small HLS
         // working buffer required for preview/fallback switching.
         $dvrEnabled = ! $channel->isPushIngest() && $channel->dvr_enabled !== false;
+        $llodReencode = config('skymedia.llod_v3_reencode_ingest', false);
+
+        // LLOD v3 re-encode forces a short GOP and AAC audio so downstream
+        // HLS players (and pushes to Wowza/XUI ONE) get clean 2-second segments.
+        $fps = max(1, (int) ($channel->push_framerate ?? 25));
+        $videoCodec = $llodReencode ? 'libx264' : 'copy';
+        $audioCodec = $llodReencode ? 'aac' : 'copy';
+
+        $codecFlags = [
+            '-c:v', $videoCodec,
+            '-c:a', $audioCodec,
+        ];
+
+        if ($llodReencode) {
+            $codecFlags = array_merge($codecFlags, [
+                '-preset',   'veryfast',
+                '-tune',     'zerolatency',
+                '-b:v',      ((int) ($channel->push_video_bitrate ?? 2000)) . 'k',
+                '-maxrate',  ((int) (($channel->push_video_bitrate ?? 2000) * 1.2)) . 'k',
+                '-bufsize',  ((int) (($channel->push_video_bitrate ?? 2000) * 2)) . 'k',
+                '-pix_fmt',  'yuv420p',
+                '-g',        (string) ($fps * 2),
+                '-keyint_min', (string) ($fps * 2),
+                '-sc_threshold', '0',
+                '-b:a',      '128k',
+                '-ar',       '48000',
+                '-ac',       '2',
+            ]);
+        }
 
         return array_merge(
             [
@@ -240,25 +269,24 @@ class FFmpegService
                 '-stats',
             ],
             $this->inputFlags($channel),
+            $codecFlags,
             [
-            '-c:v', 'copy',
-            '-c:a', 'copy',
-            '-f',                    'hls',
-            '-hls_time',             (string) max(1, (int) $channel->segment_duration),
-            '-hls_list_size',        $dvrEnabled ? '15' : '10',
-            '-hls_flags',            'delete_segments+omit_endlist+append_list',
-            '-hls_delete_threshold', $dvrEnabled ? '4' : '3',
-            '-hls_segment_type',     'mpegts',
-            '-hls_segment_filename', $segPattern,
-            '-hls_allow_cache',      '0',
-            '-hls_start_number_source', 'epoch',
-            '-max_muxing_queue_size', '4096',
-            // LLOD v3 — force keyframes every 2 seconds for clean
-            // segment splits and instant playback on the player side.
-            '-force_key_frames',     'expr:gte(t,n_forced*2)',
-            // LLOD v3 — skip B-frames to reduce decoder latency.
-            '-bf',                   '0',
-            $m3u8,
+                '-f',                    'hls',
+                '-hls_time',             (string) max(1, (int) $channel->segment_duration),
+                '-hls_list_size',        $dvrEnabled ? '15' : '10',
+                '-hls_flags',            'delete_segments+omit_endlist+append_list',
+                '-hls_delete_threshold', $dvrEnabled ? '4' : '3',
+                '-hls_segment_type',     'mpegts',
+                '-hls_segment_filename', $segPattern,
+                '-hls_allow_cache',      '0',
+                '-hls_start_number_source', 'epoch',
+                '-max_muxing_queue_size', '4096',
+                // LLOD v3 — force keyframes every 2 seconds for clean
+                // segment splits and instant playback on the player side.
+                '-force_key_frames',     'expr:gte(t,n_forced*2)',
+                // LLOD v3 — skip B-frames to reduce decoder latency.
+                '-bf',                   '0',
+                $m3u8,
             ]
         );
     }
@@ -519,8 +547,8 @@ class FFmpegService
         file_put_contents($pidFile, $pid);
 
         // Wait up to $stabiliseSeconds for process to stabilise
-        $checks = $stabiliseSeconds * 2; // 500ms per check
-        $minAlive = max(2, (int) ($stabiliseSeconds * 0.6)); // must survive 60% of window
+        $checks = max(2, $stabiliseSeconds * 2); // 500ms per check, at least 1s
+        $minAlive = min($checks - 1, max(1, (int) ceil($stabiliseSeconds * 0.6))); // must survive ~60% of window
         $alive = false;
         for ($i = 0; $i < $checks; $i++) {
             usleep(500_000);
@@ -847,6 +875,61 @@ class FFmpegService
         }
 
         return false;
+    }
+
+    /**
+     * Check whether a push/relay process is actually connected and streaming.
+     * The process may be alive but endlessly reconnecting or stuck on auth.
+     * We inspect the recent log tail for fatal/unrecoverable connection errors.
+     */
+    public function isPushConnected(string $logFile, int $lookbackSeconds = 60): bool
+    {
+        if (! file_exists($logFile) || filesize($logFile) === 0) {
+            return true; // no log yet, assume still starting
+        }
+
+        $tail = $this->readLogTail($logFile, 80);
+        if ($tail === '') {
+            return true;
+        }
+
+        // Fatal connection errors that ffmpeg cannot auto-recover from
+        $fatalPatterns = [
+            'connection refused',
+            'connection reset by peer',
+            'connection timed out',
+            'network is unreachable',
+            'no route to host',
+            'invalid argument',
+            'cannot assign requested address',
+            'rtmp url does not contain',
+            'failed to open rtsp',
+            'error parsing url',
+            'authfailed',
+            'accessmanager',
+            'authentication failed',
+            'incorrect key',
+            'no authority',
+            'unauthorized',
+            '403 forbidden',
+            '404 not found',
+            '500 internal',
+        ];
+
+        $lower = strtolower($tail);
+        foreach ($fatalPatterns as $pattern) {
+            if (str_contains($lower, $pattern)) {
+                return false;
+            }
+        }
+
+        // If ffmpeg has been running but produced no frames for a while, it may be stuck.
+        // Detect "speed=0.00x" or missing frame= lines in recent tail.
+        if (str_contains($lower, 'speed=0.00x') || str_contains($lower, 'speed=   0x')) {
+            return false;
+        }
+
+        return true;
     }
 
     // ===================================================================

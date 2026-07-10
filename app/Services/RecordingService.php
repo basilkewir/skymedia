@@ -259,6 +259,13 @@ class RecordingService
         if ($channel->record_duration <= 0) {
             return false;
         }
+        if ($channel->isPushIngest()) {
+            return false;
+        }
+        // Only record when the source is actually live (not during fallback/VOD)
+        if (! $channel->source_live || $channel->stream_status !== 'live') {
+            return false;
+        }
         if ($this->isRunning($channel)) {
             return false;
         }
