@@ -296,12 +296,6 @@ class FFmpegService
             // an atomic symlink swap (live ↔ fallback transition).
             '-max_reload',         '1000',
             '-m3u8_hold_counters', '1000',
-            // Reconnect when the local HLS playlist is briefly unavailable
-            // (segment rotation gap). Without these, ffmpeg gives up after
-            // the first failed segment fetch and exits with Broken pipe.
-            '-reconnect_at_eof',   '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '2',
             '-i',                  $playlistPath,
         ];
 
