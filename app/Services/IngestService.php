@@ -21,8 +21,12 @@ class IngestService
      */
     public function start(Channel $channel, bool $cleanSegments = true): bool
     {
-        // Kill any existing process (tracked or orphaned).
-        if ($this->isRunning($channel)) {
+        // For push-ingest channels, use the full stopAllListeners routine so
+        // stale loop shells (which respawn ffmpeg immediately) are removed
+        // before we try to bind the port again.
+        if ($channel->isPushIngest() && $channel->ingest_port) {
+            $this->stopAllListeners($channel);
+        } elseif ($this->isRunning($channel)) {
             $this->stop($channel);
         } else {
             $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
@@ -129,53 +133,69 @@ class IngestService
             $port = 20000 + $channel->id;
         }
 
-        // Write the sentinel stop file FIRST so the loop does not restart
-        // ffmpeg after we kill it.
         $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
-        @touch($pidFile . '.stop');
-
-        // Kill the loop process (shell wrapper) and its ffmpeg child
-        $loopPid = $this->ffmpeg->readPid($pidFile);
-        if ($loopPid > 0) {
-            exec("pkill -KILL -P {$loopPid} 2>/dev/null"); // kill ffmpeg child first
-            exec("kill -KILL {$loopPid} 2>/dev/null");     // then kill the loop
-        }
-
-        // Also kill any other loop shells for this channel that are not tracked
-        // by the PID file (e.g. after a crash/redeploy left a stale loop running).
+        $stopFile = $pidFile . '.stop';
         $listenUrl = $channel->ingest_listen_url ?? '';
-        if ($listenUrl !== '') {
-            exec("ps aux | grep -F " . escapeshellarg($listenUrl) . " | grep -F 'while' | grep -v grep | awk '{print \$2}' 2>/dev/null", $loopLines);
+
+        // Write the sentinel stop file FIRST so loops exit cleanly instead of
+        // respawning ffmpeg after we kill the current child.
+        @touch($stopFile);
+
+        $totalKilled = 0;
+        $loopPidsKilled = [];
+
+        // Repeatedly kill every loop shell and ffmpeg child for this channel
+        // until none remain. A single pass is not enough because stale loops
+        // from previous hangs/restarts can respawn faster than we clean them.
+        for ($pass = 0; $pass < 5; $pass++) {
+            $killedThisPass = 0;
+
+            // 1. Find all loop shells that reference this channel's listen URL.
+            $loopLines = [];
+            if ($listenUrl !== '') {
+                exec("ps aux | grep -F " . escapeshellarg($listenUrl) . " | grep -F 'while' | grep -v grep | awk '{print \$2}' 2>/dev/null", $loopLines);
+            }
+
             foreach ($loopLines as $line) {
                 $pid = (int) trim($line);
-                if ($pid > 0 && $pid !== $loopPid) {
-                    exec("pkill -KILL -P {$pid} 2>/dev/null"); // ffmpeg child
+                if ($pid > 0 && ! in_array($pid, $loopPidsKilled, true)) {
+                    exec("pkill -KILL -P {$pid} 2>/dev/null"); // ffmpeg child first
                     exec("kill -KILL {$pid} 2>/dev/null");     // loop shell
-                    $loopPid = $pid; // for logging only
+                    $loopPidsKilled[] = $pid;
+                    $killedThisPass++;
                 }
             }
-        }
 
-        // Kill any remaining ffmpeg processes holding this port
-        $count = 0;
-        exec("ps aux | grep -F '0.0.0.0:{$port}' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
-        foreach ($lines as $line) {
-            $pid = (int) trim($line);
-            if ($pid > 0) {
-                exec("kill -KILL {$pid} 2>/dev/null");
-                $count++;
+            // 2. Kill any remaining ffmpeg processes bound to this port.
+            $ffmpegLines = [];
+            exec("ps aux | grep -F '0.0.0.0:{$port}' | grep -v grep | awk '{print \$2}' 2>/dev/null", $ffmpegLines);
+            foreach ($ffmpegLines as $line) {
+                $pid = (int) trim($line);
+                if ($pid > 0) {
+                    exec("kill -KILL {$pid} 2>/dev/null");
+                    $killedThisPass++;
+                }
             }
+
+            $totalKilled += $killedThisPass;
+
+            if ($killedThisPass === 0) {
+                break;
+            }
+
+            usleep(200_000); // brief pause for kernel to reap processes
         }
 
         $this->ffmpeg->clearPid($pidFile); // also removes .stop file
         $channel->update(['pid' => null]);
 
-        if ($count > 0 || $loopPid > 0) {
-            Log::info("[Ingest] {$channel->name} stopped listener loop (PID {$loopPid}) + {$count} orphan(s) on port {$port}");
+        if ($totalKilled > 0) {
+            $loopList = $loopPidsKilled ? implode(',', $loopPidsKilled) : 'none';
+            Log::info("[Ingest] {$channel->name} stopped listener loops (PIDs {$loopList}) + {$totalKilled} orphan(s) on port {$port}");
         }
 
         usleep(300_000); // 300ms for kernel to release port
-        return $count;
+        return $totalKilled;
     }
 
     public function isRunning(Channel $channel): bool

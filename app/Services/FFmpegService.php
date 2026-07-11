@@ -546,18 +546,22 @@ class FFmpegService
         // any running ffmpeg child.
         $isRtmpListener = in_array('-listen', $command) && in_array('1', $command);
         if ($isRtmpListener) {
-            // Write a sentinel file so the loop knows when to stop cleanly
+            // Write a sentinel file so the loop knows when to stop cleanly.
+            // Use setsid so the loop shell is detached from the parent tty and
+            // does not keep a `docker exec` session open after the command exits.
             $stopFile = $pidFile . '.stop';
             @unlink($stopFile);
-            $shell = "export PATH={$path}:\$PATH; ("
-                . 'while [ ! -f ' . escapeshellarg($stopFile) . ' ]; do '
-                . "{$escaped} >> " . escapeshellarg($logFile) . ' 2>&1; '
-                . '[ ! -f ' . escapeshellarg($stopFile) . ' ] && sleep 1; '
-                . 'done'
-                . ') & echo $!';
+            $shell = "export PATH={$path}:\$PATH; setsid sh -c "
+                . escapeshellarg(
+                    'while [ ! -f ' . escapeshellarg($stopFile) . ' ]; do '
+                    . $escaped . ' >> ' . escapeshellarg($logFile) . ' 2>&1; '
+                    . '[ ! -f ' . escapeshellarg($stopFile) . ' ] && sleep 1; '
+                    . 'done'
+                )
+                . ' </dev/null >/dev/null 2>&1 & echo $!';
         } else {
-            $shell = "export PATH={$path}:\$PATH; nohup {$escaped} >> "
-                     . escapeshellarg($logFile) . ' 2>&1 & echo $!';
+            $shell = "export PATH={$path}:\$PATH; setsid nohup {$escaped} >> "
+                     . escapeshellarg($logFile) . ' 2>&1 </dev/null & echo $!';
         }
 
         $pid = (int) trim((string) shell_exec($shell));
