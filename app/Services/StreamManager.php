@@ -531,6 +531,7 @@ class StreamManager
         // Atomically symlink output.m3u8 → live.m3u8.
         // Fallback loop stays running in the background for instant switch-back.
         $this->playout->switchToLive($channel->fresh());
+        $this->log($channel, 'info', 'switched_to_live', 'Playout switched to live stream');
 
         // Branding is now baked into fallback content at the playout level.
         // Push always uses -c:v copy — no restart needed for transitions.
