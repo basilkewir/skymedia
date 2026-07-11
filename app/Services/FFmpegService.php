@@ -770,8 +770,13 @@ class FFmpegService
         $dvrDir = $channel->dvr_directory;
         $m3u8 = $dvrDir . '/output.m3u8';
 
-        // output.m3u8 is a symlink — resolve the target playlist
-        $target = is_link($m3u8) ? readlink($m3u8) : 'live.m3u8';
+        // output.m3u8 is a symlink — resolve the target playlist.
+        // Suppress warnings in case the symlink is removed between is_link()
+        // and readlink() during a live↔fallback swap.
+        $target = is_link($m3u8) ? @readlink($m3u8) : 'live.m3u8';
+        if ($target === false) {
+            $target = 'live.m3u8';
+        }
         $playlist = $dvrDir . '/' . $target;
 
         if (! file_exists($playlist)) {

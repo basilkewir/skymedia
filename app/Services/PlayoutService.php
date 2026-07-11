@@ -203,7 +203,7 @@ class PlayoutService
         }
 
         $link = $this->outputPlaylist($channel);
-        $current = is_link($link) ? readlink($link) : null;
+        $current = is_link($link) ? @readlink($link) : null;
         $slot = $current === 'playout_a.m3u8' ? 'b' : 'a';
         $oldPidFile = $this->ffmpeg->pidFile($channel, 'playout');
         $oldPid = $this->ffmpeg->readPid($oldPidFile);
