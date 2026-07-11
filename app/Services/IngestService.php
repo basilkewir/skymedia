@@ -141,6 +141,21 @@ class IngestService
             exec("kill -KILL {$loopPid} 2>/dev/null");     // then kill the loop
         }
 
+        // Also kill any other loop shells for this channel that are not tracked
+        // by the PID file (e.g. after a crash/redeploy left a stale loop running).
+        $listenUrl = $channel->ingest_listen_url ?? '';
+        if ($listenUrl !== '') {
+            exec("ps aux | grep -F " . escapeshellarg($listenUrl) . " | grep -F 'while' | grep -v grep | awk '{print \$2}' 2>/dev/null", $loopLines);
+            foreach ($loopLines as $line) {
+                $pid = (int) trim($line);
+                if ($pid > 0 && $pid !== $loopPid) {
+                    exec("pkill -KILL -P {$pid} 2>/dev/null"); // ffmpeg child
+                    exec("kill -KILL {$pid} 2>/dev/null");     // loop shell
+                    $loopPid = $pid; // for logging only
+                }
+            }
+        }
+
         // Kill any remaining ffmpeg processes holding this port
         $count = 0;
         exec("ps aux | grep -F '0.0.0.0:{$port}' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
