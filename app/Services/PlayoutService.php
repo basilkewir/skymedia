@@ -184,7 +184,9 @@ class PlayoutService
             return false;
         }
 
-        $target = readlink($link);
+        // Suppress warning if the symlink was removed between is_link() and
+        // readlink() (race with switchToFallback/switchToLive).
+        $target = @readlink($link);
 
         return $target === 'live.m3u8';
     }

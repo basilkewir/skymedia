@@ -43,17 +43,22 @@ class StreamManager
 
             // 2. Start the fallback loop as warm standby (non-blocking).
             //    This ensures output.m3u8 → playout_X.m3u8 is always ready
-            //    the instant the source goes offline. Push-managed channels
-            //    also need this so the VOD/playlist loop is already pushing
-            //    before the external encoder connects.
-            try {
-                Log::info("[Debug] startChannel {$channel->name} step 2 ensureFallbackRunning");
-                $this->playout->ensureFallbackRunning($channel);
-                $this->log($channel, 'info', 'fallback_standyby',
-                    'Fallback loop started as warm standby');
-            } catch (\Throwable $e) {
-                $this->log($channel, 'warning', 'fallback_standyby_failed',
-                    'Fallback warm standby failed (will retry on source loss): ' . $e->getMessage());
+            //    the instant the source goes offline.
+            //    For push-ingest channels we skip this here: step 4 calls
+            //    switchToFallback() which creates the active fallback slot and
+            //    points output.m3u8 to it in one go. Calling ensureFallbackRunning
+            //    first would start a second process in slot 'a' and cause
+            //    duplicate fallback loops.
+            if (! $channel->isPushIngest()) {
+                try {
+                    Log::info("[Debug] startChannel {$channel->name} step 2 ensureFallbackRunning");
+                    $this->playout->ensureFallbackRunning($channel);
+                    $this->log($channel, 'info', 'fallback_standyby',
+                        'Fallback loop started as warm standby');
+                } catch (\Throwable $e) {
+                    $this->log($channel, 'warning', 'fallback_standyby_failed',
+                        'Fallback warm standby failed (will retry on source loss): ' . $e->getMessage());
+                }
             }
 
             // Kill any orphan listeners from a previous run before starting fresh.
