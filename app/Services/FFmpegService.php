@@ -1197,7 +1197,7 @@ class FFmpegService
     //  INTERNAL — ENCODING FLAGS
     // ===================================================================
 
-    protected function videoEncodeFlags(Channel $channel): array
+    public function videoEncodeFlags(Channel $channel): array
     {
         $codec = $channel->push_video_codec ?? 'copy';
         $needsEncode = $codec !== 'copy'
@@ -1249,7 +1249,7 @@ class FFmpegService
         return $flags;
     }
 
-    protected function audioEncodeFlags(Channel $channel): array
+    public function audioEncodeFlags(Channel $channel): array
     {
         $codec = $channel->push_audio_codec ?? 'aac';
         if ($codec === 'copy') {
