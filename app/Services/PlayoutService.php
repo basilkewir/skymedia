@@ -195,6 +195,7 @@ class PlayoutService
 
     public function switchToFallback(Channel $channel): bool
     {
+        Log::info("[Playout] {$channel->name} switchToFallback started");
         $files = $this->resolveFallbackFiles($channel);
         if (empty($files)) {
             Log::warning("[Playout] {$channel->name}: no fallback files available");
@@ -234,6 +235,7 @@ class PlayoutService
 
         if ($pid === null) {
             Log::warning("[Playout] {$channel->name}: copy-concat fallback failed, trying re-encode loop");
+            Log::info("[Playout] {$channel->name} building fallback loop asset (this may be slow for large files)");
             $loopAsset = $this->buildFallbackLoopAsset($channel, $files, $slot);
             if ($loopAsset === null) {
                 Log::error("[Playout] {$channel->name}: could not build fallback loop asset");
@@ -455,10 +457,11 @@ class PlayoutService
         // controlled precisely. This guarantees instant playback and clean splits.
         $llodReencode = config('skymedia.llod_v3_reencode_fallback', false);
 
-        // If the operator configured an output codec/bitrate/framerate, enforce
-        // it on fallback so uploaded files / playlists match the live push.
-        $outputCodec = $channel->push_video_codec ?? 'copy';
-        $needsReencode = $hasBranding || $llodReencode || $outputCodec !== 'copy';
+        // Fallback should play as quickly as possible. Only force a re-encode
+        // when branding must be baked in or when explicitly configured via
+        // LLOD v3. The push stage can re-encode to the operator's requested
+        // codec/bitrate, so copy-concat is preferred here for fast start.
+        $needsReencode = $hasBranding || $llodReencode;
 
         if ($useCopy && ! $needsReencode) {
             return [
