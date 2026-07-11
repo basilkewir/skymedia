@@ -358,7 +358,7 @@ class PlayoutService
     private function findFallbackPids(Channel $channel): array
     {
         $dvrDir = $channel->dvr_directory;
-        exec("ps aux | grep -F " . escapeshellarg($dvrDir) . " | grep -F 'playout_' | grep -F 'ffmpeg' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
+        exec('ps aux | grep -F ' . escapeshellarg($dvrDir) . " | grep -F 'playout_' | grep -F 'ffmpeg' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
 
         return array_values(array_filter(array_map('intval', $lines)));
     }
@@ -467,7 +467,11 @@ class PlayoutService
             return [
                 $this->ffmpeg->getBin(),
                 '-y', '-loglevel', 'warning', '-stats',
-                '-fflags', '+genpts+discardcorrupt+flush_packets',
+                // +igndts ignores DTS jumps between recording files in the
+                // concat list. +discardcorrupt drops packets with broken
+                // timestamps instead of stalling the HLS output.
+                '-fflags', '+genpts+igndts+discardcorrupt+flush_packets',
+                '-err_detect', 'ignore_err',
                 '-stream_loop', '-1',
                 '-re',
                 '-safe', '0',
@@ -495,6 +499,10 @@ class PlayoutService
         $cmd = [
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
+            // +igndts ignores DTS jumps between recording files; re-encoding
+            // normalises timestamps but input flags prevent probe stalls.
+            '-fflags', '+genpts+igndts+discardcorrupt+flush_packets',
+            '-err_detect', 'ignore_err',
             '-stream_loop', '-1',
             '-re',
             '-i',     $input,
@@ -569,6 +577,8 @@ class PlayoutService
         $cmd = array_merge([
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
+            '-fflags', '+genpts+igndts+discardcorrupt+flush_packets',
+            '-err_detect', 'ignore_err',
             '-safe', '0',
             '-f',    'concat',
             '-i',    $concatFile,
@@ -683,11 +693,16 @@ class PlayoutService
      */
     private function resolveFallbackFiles(Channel $channel, bool $generateSlate = true): array
     {
-        // 1. Operator-curated VOD playlist
+        // Minimum file size: 100 MB. Recordings smaller than this are
+        // typically incomplete, corrupted, or contain only a few seconds of
+        // content. Playing them causes jarring jumps and short loops.
+        $minFileSize = 100 * 1024 * 1024; // 100 MB
+
+        // 1. Operator-curated VOD playlist (highest priority)
         $playlist = $channel->media()->where('type', 'vod')->where('is_active', true)->orderBy('sort_order')->get();
         $files = [];
         foreach ($playlist as $media) {
-            if (file_exists($media->filepath) && filesize($media->filepath) > 1024) {
+            if (file_exists($media->filepath) && filesize($media->filepath) >= $minFileSize) {
                 $files[] = $media->filepath;
             }
         }
@@ -695,15 +710,9 @@ class PlayoutService
             return $files;
         }
 
-        // 2. Single operator-uploaded VOD
-        if ($channel->fallback_vod_name
-            && $channel->fallback_recording_path
-            && file_exists($channel->fallback_recording_path)
-            && filesize($channel->fallback_recording_path) > 1024) {
-            return [$channel->fallback_recording_path];
-        }
-
-        // 3. Completed recordings from DB, oldest→newest by completed_at
+        // 2. Completed recordings from DB, oldest→newest by completed_at
+        //    This plays like a chronological TV archive — all recordings
+        //    in order, looping back to the oldest after the newest.
         //    Using DB ordering is more reliable than filemtime which can be
         //    affected by filesystem operations (copies, moves, etc.)
         $recordings = Recording::where('channel_id', $channel->id)
@@ -712,7 +721,7 @@ class PlayoutService
             ->get();
 
         foreach ($recordings as $rec) {
-            if (file_exists($rec->filepath) && filesize($rec->filepath) > 1024) {
+            if (file_exists($rec->filepath) && filesize($rec->filepath) >= $minFileSize) {
                 $files[] = $rec->filepath;
             }
         }
@@ -724,7 +733,7 @@ class PlayoutService
             $diskRecs = glob($channel->dvr_directory . '/rec_*.mp4') ?: [];
             sort($diskRecs, SORT_NATURAL); // natural sort = chronological by filename
             foreach ($diskRecs as $f) {
-                if (filesize($f) > 1024) {
+                if (filesize($f) >= $minFileSize) {
                     $files[] = $f;
                 }
             }
@@ -737,6 +746,8 @@ class PlayoutService
         }
 
         // 4. DVR rolling-window segments (no recordings yet)
+        //    Segments are typically small (a few MB each), so we use a
+        //    lower threshold here to keep the DVR buffer usable as fallback.
         $segments = DvrSegment::where('channel_id', $channel->id)
             ->where('is_available', true)
             ->orderBy('sequence', 'asc')
@@ -786,7 +797,7 @@ class PlayoutService
     private function killOrphanPlayoutProcesses(Channel $channel): int
     {
         $dvrDir = $channel->dvr_directory;
-        exec("ps aux | grep -F " . escapeshellarg($dvrDir) . " | grep -F 'playout_' | grep -F 'ffmpeg' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
+        exec('ps aux | grep -F ' . escapeshellarg($dvrDir) . " | grep -F 'playout_' | grep -F 'ffmpeg' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
 
         $count = 0;
         foreach ($lines as $line) {

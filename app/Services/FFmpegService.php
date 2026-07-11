@@ -337,11 +337,33 @@ class FFmpegService
         // the output always matches the operator's requested bitrate/profile.
         // Audio is re-encoded to AAC for RTMP/SRT to guarantee compatibility with
         // IPTV panels (Wowza, XUI ONE) which require AAC for HLS output.
+        //
+        // LLOD v3 shortcut: when ingest already re-encodes to H.264/AAC with
+        // clean keyframes and the right bitrate/GOP, the push can stream-copy
+        // instead of re-encoding. This halves CPU usage and eliminates double
+        // encoding which causes frame drops and stuttering on Wowza.
+        $llodIngestReencode = config('skymedia.llod_v3_reencode_ingest', false)
+            || $channel->reencode_ingest;
+        $pushVideoCodec = $channel->push_video_codec ?? 'copy';
+        $pushResolution = $channel->push_resolution;
+        $pushFps = $channel->push_framerate;
+        // When LLOD v3 ingest is active and push settings match ingest,
+        // skip re-encoding — the ingest output is already clean.
+        $ingestHandlesEncoding = $llodIngestReencode
+            && $pushVideoCodec === 'copy'
+            && empty($pushResolution)
+            && (! $pushFps || (int) $pushFps === (int) ($channel->push_framerate ?? 25));
+
         $cmd[] = '-max_muxing_queue_size';
         $cmd[] = '99999';
         $cmd[] = '-thread_queue_size';
-        $cmd[] = '1024';
-        $videoFlags = $this->videoEncodeFlags($channel);
+        $cmd[] = '4096';
+        if ($ingestHandlesEncoding) {
+            // Ingest already re-encoded — just copy through to RTMP/SRT/HLS.
+            $videoFlags = ['-c:v', 'copy'];
+        } else {
+            $videoFlags = $this->videoEncodeFlags($channel);
+        }
         $cmd = array_merge($cmd, $videoFlags);
 
         $audioBitrate = ((int) ($channel->push_audio_bitrate ?? 128)) . 'k';
@@ -358,75 +380,110 @@ class FFmpegService
         };
 
         if ($protocol === 'srt') {
-            $cmd[] = '-c:a';
-            $cmd[] = 'aac';
-            $cmd[] = '-b:a';
-            $cmd[] = $audioBitrate;
-            $cmd[] = '-ar';
-            $cmd[] = $audioSamplerate;
-            $cmd[] = '-ac';
-            $cmd[] = $audioChannels;
+            if ($ingestHandlesEncoding) {
+                $cmd[] = '-c:a';
+                $cmd[] = 'copy';
+            } else {
+                $cmd[] = '-c:a';
+                $cmd[] = 'aac';
+                $cmd[] = '-b:a';
+                $cmd[] = $audioBitrate;
+                $cmd[] = '-ar';
+                $cmd[] = $audioSamplerate;
+                $cmd[] = '-ac';
+                $cmd[] = $audioChannels;
+            }
             $cmd[] = '-f';
             $cmd[] = 'mpegts';
-            // LLOD v3 — SRT low-latency flags.
             $cmd[] = '-flags';
             $cmd[] = '+global_header';
             $cmd[] = '-bsf:v';
             $cmd[] = $bsfFilter;
-            $cmd[] = '-force_key_frames';
-            $cmd[] = 'expr:gte(t,n_forced*2)';
-            $cmd[] = '-bf';
+            if (! $ingestHandlesEncoding) {
+                $cmd[] = '-force_key_frames';
+                $cmd[] = 'expr:gte(t,n_forced*2)';
+                $cmd[] = '-bf';
+                $cmd[] = '0';
+            }
+            $cmd[] = '-max_interleave_delta';
             $cmd[] = '0';
+            $cmd[] = '-flush_packets';
+            $cmd[] = '1';
             $cmd[] = $pushUrl;
         } elseif ($protocol === 'hls') {
-            $cmd[] = '-c:a';
-            $cmd[] = 'aac';
-            $cmd[] = '-b:a';
-            $cmd[] = $audioBitrate;
-            $cmd[] = '-ar';
-            $cmd[] = $audioSamplerate;
-            $cmd[] = '-ac';
-            $cmd[] = $audioChannels;
+            if ($ingestHandlesEncoding) {
+                $cmd[] = '-c:a';
+                $cmd[] = 'copy';
+            } else {
+                $cmd[] = '-c:a';
+                $cmd[] = 'aac';
+                $cmd[] = '-b:a';
+                $cmd[] = $audioBitrate;
+                $cmd[] = '-ar';
+                $cmd[] = $audioSamplerate;
+                $cmd[] = '-ac';
+                $cmd[] = $audioChannels;
+            }
             $cmd = array_merge($cmd, $this->hlsOutputFlags($channel, $destination));
             $cmd[] = $pushUrl;
         } else {
-            // RTMP LLOD v3: Low-Latency On-Demand optimisations for fast
-            // Time-To-First-Frame on external IPTV panels / media servers.
-            $cmd[] = '-c:a';
-            $cmd[] = 'aac';
-            $cmd[] = '-b:a';
-            $cmd[] = $audioBitrate;
-            $cmd[] = '-ar';
-            $cmd[] = $audioSamplerate;
-            $cmd[] = '-ac';
-            $cmd[] = $audioChannels;
+            // RTMP: optimised for Wowza / IPTV panels with smooth output.
+            if ($ingestHandlesEncoding) {
+                $cmd[] = '-c:a';
+                $cmd[] = 'copy';
+            } else {
+                $cmd[] = '-c:a';
+                $cmd[] = 'aac';
+                $cmd[] = '-b:a';
+                $cmd[] = $audioBitrate;
+                $cmd[] = '-ar';
+                $cmd[] = $audioSamplerate;
+                $cmd[] = '-ac';
+                $cmd[] = $audioChannels;
+            }
             $cmd[] = '-f';
             $cmd[] = 'flv';
             $cmd[] = '-rtmp_live';
             $cmd[] = 'live';
+            // Larger RTMP buffer (10s) prevents Wowza buffer underruns during
+            // source bitrate spikes or brief ingest hiccups.
             $cmd[] = '-rtmp_buffer';
-            $cmd[] = '3000';
-            $cmd[] = '-rtmp_conn';
-            $cmd[] = 'O:1';
-            // LLOD v3 — instant handshake: skip FLV duration recalculation
-            // so the receiving server gets the stream header immediately.
+            $cmd[] = '10000';
+            // Skip FLV duration recalculation so Wowza gets the stream
+            // header immediately on connect.
             $cmd[] = '-flvflags';
             $cmd[] = 'no_duration_filesize';
-            // LLOD v3 — store codec config in the stream header so the
-            // player can decode the first frame without extra requests.
+            // Store codec config in the stream header so the receiving
+            // server can decode the first frame without extra requests.
             $cmd[] = '-flags';
             $cmd[] = '+global_header';
-            // LLOD v3 — Annex B bitstream filter ensures correct TS framing
-            // inside FLV, preventing buffering delays on the receiving end.
+            // Annex B bitstream filter ensures correct TS framing
+            // inside FLV, preventing buffering delays on Wowza.
             $cmd[] = '-bsf:v';
             $cmd[] = $bsfFilter;
-            // LLOD v3 — force keyframes every 2 seconds so the receiving
-            // server can split segments cleanly without transcoding.
-            $cmd[] = '-force_key_frames';
-            $cmd[] = 'expr:gte(t,n_forced*2)';
-            // LLOD v3 — skip B-frames to reduce decoder latency.
-            $cmd[] = '-bf';
+            // Force keyframes every 2 seconds so Wowza can split HLS
+            // segments cleanly without transcoding. Only when re-encoding;
+            // with -c:v copy the keyframe cadence is already set by ingest.
+            if (! $ingestHandlesEncoding) {
+                $cmd[] = '-force_key_frames';
+                $cmd[] = 'expr:gte(t,n_forced*2)';
+                // Skip B-frames to reduce decoder latency on Wowza.
+                $cmd[] = '-bf';
+                $cmd[] = '0';
+            }
+            // Smooth audio/video interleaving — prevents desync when
+            // one stream has variable bitrate or timing glitches.
+            $cmd[] = '-max_interleave_delta';
             $cmd[] = '0';
+            // Flush packets immediately instead of buffering — reduces
+            // jitter and prevents Wowza buffer underruns.
+            $cmd[] = '-flush_packets';
+            $cmd[] = '1';
+            // Write timeout (5s): if Wowza stops accepting data (buffer
+            // full, network stall), ffmpeg disconnects and the watchdog
+            // restarts it within seconds instead of hanging forever.
+            $cmd[] = '-rw_timeout';
+            $cmd[] = '5000000';
             $cmd[] = $pushUrl;
         }
 

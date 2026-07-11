@@ -117,11 +117,12 @@ class StreamManager
      * Push reads output.m3u8 — the symlink is swapped between live/fallback
      * without restarting the ffmpeg process.
      */
-    private function startPushAlways(Channel $channel): void
+    private function startPushAlways(Channel $channel, bool $force = false): void
     {
         Log::info("[Debug] startPushAlways {$channel->name} begin");
         if (empty($channel->push_url)) {
             Log::info("[Debug] startPushAlways {$channel->name} no push_url");
+
             return;
         }
 
@@ -144,11 +145,12 @@ class StreamManager
         // so we must check is_link() to allow push to start in fallback mode.
         if (! file_exists($playlist) && ! is_link($playlist)) {
             Log::info("[Debug] startPushAlways {$channel->name} playlist missing (no symlink)");
+
             return;
         }
 
         Log::info("[Debug] startPushAlways {$channel->name} calling push->start");
-        if ($this->push->start($channel)) {
+        if ($this->push->start($channel, force: $force)) {
             $channel->update(['push_status' => 'live']);
             $this->log($channel, 'info', 'push_started', 'Push started — 24/7 mode');
         } else {
@@ -483,8 +485,9 @@ class StreamManager
             $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
             event(new StreamStatusChanged($channel, 'offline'));
 
-            // Branding is now baked into fallback content at the playout level.
-            // Push always uses -c:v copy — no restart needed for transitions.
+            // Restart push and HLS relay so they re-read output.m3u8 from the
+            // new symlink target (fallback playlist instead of live).
+            $this->restartPushForTransition($channel->fresh());
         } else {
             $this->log($channel, 'error', 'fallback_failed', 'Fallback playout failed to start');
             event(new StreamStatusChanged($channel, 'offline'));
@@ -533,8 +536,10 @@ class StreamManager
         $this->playout->switchToLive($channel->fresh());
         $this->log($channel, 'info', 'switched_to_live', 'Playout switched to live stream');
 
-        // Branding is now baked into fallback content at the playout level.
-        // Push always uses -c:v copy — no restart needed for transitions.
+        // Restart push and HLS relay so they re-read output.m3u8 from the
+        // new symlink target. ffmpeg's HLS demuxer does not reliably follow
+        // symlink changes on local files — a fresh process is required.
+        $this->restartPushForTransition($channel->fresh());
 
         $channel->update([
             'source_live' => true, 'last_live_at' => now(),
@@ -593,9 +598,10 @@ class StreamManager
         if (! $this->playout->isLiveOutput($channel) && $this->ffmpeg->liveHlsReady($channel, 2)) {
             $fresh = $channel->fresh();
             $this->playout->switchToLive($fresh);
-            // Branding is now baked into fallback content — no push restart needed
             $this->log($channel, 'info', 'playout_forced_live',
                 'output.m3u8 was not pointing to live — corrected');
+            // Restart push so it picks up the corrected symlink target.
+            $this->restartPushForTransition($fresh);
         }
 
         // ── Push watchdog: push MUST always be running 24/7 ─────────────
@@ -682,7 +688,7 @@ class StreamManager
                 $channel->update(['playout_status' => 'fallback', 'stream_status' => 'offline']);
                 $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
                 event(new StreamStatusChanged($channel, 'offline'));
-                // Branding is now baked into fallback content — no push restart needed
+                $this->restartPushForTransition($channel);
             }
         }
 
@@ -692,7 +698,7 @@ class StreamManager
             if ($this->playout->switchToFallback($channel)) {
                 $channel->update(['playout_status' => 'fallback', 'stream_status' => 'offline']);
                 $this->log($channel, 'info', 'fallback_restarted', 'Fallback loop restarted');
-                // Branding is now baked into fallback content — no push restart needed
+                $this->restartPushForTransition($channel);
             } else {
                 $this->log($channel, 'error', 'fallback_restart_failed', 'Fallback restart failed');
             }
@@ -815,7 +821,7 @@ class StreamManager
     private function killOrphanHlsRelays(Channel $channel): int
     {
         $rtmpUrl = "rtmp://rtmp:1935/static/{$channel->slug}";
-        exec("ps aux | grep -F " . escapeshellarg($rtmpUrl) . " | grep -F 'ffmpeg' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
+        exec('ps aux | grep -F ' . escapeshellarg($rtmpUrl) . " | grep -F 'ffmpeg' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
 
         $count = 0;
         foreach ($lines as $line) {
@@ -855,7 +861,7 @@ class StreamManager
     private function findHlsRelayPids(Channel $channel): array
     {
         $rtmpUrl = "rtmp://rtmp:1935/static/{$channel->slug}";
-        exec("ps aux | grep -F " . escapeshellarg($rtmpUrl) . " | grep -F 'ffmpeg' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
+        exec('ps aux | grep -F ' . escapeshellarg($rtmpUrl) . " | grep -F 'ffmpeg' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
 
         return array_values(array_filter(array_map('intval', $lines)));
     }
@@ -863,6 +869,28 @@ class StreamManager
     // ═══════════════════════════════════════════════════════════════════
     //  HELPERS
     // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Restart push and HLS relay after a playout mode transition
+     * (live → fallback or fallback → live).
+     *
+     * ffmpeg's HLS demuxer does not reliably follow symlink changes on
+     * local files — the running process keeps reading the old resolved path.
+     * A fresh process re-opens output.m3u8 and follows the new symlink.
+     *
+     * Each channel is independent: only the given channel's processes are
+     * affected. Other channels continue running undisturbed.
+     */
+    private function restartPushForTransition(Channel $channel): void
+    {
+        if (! empty($channel->push_url)) {
+            // force=true bypasses the isHealthy() check so the push is always
+            // restarted to pick up the new symlink target.
+            $this->push->start($channel, force: true);
+        }
+        $this->stopHlsRelay($channel);
+        $this->startHlsRelay($channel);
+    }
 
     /**
      * True when the listener loop process (shell wrapper) for a push-ingest

@@ -253,11 +253,11 @@ class RecordingService
     public function hasFallback(Channel $channel): bool
     {
         if ($channel->fallback_recording_path && file_exists($channel->fallback_recording_path)) {
-            return filesize($channel->fallback_recording_path) > 1024;
+            return filesize($channel->fallback_recording_path) >= 100 * 1024 * 1024;
         }
 
         foreach (glob($channel->dvr_directory . '/rec_*.mp4') ?: [] as $f) {
-            if (filesize($f) > 1024) {
+            if (filesize($f) >= 100 * 1024 * 1024) {
                 return true;
             }
         }
@@ -422,7 +422,11 @@ class RecordingService
             '-y',
             '-loglevel',           'warning',
             '-stats',
-            '-fflags',             '+genpts+igndts+discardcorrupt',
+            '-fflags',             '+genpts+igndts+discardcorrupt+flush_packets',
+            '-err_detect',         'ignore_err',
+            '-thread_queue_size',  '4096',
+            '-probesize',          '5000000',
+            '-analyzeduration',    '3000000',
             '-live_start_index',   '-1',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
@@ -445,6 +449,8 @@ class RecordingService
             '-c:a',                $channel->recording_burn_timestamp ? 'aac' : 'copy',
             '-movflags',           '+faststart',
             '-avoid_negative_ts',  'make_zero',
+            '-max_muxing_queue_size', '4096',
+            '-max_interleave_delta', '0',
             $output,
         ]);
 
