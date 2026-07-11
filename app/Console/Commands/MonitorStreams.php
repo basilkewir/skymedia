@@ -90,7 +90,7 @@ class MonitorStreams extends Command
                 });
 
             } catch (\Throwable $e) {
-                Log::error('Monitor loop error: ' . $e->getMessage() . "\n" . $e->getTraceAsString());
+                Log::error('Monitor loop error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
                 $this->error($e->getMessage());
             }
 
