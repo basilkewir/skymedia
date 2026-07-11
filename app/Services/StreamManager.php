@@ -29,6 +29,7 @@ class StreamManager
     {
         $channel->update(['is_active' => true, 'stream_status' => 'starting']);
         $this->log($channel, 'info', 'channel_starting', 'Starting channel');
+        Log::info("[Debug] startChannel {$channel->name} begin");
 
         try {
             $dvrDir = $channel->dvr_directory;
@@ -37,6 +38,7 @@ class StreamManager
             }
 
             // 1. Ensure a slate exists so fallback ALWAYS has something to play.
+            Log::info("[Debug] startChannel {$channel->name} step 1 ensureSlate");
             $this->playout->ensureSlate($channel);
 
             // 2. Start the fallback loop as warm standby (non-blocking).
@@ -45,6 +47,7 @@ class StreamManager
             //    also need this so the VOD/playlist loop is already pushing
             //    before the external encoder connects.
             try {
+                Log::info("[Debug] startChannel {$channel->name} step 2 ensureFallbackRunning");
                 $this->playout->ensureFallbackRunning($channel);
                 $this->log($channel, 'info', 'fallback_standyby',
                     'Fallback loop started as warm standby');
@@ -54,24 +57,36 @@ class StreamManager
             }
 
             // Kill any orphan listeners from a previous run before starting fresh.
+            Log::info("[Debug] startChannel {$channel->name} step 2.5 stopAllListeners");
             if ($channel->isPushIngest()) {
                 $this->ingest->stopAllListeners($channel);
             }
 
             // 3. Start ingest — source → HLS segments → live.m3u8
+            Log::info("[Debug] startChannel {$channel->name} step 3 ingest start");
             $this->ingest->start($channel);
             $channel->refresh();
             $this->log($channel, 'info', 'ingest_started', "Ingest PID {$channel->pid}");
 
-            // 4. Mark playout as live — symlink output.m3u8 → live.m3u8
-            $this->playout->switchToLive($channel);
+            // 4. For push-ingest channels, start in fallback mode so output.m3u8
+            //    points to a real playlist immediately. Push can start right away
+            //    and will serve VOD/slate until the encoder connects.
+            //    For pull channels, mark as live (ingest is already running).
+            Log::info("[Debug] startChannel {$channel->name} step 4 switchToLive/Fallback");
+            if ($channel->isPushIngest()) {
+                $this->playout->switchToFallback($channel);
+            } else {
+                $this->playout->switchToLive($channel);
+            }
 
             // 5. Start push IMMEDIATELY — this MUST run 24/7, never stop.
             //    Push reads output.m3u8 which swaps between live/fallback
             //    via atomic symlink — no restart needed for transitions.
+            Log::info("[Debug] startChannel {$channel->name} step 5 startPushAlways");
             $this->startPushAlways($channel);
 
             // 6. Start HLS relay to local nginx-rtmp for browser playback
+            Log::info("[Debug] startChannel {$channel->name} step 6 startHlsRelay");
             $this->startHlsRelay($channel);
 
             $status = $channel->isPushIngest() ? 'starting' : 'live';
@@ -99,7 +114,9 @@ class StreamManager
      */
     private function startPushAlways(Channel $channel): void
     {
+        Log::info("[Debug] startPushAlways {$channel->name} begin");
         if (empty($channel->push_url)) {
+            Log::info("[Debug] startPushAlways {$channel->name} no push_url");
             return;
         }
 
@@ -115,10 +132,17 @@ class StreamManager
         }
 
         $playlist = $this->playout->outputPlaylist($channel);
-        if (! file_exists($playlist)) {
+        Log::info("[Debug] startPushAlways {$channel->name} playlist={$playlist} exists=" . (file_exists($playlist) ? 'yes' : 'no') . ' is_link=' . (is_link($playlist) ? 'yes' : 'no'));
+        // For push-ingest channels output.m3u8 is a symlink that may point to
+        // live.m3u8 (which doesn't exist yet — encoder hasn't connected) or to
+        // a fallback playlist. file_exists() returns false for dangling symlinks,
+        // so we must check is_link() to allow push to start in fallback mode.
+        if (! file_exists($playlist) && ! is_link($playlist)) {
+            Log::info("[Debug] startPushAlways {$channel->name} playlist missing (no symlink)");
             return;
         }
 
+        Log::info("[Debug] startPushAlways {$channel->name} calling push->start");
         if ($this->push->start($channel)) {
             $channel->update(['push_status' => 'live']);
             $this->log($channel, 'info', 'push_started', 'Push started — 24/7 mode');
@@ -709,6 +733,10 @@ class StreamManager
             return true;
         }
 
+        // The tracked HLS relay is dead — kill any orphan relays for this
+        // channel before starting a fresh one.
+        $this->killOrphanHlsRelays($channel);
+
         $playlist = $this->playout->outputPlaylist($channel);
         if (! file_exists($playlist)) {
             return false;
@@ -770,14 +798,60 @@ class StreamManager
             $this->ffmpeg->stopProcess($pid);
             Log::info("[HLS Relay] {$channel->name} stopped — PID {$pid}");
         }
+        $this->killOrphanHlsRelays($channel);
         $this->ffmpeg->clearPid($pidFile);
+    }
+
+    /**
+     * Kill any ffmpeg HLS relay processes for this channel that are not
+     * tracked by the PID file. Prevents duplicate relays after restarts.
+     */
+    private function killOrphanHlsRelays(Channel $channel): int
+    {
+        $rtmpUrl = "rtmp://rtmp:1935/static/{$channel->slug}";
+        exec("ps aux | grep -F " . escapeshellarg($rtmpUrl) . " | grep -F 'ffmpeg' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
+
+        $count = 0;
+        foreach ($lines as $line) {
+            $pid = (int) trim($line);
+            if ($pid > 0) {
+                exec("kill -KILL {$pid} 2>/dev/null");
+                $count++;
+            }
+        }
+
+        if ($count > 0) {
+            Log::warning("[HLS Relay] {$channel->name} killed {$count} orphan relay(s)");
+        }
+
+        return $count;
     }
 
     public function isHlsRelayRunning(Channel $channel): bool
     {
-        $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'hls_relay'));
+        $pidFile = $this->ffmpeg->pidFile($channel, 'hls_relay');
+        $pid = $this->ffmpeg->readPid($pidFile);
+        if ($pid > 0 && $this->ffmpeg->isRunning($pid)) {
+            return true;
+        }
 
-        return $pid > 0 && $this->ffmpeg->isRunning($pid);
+        // PID file stale — reconcile with the actual relay process.
+        $pids = $this->findHlsRelayPids($channel);
+        if (! empty($pids)) {
+            file_put_contents($pidFile, (string) $pids[0]);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private function findHlsRelayPids(Channel $channel): array
+    {
+        $rtmpUrl = "rtmp://rtmp:1935/static/{$channel->slug}";
+        exec("ps aux | grep -F " . escapeshellarg($rtmpUrl) . " | grep -F 'ffmpeg' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
+
+        return array_values(array_filter(array_map('intval', $lines)));
     }
 
     // ═══════════════════════════════════════════════════════════════════

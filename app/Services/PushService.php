@@ -42,6 +42,7 @@ class PushService
 
     public function start(Channel $channel): bool
     {
+        Log::info("[Debug] PushService::start {$channel->name} begin");
         if (empty($channel->push_url)) {
             Log::warning("[Push] {$channel->name}: push_url is empty");
             return false;
@@ -49,24 +50,39 @@ class PushService
 
         // Already running and healthy — push reads output.m3u8 which the playout module
         // swaps atomically underneath. Never restart for playlist changes.
+        Log::info("[Debug] PushService::start {$channel->name} checking healthy");
         if ($this->isHealthy($channel)) {
+            Log::info("[Debug] PushService::start {$channel->name} already healthy");
             return true;
         }
 
         // Process is alive but log shows a fatal error — stop it before restart.
+        Log::info("[Debug] PushService::start {$channel->name} checking running");
         if ($this->isRunning($channel)) {
+            Log::info("[Debug] PushService::start {$channel->name} running but unhealthy, stopping");
             $this->stopPrimary($channel);
         }
 
+        // Also kill any orphan push processes not tracked by the PID file.
+        Log::info("[Debug] PushService::start {$channel->name} killing orphans");
+        $this->killOrphanPushProcesses($channel);
+
+        Log::info("[Debug] PushService::start {$channel->name} getting playlist");
         $playlist = $this->playout->outputPlaylist($channel);
-        if (! file_exists($playlist)) {
+        Log::info("[Debug] PushService::start {$channel->name} playlist={$playlist} exists=" . (file_exists($playlist) ? 'yes' : 'no') . ' is_link=' . (is_link($playlist) ? 'yes' : 'no'));
+        // output.m3u8 may be a dangling symlink (pointing to live.m3u8 before
+        // the encoder connects). file_exists() returns false for dangling symlinks.
+        // We must allow push to start so it waits for the playlist to become live.
+        if (! file_exists($playlist) && ! is_link($playlist)) {
             Log::warning("[Push] {$channel->name}: playlist not ready ({$playlist})");
             return false;
         }
 
         $this->stopPrimary($channel);
 
+        Log::info("[Debug] PushService::start {$channel->name} building command");
         $cmd = $this->ffmpeg->buildPushCommand($channel, $playlist);
+        Log::info("[Debug] PushService::start {$channel->name} launching push");
         $pid = $this->launchPush($cmd, $channel, 'push');
 
         if ($pid === null) {
@@ -104,8 +120,21 @@ class PushService
 
     public function isRunning(Channel $channel): bool
     {
-        $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'push'));
-        return $pid > 0 && $this->ffmpeg->isRunning($pid);
+        $pidFile = $this->ffmpeg->pidFile($channel, 'push');
+        $pid = $this->ffmpeg->readPid($pidFile);
+        if ($pid > 0 && $this->ffmpeg->isRunning($pid)) {
+            return true;
+        }
+
+        // PID file stale — reconcile with the actual push process.
+        $pids = $this->findPushPids($channel);
+        if (! empty($pids)) {
+            file_put_contents($pidFile, (string) $pids[0]);
+
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -161,7 +190,7 @@ class PushService
 
         // Attempt restart
         $playlist = $this->playout->outputPlaylist($channel);
-        if (! file_exists($playlist)) {
+        if (! file_exists($playlist) && ! is_link($playlist)) {
             return false;
         }
 
@@ -224,7 +253,7 @@ class PushService
     public function startDestinations(Channel $channel, ?string $playlist = null): void
     {
         $playlist ??= $this->playout->outputPlaylist($channel);
-        if (! file_exists($playlist)) {
+        if (! file_exists($playlist) && ! is_link($playlist)) {
             return;
         }
 
@@ -315,8 +344,72 @@ class PushService
         if ($pid > 0) {
             $this->ffmpeg->stopProcess($pid);
         }
+        $this->killOrphanPushProcesses($channel);
         $this->ffmpeg->clearPid($pidFile);
         $channel->update(['push_pid' => null]);
+    }
+
+    /**
+     * Kill any ffmpeg primary push processes for this channel that are not
+     * tracked by the PID file. Prevents duplicate pushes after restarts.
+     */
+    private function killOrphanPushProcesses(Channel $channel): int
+    {
+        $playlist = $this->playout->outputPlaylist($channel);
+        $streamKey = $channel->push_stream_key ?? '';
+        $baseUrl = rtrim($channel->push_url ?? '', '/');
+
+        if ($baseUrl === '') {
+            return 0;
+        }
+
+        $pids = $this->findPushPids($channel, $playlist, $baseUrl, $streamKey);
+
+        $count = 0;
+        foreach ($pids as $pid) {
+            if ($pid > 0) {
+                exec("kill -KILL {$pid} 2>/dev/null");
+                $count++;
+            }
+        }
+
+        if ($count > 0) {
+            Log::warning("[Push] {$channel->name} killed {$count} orphan push process(es)");
+        }
+
+        return $count;
+    }
+
+    /**
+     * Find PIDs of ffmpeg primary push processes for this channel.
+     */
+    private function findPushPids(
+        Channel $channel,
+        ?string $playlist = null,
+        ?string $baseUrl = null,
+        ?string $streamKey = null,
+    ): array {
+        $playlist ??= $this->playout->outputPlaylist($channel);
+        $streamKey ??= $channel->push_stream_key ?? '';
+        $baseUrl ??= rtrim($channel->push_url ?? '', '/');
+
+        if ($baseUrl === '') {
+            return [];
+        }
+
+        $cmd = "ps aux | grep -F " . escapeshellarg($playlist)
+            . " | grep -F 'ffmpeg' | grep -v grep"
+            . " | grep -F " . escapeshellarg($baseUrl);
+
+        if ($streamKey !== '') {
+            $cmd .= " | grep -F " . escapeshellarg($streamKey);
+        }
+
+        $cmd .= " | grep -vF 'rtmp:1935/static' | awk '{print \$2}' 2>/dev/null";
+
+        exec($cmd, $lines);
+
+        return array_values(array_filter(array_map('intval', $lines)));
     }
 
     private function buildDestinationUrl(PushDestination $dest): string

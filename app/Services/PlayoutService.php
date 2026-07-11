@@ -117,6 +117,10 @@ class PlayoutService
 
         // Both dead — start a fresh fallback. switchToFallback will do
         // the warm-standby dance and bring one slot up.
+        // First remove any orphan playout processes that are not tracked by
+        // the PID files (can happen after monitor restarts or stale PIDs).
+        $this->killOrphanPlayoutProcesses($channel);
+
         $branding = $this->ffmpeg->brandingFlags($channel);
         $hasBranding = ! empty($branding['video']);
 
@@ -325,9 +329,34 @@ class PlayoutService
 
     public function isFallbackRunning(Channel $channel): bool
     {
-        $pid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'playout'));
+        $pidFile = $this->ffmpeg->pidFile($channel, 'playout');
+        $pid = $this->ffmpeg->readPid($pidFile);
+        if ($pid > 0 && $this->ffmpeg->isRunning($pid)) {
+            return true;
+        }
 
-        return $pid > 0 && $this->ffmpeg->isRunning($pid);
+        // PID file is stale or missing, but a fallback ffmpeg may still be
+        // running (e.g. after a monitor restart). Reconcile by finding the
+        // active process and updating the PID file so we don't spawn a duplicate.
+        $pids = $this->findFallbackPids($channel);
+        if (! empty($pids)) {
+            file_put_contents($pidFile, (string) $pids[0]);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Find all ffmpeg fallback processes for this channel.
+     */
+    private function findFallbackPids(Channel $channel): array
+    {
+        $dvrDir = $channel->dvr_directory;
+        exec("ps aux | grep -F " . escapeshellarg($dvrDir) . " | grep -F 'playout_' | grep -F 'ffmpeg' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
+
+        return array_values(array_filter(array_map('intval', $lines)));
     }
 
     public function hasFallback(Channel $channel): bool
@@ -745,5 +774,31 @@ class PlayoutService
         }
 
         return $files;
+    }
+
+    /**
+     * Kill any ffmpeg playout processes for this channel that are not tracked
+     * by the PID files. This prevents duplicate warm-standby slots after
+     * monitor restarts or stale PID files.
+     */
+    private function killOrphanPlayoutProcesses(Channel $channel): int
+    {
+        $dvrDir = $channel->dvr_directory;
+        exec("ps aux | grep -F " . escapeshellarg($dvrDir) . " | grep -F 'playout_' | grep -F 'ffmpeg' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
+
+        $count = 0;
+        foreach ($lines as $line) {
+            $pid = (int) trim($line);
+            if ($pid > 0) {
+                exec("kill -KILL {$pid} 2>/dev/null");
+                $count++;
+            }
+        }
+
+        if ($count > 0) {
+            Log::warning("[Playout] {$channel->name} killed {$count} orphan playout process(es)");
+        }
+
+        return $count;
     }
 }

@@ -528,6 +528,14 @@ class FFmpegService
             rename($logFile, $logFile . '.1');
         }
 
+        // Mark the start of this ffmpeg run so health checks only inspect
+        // output produced by the current process. Without this, stale fatal
+        // errors from previous runs in the appended log can cause false-positive
+        // restarts.
+        $sessionMarker = '=== SKYMEDIA FFmpeg session started at '
+            . gmdate('Y-m-d H:i:s') . " UTC ===\n";
+        file_put_contents($logFile, $sessionMarker, FILE_APPEND | LOCK_EX);
+
         $escaped = implode(' ', array_map('escapeshellarg', $command));
         $path = '/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin';
 
@@ -906,6 +914,14 @@ class FFmpegService
         $tail = $this->readLogTail($logFile, 80);
         if ($tail === '') {
             return true;
+        }
+
+        // Only inspect output from the current ffmpeg session. Logs are
+        // appended across restarts, so stale fatal errors from earlier runs
+        // must not trigger a false-positive restart of a healthy process.
+        $markerPos = strrpos($tail, '=== SKYMEDIA FFmpeg session started at');
+        if ($markerPos !== false) {
+            $tail = substr($tail, $markerPos);
         }
 
         // Fatal connection errors that ffmpeg cannot auto-recover from
