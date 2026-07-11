@@ -41,16 +41,16 @@ class StreamManager
 
             // 2. Start the fallback loop as warm standby (non-blocking).
             //    This ensures output.m3u8 → playout_X.m3u8 is always ready
-            //    the instant the source goes offline.
-            if (! $channel->isPushIngest()) {
-                try {
-                    $this->playout->ensureFallbackRunning($channel);
-                    $this->log($channel, 'info', 'fallback_standyby',
-                        'Fallback loop started as warm standby');
-                } catch (\Throwable $e) {
-                    $this->log($channel, 'warning', 'fallback_standyby_failed',
-                        'Fallback warm standby failed (will retry on source loss): ' . $e->getMessage());
-                }
+            //    the instant the source goes offline. Push-managed channels
+            //    also need this so the VOD/playlist loop is already pushing
+            //    before the external encoder connects.
+            try {
+                $this->playout->ensureFallbackRunning($channel);
+                $this->log($channel, 'info', 'fallback_standyby',
+                    'Fallback loop started as warm standby');
+            } catch (\Throwable $e) {
+                $this->log($channel, 'warning', 'fallback_standyby_failed',
+                    'Fallback warm standby failed (will retry on source loss): ' . $e->getMessage());
             }
 
             // Kill any orphan listeners from a previous run before starting fresh.
@@ -591,7 +591,7 @@ class StreamManager
         }
 
         // ── Fallback loop warm standby: keep alive for instant failover ──
-        if (! $channel->isPushIngest() && ! $this->playout->isFallbackRunning($channel)) {
+        if (! $this->playout->isFallbackRunning($channel)) {
             try {
                 $this->playout->ensureFallbackRunning($channel);
                 $this->log($channel, 'info', 'fallback_standyby_restored',
