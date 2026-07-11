@@ -424,7 +424,12 @@ class PlayoutService
         // controlled precisely. This guarantees instant playback and clean splits.
         $llodReencode = config('skymedia.llod_v3_reencode_fallback', false);
 
-        if ($useCopy && ! $hasBranding && ! $llodReencode) {
+        // If the operator configured an output codec/bitrate/framerate, enforce
+        // it on fallback so uploaded files / playlists match the live push.
+        $outputCodec = $channel->push_video_codec ?? 'copy';
+        $needsReencode = $hasBranding || $llodReencode || $outputCodec !== 'copy';
+
+        if ($useCopy && ! $needsReencode) {
             return [
                 $this->ffmpeg->getBin(),
                 '-y', '-loglevel', 'warning', '-stats',
@@ -465,40 +470,35 @@ class PlayoutService
         ];
 
         // Apply branding overlay (logo + ticker) to fallback content, or
-        // re-encode for LLOD v3 when forced.
+        // re-encode according to the channel's configured output settings.
         if ($hasBranding) {
             $cmd = array_merge($cmd, $branding['inputs']);
             $cmd = array_merge($cmd, $branding['video']);
-        } elseif ($llodReencode) {
-            $fps = max(1, (int) ($channel->push_framerate ?? 25));
-            $cmd[] = '-c:v';
-            $cmd[] = 'libx264';
-            $cmd[] = '-preset';
-            $cmd[] = 'veryfast';
-            $cmd[] = '-tune';
-            $cmd[] = 'zerolatency';
-            $cmd[] = '-b:v';
-            $cmd[] = ((int) ($channel->push_video_bitrate ?? 2000)) . 'k';
-            $cmd[] = '-maxrate';
-            $cmd[] = ((int) (($channel->push_video_bitrate ?? 2000) * 1.2)) . 'k';
-            $cmd[] = '-bufsize';
-            $cmd[] = ((int) (($channel->push_video_bitrate ?? 2000) * 2)) . 'k';
-            $cmd[] = '-pix_fmt';
-            $cmd[] = 'yuv420p';
-            // LLOD v3 — strict 2-second GOP, no scene-cut keyframes, no B-frames
-            $cmd[] = '-g';
-            $cmd[] = (string) ($fps * 2);
-            $cmd[] = '-keyint_min';
-            $cmd[] = (string) ($fps * 2);
-            $cmd[] = '-sc_threshold';
-            $cmd[] = '0';
         } else {
-            $cmd[] = '-c:v';
-            $cmd[] = 'copy';
+            $cmd = array_merge($cmd, $this->ffmpeg->videoEncodeFlags($channel));
         }
 
+        // If branding/LLOD forced re-encode but audio codec is copy, we still
+        // need AAC for reliable HLS fallback playback.
+        $audioFlags = $this->ffmpeg->audioEncodeFlags($channel);
+        $copyAudio = false;
+        foreach ($audioFlags as $i => $v) {
+            if ($v === '-c:a' && ($audioFlags[$i + 1] ?? null) === 'copy') {
+                $copyAudio = true;
+                break;
+            }
+        }
+        if (($llodReencode || $hasBranding) && $copyAudio) {
+            $audioFlags = [
+                '-c:a', 'aac',
+                '-b:a', ((int) ($channel->push_audio_bitrate ?? 128)) . 'k',
+                '-ar',  (string) (int) ($channel->push_audio_samplerate ?? 48000),
+                '-ac',  (string) (int) ($channel->push_audio_channels ?? 2),
+            ];
+        }
+        $cmd = array_merge($cmd, $audioFlags);
+
         $cmd = array_merge($cmd, [
-            '-c:a',  $llodReencode || $hasBranding ? 'aac' : 'copy',
             '-f',                    'hls',
             '-hls_time',             (string) $segDur,
             '-hls_list_size',        '10',
@@ -533,26 +533,18 @@ class PlayoutService
         // normalises codec params so the loop plays cleanly.
         $concatFile = $this->buildConcatList($channel, $files, repeat: 1, slot: $slot);
 
-        $cmd = [
+        // Re-encode the loop asset to the channel's configured output settings
+        // so fallback quality matches the live push.
+        $cmd = array_merge([
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
             '-safe', '0',
             '-f',    'concat',
             '-i',    $concatFile,
-            '-c:v',  'libx264',
-            '-preset', 'veryfast',
-            '-tune', 'zerolatency',
-            '-crf',  '23',
-            '-pix_fmt', 'yuv420p',
-            '-g',    '60',
-            '-keyint_min', '60',
-            '-sc_threshold', '0',
-            '-bf',   '0',
-            '-c:a',  'aac',
-            '-b:a',  '128k',
+        ], $this->ffmpeg->videoEncodeFlags($channel), $this->ffmpeg->audioEncodeFlags($channel), [
             '-movflags', '+faststart',
             $output,
-        ];
+        ]);
 
         $proc = new Process($cmd);
         $proc->setTimeout(300);

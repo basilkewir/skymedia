@@ -82,6 +82,13 @@
                                       placeholder="Netscape-format cookies from your browser (for private/restricted streams)&#10;Example:&#10;.youtube.com	TRUE	/	TRUE	0	SID	xxxxx"></textarea>
                             <p class="mt-1 text-xs text-slate-500">Export cookies from your browser using a cookies.txt extension. Required only for age-restricted or private streams.</p>
                         </FormField>
+                        <FormField v-if="form.ingest_mode === 'pull'" label="Re-encode on ingest" :error="form.errors.reencode_ingest">
+                            <label class="inline-flex items-center gap-2 mt-2">
+                                <input v-model="form.reencode_ingest" type="checkbox" class="form-checkbox rounded" />
+                                <span class="text-sm text-slate-300">Transcode source to H.264/AAC</span>
+                            </label>
+                            <p class="mt-1 text-xs text-slate-500">Enable only for sources with broken H.264 NALs (e.g. catcast.tv) or incompatible codecs. Uses more CPU.</p>
+                        </FormField>
                         <div v-if="form.ingest_mode === 'push' && channel.published_ingest_server" class="sm:col-span-2 px-3 py-2 bg-slate-800/60 rounded-lg text-xs break-all text-indigo-400">
                             <template v-if="form.source_type === 'rtmp'">
                                 <div>OBS Server: <span class="font-mono">{{ channel.published_ingest_server }}</span></div>
@@ -423,6 +430,7 @@ const form = useForm({
     ingest_mode:            props.channel.ingest_mode ?? 'pull',
     ingest_port:            props.channel.ingest_port ?? null,
     source_url:             props.channel.source_url,
+    reencode_ingest:        props.channel.reencode_ingest ?? false,
     youtube_cookies:        props.channel.youtube_cookies ?? '',
     push_protocol:          props.channel.push_protocol,
     push_url:               props.channel.push_url,

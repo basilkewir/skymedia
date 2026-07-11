@@ -77,6 +77,10 @@ class FinalizeRecording implements ShouldQueue
         $keep = max(1, (int) ($channel->keep_recordings ?? 3));
         $this->pruneOld($channel, $keep);
 
+        // Enforce the channel's storage quota.
+        $recordingService = app(\App\Services\RecordingService::class);
+        $recordingService->pruneByQuota($channel->fresh());
+
         Log::info(sprintf(
             "[FinalizeRecording] %s completed: %s (%.1fs, %.1f MB)",
             $channel->name, basename($filepath), $duration, $filesize / 1_048_576
@@ -115,7 +119,11 @@ class FinalizeRecording implements ShouldQueue
                     return;
                 }
                 if ($rec->filepath !== $channel->fallback_recording_path) {
+                    $size = filesize($rec->filepath) ?? 0;
                     @unlink($rec->filepath);
+                    if ($size > 0) {
+                        $channel->decrement('storage_used_bytes', $size);
+                    }
                 }
                 $rec->delete();
             });

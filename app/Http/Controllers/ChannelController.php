@@ -601,6 +601,7 @@ class ChannelController extends Controller
             'ingest_mode' => 'required|in:pull,push',
             'ingest_port' => "nullable|integer|min:{$ingestPortMin}|max:{$ingestPortMax}",
             'source_url' => 'nullable|required_if:ingest_mode,pull|string|max:1000',
+            'reencode_ingest' => 'nullable|boolean',
             'youtube_cookies' => 'nullable|string|max:65535',
             'rtmp_input_key' => 'nullable|string|max:255',
             'push_protocol' => 'required|in:rtmp,srt,hls',

@@ -232,19 +232,21 @@ class FFmpegService
         // working buffer required for preview/fallback switching.
         $dvrEnabled = ! $channel->isPushIngest() && $channel->dvr_enabled !== false;
         $llodReencode = config('skymedia.llod_v3_reencode_ingest', false);
+        $reencode = $llodReencode || $channel->reencode_ingest;
 
-        // LLOD v3 re-encode forces a short GOP and AAC audio so downstream
-        // HLS players (and pushes to Wowza/XUI ONE) get clean 2-second segments.
+        // Re-encode forces a short GOP and AAC audio so downstream
+        // HLS players (and pushes to Wowza/XUI ONE) get clean segments.
+        // It also repairs sources with missing SPS/PPS (e.g. catcast.tv).
         $fps = max(1, (int) ($channel->push_framerate ?? 25));
-        $videoCodec = $llodReencode ? 'libx264' : 'copy';
-        $audioCodec = $llodReencode ? 'aac' : 'copy';
+        $videoCodec = $reencode ? 'libx264' : 'copy';
+        $audioCodec = $reencode ? 'aac' : 'copy';
 
         $codecFlags = [
             '-c:v', $videoCodec,
             '-c:a', $audioCodec,
         ];
 
-        if ($llodReencode) {
+        if ($reencode) {
             $codecFlags = array_merge($codecFlags, [
                 '-preset',   'veryfast',
                 '-tune',     'zerolatency',
@@ -329,21 +331,31 @@ class FFmpegService
             '-i',                  $playlistPath,
         ];
 
-        // Push uses stream copy for video — branding is applied in PlayoutService.
+        // Push video follows the channel's configured output codec/bitrate.
+        // When set to copy, stream is passed through (branding is applied in
+        // PlayoutService). When set to h264/h265, the stream is re-encoded so
+        // the output always matches the operator's requested bitrate/profile.
         // Audio is re-encoded to AAC for RTMP/SRT to guarantee compatibility with
         // IPTV panels (Wowza, XUI ONE) which require AAC for HLS output.
         $cmd[] = '-max_muxing_queue_size';
         $cmd[] = '99999';
         $cmd[] = '-thread_queue_size';
         $cmd[] = '1024';
-        $cmd[] = '-c:v';
-        $cmd[] = 'copy';
+        $videoFlags = $this->videoEncodeFlags($channel);
+        $cmd = array_merge($cmd, $videoFlags);
 
         $audioBitrate = ((int) ($channel->push_audio_bitrate ?? 128)) . 'k';
         $audioSamplerate = (string) (int) ($channel->push_audio_samplerate ?? 48000);
         $audioChannels = (string) (int) ($channel->push_audio_channels ?? 2);
 
         $pushUrl = $destination ? $this->buildDestinationPushUrl($destination) : $this->pushUrl($channel);
+
+        // Bitstream filter must match the output video codec.
+        $outputCodec = $channel->push_video_codec ?? 'copy';
+        $bsfFilter = match ($outputCodec) {
+            'h265' => 'hevc_mp4toannexb',
+            default => 'h264_mp4toannexb',
+        };
 
         if ($protocol === 'srt') {
             $cmd[] = '-c:a';
@@ -360,7 +372,7 @@ class FFmpegService
             $cmd[] = '-flags';
             $cmd[] = '+global_header';
             $cmd[] = '-bsf:v';
-            $cmd[] = 'h264_mp4toannexb';
+            $cmd[] = $bsfFilter;
             $cmd[] = '-force_key_frames';
             $cmd[] = 'expr:gte(t,n_forced*2)';
             $cmd[] = '-bf';
@@ -407,11 +419,14 @@ class FFmpegService
             // LLOD v3 — Annex B bitstream filter ensures correct TS framing
             // inside FLV, preventing buffering delays on the receiving end.
             $cmd[] = '-bsf:v';
-            $cmd[] = 'h264_mp4toannexb';
+            $cmd[] = $bsfFilter;
             // LLOD v3 — force keyframes every 2 seconds so the receiving
             // server can split segments cleanly without transcoding.
             $cmd[] = '-force_key_frames';
             $cmd[] = 'expr:gte(t,n_forced*2)';
+            // LLOD v3 — skip B-frames to reduce decoder latency.
+            $cmd[] = '-bf';
+            $cmd[] = '0';
             $cmd[] = $pushUrl;
         }
 
@@ -440,7 +455,7 @@ class FFmpegService
         $bitrate = (int) ($channel->push_video_bitrate ?? 2000);
         $encodeBase = ['-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p'];
         $rateControl = ['-b:v', $bitrate . 'k', '-maxrate', ((int) ($bitrate * 1.2)) . 'k', '-bufsize', ((int) ($bitrate * 2)) . 'k'];
-        $gopFlags = ['-g', (string) ($fps * 2), '-keyint_min', (string) $fps, '-sc_threshold', '0', '-threads', '0'];
+        $gopFlags = ['-g', (string) ($fps * 2), '-keyint_min', (string) $fps, '-sc_threshold', '0', '-threads', '1'];
 
         if ($hasLogo) {
             $filter = "[1:v][0:v]scale2ref=w=main_w*0.15:h=-1[logo][base];[base][logo]overlay={$position}[branded]";
@@ -1185,7 +1200,12 @@ class FFmpegService
     protected function videoEncodeFlags(Channel $channel): array
     {
         $codec = $channel->push_video_codec ?? 'copy';
-        if ($codec === 'copy') {
+        $needsEncode = $codec !== 'copy'
+            || ! empty($channel->push_video_bitrate)
+            || ! empty($channel->push_resolution)
+            || ! empty($channel->push_framerate);
+
+        if (! $needsEncode) {
             return ['-c:v', 'copy'];
         }
 
@@ -1220,6 +1240,9 @@ class FFmpegService
                 '-preset', 'veryfast', '-tune', 'zerolatency',
                 '-g', (string) ($fps * 2), '-keyint_min', (string) $fps,
                 '-sc_threshold', '0',
+                // Cap threads per encode so a handful of re-encoded channels
+                // do not monopolise the whole host.
+                '-threads', '1',
             ]);
         }
 

@@ -182,7 +182,7 @@ class FFmpegServiceTest extends TestCase
     }
 
     /** @test */
-    public function it_always_uses_copy_codec_for_push(): void
+    public function it_re_encodes_video_when_codec_is_configured(): void
     {
         $channel = $this->makeChannel('hls', 'https://example.com/stream.m3u8');
         $channel->push_video_codec = 'h264';
@@ -192,13 +192,26 @@ class FFmpegServiceTest extends TestCase
         $cmd = $this->ffmpeg->buildPushCommand($channel, '/tmp/test.m3u8');
         $cmdStr = implode(' ', $cmd);
 
-        // Push always uses -c:v copy (branding is in playout, not push)
+        $this->assertStringContainsString('-c:v libx264', $cmdStr);
+        $this->assertStringContainsString('-b:v 4000k', $cmdStr);
+        $this->assertStringContainsString('-r 30', $cmdStr);
+    }
+
+    /** @test */
+    public function it_uses_copy_codec_for_push_when_set_to_copy(): void
+    {
+        $channel = $this->makeChannel('hls', 'https://example.com/stream.m3u8');
+        $channel->push_video_codec = 'copy';
+
+        $cmd = $this->ffmpeg->buildPushCommand($channel, '/tmp/test.m3u8');
+        $cmdStr = implode(' ', $cmd);
+
         $this->assertStringContainsString('-c:v copy', $cmdStr);
         $this->assertStringNotContainsString('libx264', $cmdStr);
     }
 
     /** @test */
-    public function it_always_uses_copy_audio_for_push(): void
+    public function it_re_encodes_audio_to_aac_for_rtmp_compatibility(): void
     {
         $channel = $this->makeChannel('hls', 'https://example.com/stream.m3u8');
         $channel->push_audio_codec = 'mp3';
@@ -209,9 +222,10 @@ class FFmpegServiceTest extends TestCase
         $cmd = $this->ffmpeg->buildPushCommand($channel, '/tmp/test.m3u8');
         $cmdStr = implode(' ', $cmd);
 
-        // Push always uses -c:a copy (branding is in playout, not push)
-        $this->assertStringContainsString('-c:a copy', $cmdStr);
-        $this->assertStringNotContainsString('libmp3lame', $cmdStr);
+        // RTMP push re-encodes audio to AAC for IPTV panel compatibility.
+        $this->assertStringContainsString('-c:a aac', $cmdStr);
+        $this->assertStringContainsString('-b:a 192k', $cmdStr);
+        $this->assertStringContainsString('-ar 44100', $cmdStr);
     }
 
     /** @test */

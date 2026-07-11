@@ -34,8 +34,12 @@ class RecordingDiskSpaceTest extends TestCase
         $this->recording = new RecordingService($this->ffmpeg);
 
         $this->channel = Channel::factory()->create([
+            'source_type' => 'hls',
+            'ingest_mode' => 'pull',
             'record_duration' => 3600,
             'record_status' => 'idle',
+            'source_live' => true,
+            'stream_status' => 'live',
         ]);
     }
 
@@ -66,8 +70,9 @@ class RecordingDiskSpaceTest extends TestCase
         // Impossibly high threshold ensures the check fails.
         config(['skymedia.min_free_disk_bytes' => 1024 * 1024 * 1024 * 1024 * 1024]);
 
-        $this->ffmpeg->shouldReceive('pidFile')->once()->andReturn('/tmp/pid');
-        $this->ffmpeg->shouldReceive('readPid')->once()->andReturn(0);
+        $this->ffmpeg->shouldReceive('pidFile')->andReturn('/tmp/pid');
+        $this->ffmpeg->shouldReceive('readPid')->andReturn(0);
+        $this->ffmpeg->shouldReceive('isRunning')->andReturn(false);
         $this->ffmpeg->shouldReceive('hlsReady')->once()->andReturn(true);
 
         $this->assertFalse($this->recording->shouldRecord($this->channel));

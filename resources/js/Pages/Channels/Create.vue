@@ -86,6 +86,13 @@
                                       placeholder="Netscape-format cookies from your browser (for private/restricted streams)&#10;Example:&#10;.youtube.com	TRUE	/	TRUE	0	SID	xxxxx"></textarea>
                             <p class="mt-1 text-xs text-slate-500">Export cookies from your browser using a cookies.txt extension. Required only for age-restricted or private streams.</p>
                         </FormField>
+                        <FormField v-if="channelKind === 'streamed'" label="Re-encode on ingest" :error="form.errors.reencode_ingest">
+                            <label class="inline-flex items-center gap-2 mt-2">
+                                <input v-model="form.reencode_ingest" type="checkbox" class="form-checkbox rounded" />
+                                <span class="text-sm text-slate-300">Transcode source to H.264/AAC</span>
+                            </label>
+                            <p class="mt-1 text-xs text-slate-500">Enable only for sources with broken H.264 NALs (e.g. catcast.tv) or incompatible codecs. Uses more CPU.</p>
+                        </FormField>
                         <p v-if="channelKind === 'managed'" class="sm:col-span-2 text-xs text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 rounded-lg px-3 py-2">
                             After creation, copy the generated Server URL and Stream Key into OBS or vMix.
                         </p>
@@ -375,6 +382,7 @@ const channelKind = ref('managed')
 const form = useForm({
     name: '', slug: '', notes: '',
     source_type: 'rtmp', ingest_mode: 'push', ingest_port: null, source_url: '',
+    reencode_ingest: false,
     youtube_cookies: '',
     push_protocol: 'rtmp', push_url: '', push_stream_key: '',
     push_username: '', push_password: '',

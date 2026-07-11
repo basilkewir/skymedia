@@ -37,6 +37,14 @@ class RecordingService
             return true;
         }
 
+        // Respect the channel's storage quota before starting a new segment.
+        if (! $this->hasQuotaHeadroom($channel)) {
+            Log::warning("[Recording] {$channel->name}: skipped — channel storage quota exceeded");
+            $channel->update(['last_error' => 'Recording skipped: channel storage quota exceeded']);
+
+            return false;
+        }
+
         $dvrDir = $channel->dvr_directory;
         $m3u8 = "{$dvrDir}/live.m3u8";
 
@@ -132,6 +140,10 @@ class RecordingService
         // Prune old VOD files to maintain disk space — use channel's retention policy
         $keep = max(1, (int) ($channel->keep_recordings ?? 3));
         $this->pruneOld($channel, keep: $keep);
+
+        // Enforce the channel's storage quota in case the new segment pushed
+        // the channel over its configured allocation.
+        $this->pruneByQuota($channel->fresh());
     }
 
     /**
@@ -324,6 +336,78 @@ class RecordingService
         }
 
         return true;
+    }
+
+    /**
+     * Check whether a new recording segment is likely to fit inside the
+     * channel's storage quota. Always allow if no quota is configured.
+     */
+    private function hasQuotaHeadroom(Channel $channel): bool
+    {
+        $quota = $channel->storage_quota_bytes;
+        if ($quota === null || $quota <= 0) {
+            return true;
+        }
+
+        $used = (int) ($channel->storage_used_bytes ?? 0);
+        // Estimate this segment size from the channel's video + audio bitrate.
+        $videoKbps = (int) ($channel->push_video_bitrate ?? 2000);
+        $audioKbps = (int) ($channel->push_audio_bitrate ?? 128);
+        $duration = max(1, (int) $channel->record_duration);
+        $estimatedBytes = (int) (($videoKbps + $audioKbps) * 1000 / 8 * $duration * 1.1);
+
+        return ($used + $estimatedBytes) <= $quota;
+    }
+
+    /**
+     * Delete oldest completed recordings until the channel is back under its
+     * storage quota, respecting the minimum retention window.
+     */
+    public function pruneByQuota(Channel $channel): void
+    {
+        $quota = $channel->storage_quota_bytes;
+        if ($quota === null || $quota <= 0) {
+            return;
+        }
+
+        $minRetentionHours = max(1, (int) config('skymedia.min_recording_retention_hours', 24));
+        $retentionCutoff = now()->subHours($minRetentionHours);
+
+        // Re-evaluate storage used from DB + disk in case counters drift.
+        $used = (int) ($channel->storage_used_bytes ?? 0);
+        $diskSize = 0;
+        foreach (glob($channel->dvr_directory . '/rec_*.mp4') ?: [] as $f) {
+            $diskSize += (int) filesize($f);
+        }
+        $used = max($used, $diskSize);
+
+        if ($used <= $quota) {
+            return;
+        }
+
+        $recordings = Recording::where('channel_id', $channel->id)
+            ->where('status', 'completed')
+            ->orderBy('completed_at', 'asc')
+            ->get();
+
+        foreach ($recordings as $rec) {
+            if ($used <= $quota) {
+                break;
+            }
+            if ($rec->completed_at !== null && $rec->completed_at->gt($retentionCutoff)) {
+                continue;
+            }
+            if ($rec->filepath === $channel->fallback_recording_path) {
+                continue;
+            }
+            $size = filesize($rec->filepath) ?? 0;
+            @unlink($rec->filepath);
+            if ($size > 0) {
+                $used -= $size;
+                $channel->decrement('storage_used_bytes', $size);
+            }
+            $rec->delete();
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

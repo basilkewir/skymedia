@@ -77,10 +77,11 @@ class PushServiceTest extends TestCase
         $command = ['ffmpeg', '-i', $playlist, 'rtmp://live.example.com/live/key123'];
 
         $this->playout->shouldReceive('outputPlaylist')->once()->andReturn($playlist);
-        $this->ffmpeg->shouldReceive('pidFile')->times(3)->andReturn('/tmp/pid');
-        $this->ffmpeg->shouldReceive('readPid')->twice()->andReturn(0);
+        $this->ffmpeg->shouldReceive('pidFile')->andReturn('/tmp/pid');
+        $this->ffmpeg->shouldReceive('readPid')->andReturn(0);
+        $this->ffmpeg->shouldReceive('isRunning')->andReturn(false);
         $this->ffmpeg->shouldReceive('buildPushCommand')->once()->andReturn($command);
-        $this->ffmpeg->shouldReceive('logFile')->once()->andReturn('/tmp/log');
+        $this->ffmpeg->shouldReceive('logFile')->andReturn('/tmp/log');
         $this->ffmpeg->shouldReceive('startProcess')->once()->andReturn(9999);
         $this->ffmpeg->shouldReceive('clearPid')->once();
         $this->ffmpeg->shouldReceive('stopProcess')->never();
@@ -118,8 +119,9 @@ class PushServiceTest extends TestCase
         $playlist = '/nonexistent/live.m3u8';
 
         $this->playout->shouldReceive('outputPlaylist')->once()->andReturn($playlist);
-        $this->ffmpeg->shouldReceive('pidFile')->once()->andReturn('/tmp/pid');
-        $this->ffmpeg->shouldReceive('readPid')->once()->andReturn(0);
+        $this->ffmpeg->shouldReceive('pidFile')->andReturn('/tmp/pid');
+        $this->ffmpeg->shouldReceive('readPid')->andReturn(0);
+        $this->ffmpeg->shouldReceive('isRunning')->andReturn(false);
 
         $result = $this->push->start($this->channel);
 
@@ -134,10 +136,11 @@ class PushServiceTest extends TestCase
         $command = ['ffmpeg', '-i', $playlist, 'rtmp://live.example.com/live/key123'];
 
         $this->playout->shouldReceive('outputPlaylist')->once()->andReturn($playlist);
-        $this->ffmpeg->shouldReceive('pidFile')->times(3)->andReturn('/tmp/pid');
-        $this->ffmpeg->shouldReceive('readPid')->twice()->andReturn(0);
+        $this->ffmpeg->shouldReceive('pidFile')->andReturn('/tmp/pid');
+        $this->ffmpeg->shouldReceive('readPid')->andReturn(0);
+        $this->ffmpeg->shouldReceive('isRunning')->andReturn(false);
         $this->ffmpeg->shouldReceive('buildPushCommand')->once()->andReturn($command);
-        $this->ffmpeg->shouldReceive('logFile')->twice()->andReturn('/tmp/log');
+        $this->ffmpeg->shouldReceive('logFile')->andReturn('/tmp/log');
         $this->ffmpeg->shouldReceive('startProcess')->once()->andThrow(new \RuntimeException('ffmpeg not found'));
         $this->ffmpeg->shouldReceive('readLogTail')->once()->andReturn('(log not found)');
         $this->ffmpeg->shouldReceive('clearPid')->once();
@@ -165,12 +168,13 @@ class PushServiceTest extends TestCase
         $oldPid = 8888;
 
         $this->playout->shouldReceive('outputPlaylist')->once()->andReturn($playlist);
-        $this->ffmpeg->shouldReceive('pidFile')->times(3)->andReturn('/tmp/pid');
-        $this->ffmpeg->shouldReceive('readPid')->twice()->andReturn(0, $oldPid);
+        $this->ffmpeg->shouldReceive('pidFile')->andReturn('/tmp/pid');
+        $this->ffmpeg->shouldReceive('readPid')->andReturn(0, $oldPid);
+        $this->ffmpeg->shouldReceive('isRunning')->andReturn(false, true);
         $this->ffmpeg->shouldReceive('stopProcess')->once()->with($oldPid);
         $this->ffmpeg->shouldReceive('clearPid')->once();
         $this->ffmpeg->shouldReceive('buildPushCommand')->once()->andReturn($command);
-        $this->ffmpeg->shouldReceive('logFile')->once()->andReturn('/tmp/log');
+        $this->ffmpeg->shouldReceive('logFile')->andReturn('/tmp/log');
         $this->ffmpeg->shouldReceive('startProcess')->once()->andReturn(9999);
 
         if (! is_dir($dvrDir)) {
@@ -310,10 +314,11 @@ class PushServiceTest extends TestCase
             'enabled' => true,
         ]);
 
-        $this->ffmpeg->shouldReceive('pidFile')->times(4)->andReturn('/tmp/pid');
-        $this->ffmpeg->shouldReceive('readPid')->twice()->andReturn(0);
+        $this->ffmpeg->shouldReceive('pidFile')->andReturn('/tmp/pid');
+        $this->ffmpeg->shouldReceive('readPid')->andReturn(0);
+        $this->ffmpeg->shouldReceive('isRunning')->andReturn(false);
         $this->ffmpeg->shouldReceive('buildPushCommand')->twice()->andReturn($command);
-        $this->ffmpeg->shouldReceive('logFile')->twice()->andReturn('/tmp/log');
+        $this->ffmpeg->shouldReceive('logFile')->andReturn('/tmp/log');
         $this->ffmpeg->shouldReceive('startProcess')->twice()->andReturn(9999, 8888);
         $this->ffmpeg->shouldReceive('clearPid')->once();
 
@@ -351,13 +356,13 @@ class PushServiceTest extends TestCase
             'pid' => 5555,
         ]);
 
-        $this->ffmpeg->shouldReceive('isRunning')->once()->with(5555)->andReturn(true);
+        $this->ffmpeg->shouldReceive('isRunning')->andReturn(true);
 
         // Primary push mocks
-        $this->ffmpeg->shouldReceive('pidFile')->times(3)->andReturn('/tmp/pid');
-        $this->ffmpeg->shouldReceive('readPid')->twice()->andReturn(0);
+        $this->ffmpeg->shouldReceive('pidFile')->andReturn('/tmp/pid');
+        $this->ffmpeg->shouldReceive('readPid')->andReturn(0);
         $this->ffmpeg->shouldReceive('buildPushCommand')->once()->andReturn($command);
-        $this->ffmpeg->shouldReceive('logFile')->once()->andReturn('/tmp/log');
+        $this->ffmpeg->shouldReceive('logFile')->andReturn('/tmp/log');
         $this->ffmpeg->shouldReceive('startProcess')->once()->andReturn(9999);
         $this->ffmpeg->shouldReceive('clearPid')->once();
 
