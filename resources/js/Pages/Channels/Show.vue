@@ -386,7 +386,7 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref, reactive } from 'vue'
+import { onMounted, onUnmounted, ref, reactive, watch } from 'vue'
 import { Link, useForm, router } from '@inertiajs/vue3'
 import AppLayout from '@/Layouts/AppLayout.vue'
 import StatusBadge from '@/Components/StatusBadge.vue'
@@ -576,22 +576,70 @@ function deleteRecording(id) {
     router.delete(route('recordings.delete', id))
 }
 
+function setupPreview() {
+    if (! previewPlayer.value) return
+
+    // Native HLS (Safari / iOS): the browser follows the playlist and the
+    // live↔fallback symlink swap automatically, so just point it at the URL.
+    if (previewPlayer.value.canPlayType('application/vnd.apple.mpegurl')) {
+        previewPlayer.value.src = props.previewUrl
+        return
+    }
+
+    import('hls.js').then(({ default: Hls }) => {
+        if (! Hls.isSupported()) return
+
+        hlsPlayer = new Hls({
+            // Stay near the live edge but keep enough buffer to ride out
+            // small network hiccups without rebuffering.
+            liveSyncDurationCount: 3,
+            maxBufferLength: 30,
+            backBufferLength: 30,
+            maxMaxBufferLength: 60,
+            enableWorker: true,
+            // Be stubborn about reloads — the playlist is regenerated every
+            // couple of seconds and a single failed fetch must not kill it.
+            manifestLoadingMaxRetry: 10,
+            manifestLoadingRetryDelay: 500,
+            levelLoadingMaxRetry: 10,
+            fragLoadingMaxRetry: 10,
+            fragLoadingRetryDelay: 500,
+            fragLoadingMaxRetryTimeout: 30000,
+        })
+
+        hlsPlayer.loadSource(props.previewUrl)
+        hlsPlayer.attachMedia(previewPlayer.value)
+
+        // Recover from transient/fatal errors instead of freezing on a black
+        // frame. Without this a single dropped segment during a live↔fallback
+        // transition would leave the preview dead until a page reload.
+        hlsPlayer.on(Hls.Events.ERROR, (_evt, data) => {
+            if (! data.fatal) return
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                hlsPlayer.startLoad()
+            } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                hlsPlayer.recoverMediaError()
+            } else {
+                hlsPlayer.loadSource(props.previewUrl)
+            }
+        })
+    })
+}
+
 onMounted(async () => {
     poll()
     timer = setInterval(poll, 4000)
-    if (previewPlayer.value) {
-        if (previewPlayer.value.canPlayType('application/vnd.apple.mpegurl')) {
-            previewPlayer.value.src = props.previewUrl
-        } else {
-            const { default: Hls } = await import('hls.js')
-            if (Hls.isSupported()) {
-                hlsPlayer = new Hls({ liveSyncDurationCount: 2, maxBufferLength: 4, enableWorker: true })
-                hlsPlayer.loadSource(props.previewUrl)
-                hlsPlayer.attachMedia(previewPlayer.value)
-            }
-        }
-    }
+    setupPreview()
 })
+
+// When the playout source switches (live ↔ fallback VOD), the output.m3u8
+// symlink target changes entirely. hls.js follows it on its own reload, but
+// forcing a soft re-load guarantees the preview snaps to the new live edge
+// instead of getting stuck mid-playlist.
+watch(() => state.source_live, () => {
+    if (hlsPlayer) hlsPlayer.loadSource(props.previewUrl)
+})
+
 onUnmounted(() => {
     clearInterval(timer)
     hlsPlayer?.destroy()
