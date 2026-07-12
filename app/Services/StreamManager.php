@@ -433,31 +433,35 @@ class StreamManager
 
         $channel->update(['last_check_at' => now()]);
 
-        // Primary health signal: is the ingest process running and writing fresh segments?
+        // Primary health signal: is the ingest process running and writing fresh
+        // segments? This is a *fast* filesystem check — no network round-trip.
         $ingestRunning = $this->ingest->isRunning($channel);
         $recentSegments = $this->ffmpeg->hasRecentSegments($channel, 20);
 
-        // For push-ingest listeners and HTTP MPEG-TS IPTV streams, never call
-        // ffprobe on the source URL — it opens a second connection which IPTV
-        // providers detect as a duplicate session and kill the ingest stream.
-        // Segment freshness is the sole health signal for these source types.
-        $skipProbe = $channel->isPushIngest() || $this->ffmpeg->isIptvStream($channel);
-        $probeHealthy = $skipProbe ? false : $this->ffmpeg->checkSourceHealth($channel);
-
-        $sourceLive = ($ingestRunning && $recentSegments) || $probeHealthy;
-
-        // For push-ingest (listener mode), the ingest ffmpeg is always running
-        // and stale segments from a prior connection can persist ~20 s on disk.
-        // To avoid a false "recovered" bounce, also verify that the live.m3u8
-        // playlist is being actively updated by the current ffmpeg process.
+        // Segment freshness + ingest-process liveness is the authoritative,
+        // NON-BLOCKING health signal for *every* source type. A second ffprobe
+        // connection to the upstream is deliberately avoided in the monitor hot
+        // path: it added up to ~15 s of blocking per dead source, which stalled
+        // the single-threaded monitor loop for minutes across many channels
+        // (the root cause of failback recovery taking 10+ minutes in
+        // production) and, for IPTV providers, is detected as a duplicate
+        // session that kills the ingest. If the ingest ffmpeg is alive and
+        // writing recent segments the source is definitively live; if it stops,
+        // `recentSegments` goes false within the window and the monitor demotes
+        // — no ffprobe required. (checkSourceHealth/probeStream remain available
+        // for on-demand diagnostics via the UI/API.)
         $liveM3u8 = $channel->dvr_directory . '/live.m3u8';
-        $liveM3u8Fresh = file_exists($liveM3u8) && (time() - filemtime($liveM3u8)) <= max(5, (int) $channel->segment_duration * 2);
+        $liveM3u8Fresh = file_exists($liveM3u8)
+            && (time() - filemtime($liveM3u8)) <= max(5, (int) $channel->segment_duration * 2);
 
-        $sourceRecovered = $channel->isPushIngest()
-            ? ($ingestRunning && $recentSegments && $liveM3u8Fresh)
-            : ($skipProbe ? ($ingestRunning && $recentSegments) : $probeHealthy);
+        // For push-ingest listeners, stale segments from a prior connection can
+        // persist ~20 s on disk, so also require that live.m3u8 is being actively
+        // updated by the *current* ffmpeg process before declaring recovery.
+        $sourceLive = $ingestRunning
+            && $recentSegments
+            && ($channel->isPushIngest() ? $liveM3u8Fresh : true);
 
-        if ($sourceRecovered && ! $channel->source_live) {
+        if ($sourceLive && ! $channel->source_live) {
             $this->onSourceRecovered($channel->fresh());
         } elseif (! $sourceLive && $channel->source_live) {
             $this->onSourceLost($channel->fresh());
