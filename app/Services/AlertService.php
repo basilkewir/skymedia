@@ -19,7 +19,11 @@ class AlertService
     {
         $admins = User::all();
         if ($admins->isNotEmpty()) {
-            Notification::send($admins, new ChannelOfflineAlert($channel, $reason, $hasFallback));
+            try {
+                Notification::send($admins, new ChannelOfflineAlert($channel, $reason, $hasFallback));
+            } catch (\Throwable $e) {
+                Log::debug("[Alert] Offline notification failed: {$e->getMessage()}");
+            }
         }
 
         $this->fireWebhook('channel.offline', [
@@ -40,7 +44,11 @@ class AlertService
     {
         $admins = User::all();
         if ($admins->isNotEmpty()) {
-            Notification::send($admins, new ChannelRecoveredAlert($channel));
+            try {
+                Notification::send($admins, new ChannelRecoveredAlert($channel));
+            } catch (\Throwable $e) {
+                Log::debug("[Alert] Recovery notification failed: {$e->getMessage()}");
+            }
         }
 
         $this->fireWebhook('channel.recovered', [
@@ -57,7 +65,11 @@ class AlertService
     {
         $admins = User::all();
         if ($admins->isNotEmpty()) {
-            Notification::send($admins, new ChannelOfflineAlert($channel, "Error: {$error}", false));
+            try {
+                Notification::send($admins, new ChannelOfflineAlert($channel, "Error: {$error}", false));
+            } catch (\Throwable $e) {
+                Log::debug("[Alert] Error notification failed: {$e->getMessage()}");
+            }
         }
 
         $this->fireWebhook('channel.error', [

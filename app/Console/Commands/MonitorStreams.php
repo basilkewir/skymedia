@@ -37,7 +37,11 @@ class MonitorStreams extends Command
                     $lastCheck = $this->lastChecked[$channel->id] ?? 0;
 
                     if ((time() - $lastCheck) >= $interval) {
-                        $manager->monitorChannel($channel->fresh());
+                        try {
+                            $manager->monitorChannel($channel->fresh());
+                        } catch (\Throwable $e) {
+                            Log::error("Monitor failed for {$channel->name}: {$e->getMessage()} in {$e->getFile()}:{$e->getLine()}");
+                        }
                         $this->lastChecked[$channel->id] = time();
 
                         $ch = $channel->fresh();
