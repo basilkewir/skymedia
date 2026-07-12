@@ -906,11 +906,38 @@ class FFmpegService
     public function liveHlsReady(Channel $channel, int $minSegments = 2): bool
     {
         $dvrDir = $channel->dvr_directory;
-        if (! file_exists($dvrDir . '/live.m3u8')) {
+        $liveM3u8 = $dvrDir . '/live.m3u8';
+        if (! file_exists($liveM3u8)) {
             return false;
         }
 
-        return count(glob($dvrDir . '/seg_*.ts') ?: []) >= $minSegments;
+        // live.m3u8 must be actively updated by the *current* source/encoder
+        // session. Leftover files on disk after the encoder disconnects (or the
+        // source dies) must NOT read as "ready" — otherwise the playout
+        // forced-live block and onSourceRecovered keep flipping output.m3u8
+        // back onto a dead live.m3u8, and the relayed push goes blank while the
+        // source is actually offline.
+        $age = time() - filemtime($liveM3u8);
+        $freshWindow = max(6, (int) ($channel->segment_duration ?? 2) * 2 + 2);
+        if ($age > $freshWindow) {
+            return false;
+        }
+
+        $segs = glob($dvrDir . '/seg_*.ts') ?: [];
+        if (count($segs) < $minSegments) {
+            return false;
+        }
+
+        // At least one segment must have been written recently — guards against
+        // a live.m3u8 that was touched (rewritten) but carries no fresh segments.
+        $cutoff = time() - max(10, $freshWindow);
+        foreach ($segs as $seg) {
+            if (filemtime($seg) >= $cutoff) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

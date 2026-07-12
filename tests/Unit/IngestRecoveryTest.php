@@ -188,6 +188,48 @@ class IngestRecoveryTest extends TestCase
     }
 
     /** @test */
+    public function live_hls_ready_rejects_stale_leftover_segments(): void
+    {
+        // After an encoder disconnects, the previous live.m3u8 and its seg_*.ts
+        // files can linger on disk. liveHlsReady must NOT report "ready" for
+        // those stale leftovers — otherwise the playout forced-live block and
+        // onSourceRecovered keep flipping output.m3u8 back onto a dead
+        // live.m3u8 and the relayed push goes blank while the source is offline.
+        $channel = $this->makeChannel();
+        $dvr = sys_get_temp_dir() . '/skymedia_dvr_' . uniqid();
+        @mkdir($dvr, 0755, true);
+        $channel->dvr_path = $dvr;
+        $channel->save();
+        $channel = $channel->fresh();
+
+        $ffmpeg = app(FFmpegService::class);
+
+        // Missing live.m3u8 → not ready.
+        $this->assertFalse($ffmpeg->liveHlsReady($channel));
+
+        // Stale live.m3u8 + stale segments (encoder disconnected earlier).
+        file_put_contents("{$dvr}/live.m3u8", "#EXTM3U\n");
+        file_put_contents("{$dvr}/seg_00001.ts", 'x');
+        file_put_contents("{$dvr}/seg_00002.ts", 'x');
+        touch("{$dvr}/live.m3u8", time() - 120);
+        touch("{$dvr}/seg_00001.ts", time() - 120);
+        touch("{$dvr}/seg_00002.ts", time() - 120);
+        $this->assertFalse(
+            $ffmpeg->liveHlsReady($channel),
+            'Stale leftover segments must not be reported as live-ready'
+        );
+
+        // Fresh live.m3u8 + fresh segments (encoder live now).
+        touch("{$dvr}/live.m3u8", time());
+        touch("{$dvr}/seg_00001.ts", time());
+        touch("{$dvr}/seg_00002.ts", time());
+        $this->assertTrue($ffmpeg->liveHlsReady($channel));
+
+        array_map('unlink', glob("{$dvr}/*") ?: []);
+        @rmdir($dvr);
+    }
+
+    /** @test */
     public function dash_ingest_is_supported_and_keeps_url(): void
     {
         // DASH (.mpd) sources must be ingestable. FFmpeg reads DASH natively,
