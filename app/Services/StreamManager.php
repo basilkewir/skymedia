@@ -987,11 +987,14 @@ class StreamManager
      */
     private function restartPushForTransition(Channel $channel): void
     {
-        if (! empty($channel->push_url)) {
-            // force=true bypasses the isHealthy() check so the push is always
-            // restarted to pick up the new symlink target.
-            $this->push->start($channel, force: true);
-        }
+        // NOTE: The push process reads output.m3u8, which is a symlink that the
+        // playout module swaps atomically between live.m3u8 and playout_a.m3u8.
+        // ffmpeg's HLS demuxer re-resolves that symlink on every playlist reload,
+        // so the running push follows the transition automatically WITHOUT a
+        // restart. Force-restarting it here dropped the external RTMP connection
+        // on every live<->fallback flap (multiple times per minute), making the
+        // relayed stream choppy. We now leave the push running; if it ever truly
+        // dies, the per-tick PushService::ensureRunning() watchdog revives it.
         $this->stopHlsRelay($channel);
         $this->startHlsRelay($channel);
     }
