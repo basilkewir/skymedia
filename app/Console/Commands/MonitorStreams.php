@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Console\Commands;
 
 use App\Models\Channel;
@@ -10,10 +12,12 @@ use Illuminate\Support\Facades\Log;
 
 class MonitorStreams extends Command
 {
-    protected $signature   = 'streams:monitor {--channel= : Limit to one channel ID}';
+    protected $signature = 'streams:monitor {--channel= : Limit to one channel ID}';
+
     protected $description = 'Long-running stream monitor daemon — never leave the output offline';
 
     private array $lastChecked = [];
+
     private array $lastAutoRestart = [];
 
     public function handle(StreamManager $manager): void
@@ -29,7 +33,7 @@ class MonitorStreams extends Command
                 }
 
                 $query->each(function (Channel $channel) use ($manager) {
-                    $interval  = max(1, (int) $channel->check_interval);
+                    $interval = max(1, (int) $channel->check_interval);
                     $lastCheck = $this->lastChecked[$channel->id] ?? 0;
 
                     if ((time() - $lastCheck) >= $interval) {
@@ -49,13 +53,24 @@ class MonitorStreams extends Command
                     }
 
                     // Auto-recovery: if channel is offline, refresh ingest to try
-                    // next source. Cooldown is 15s to avoid hammering dead sources
-                    // while still recovering quickly when a source comes back.
+                    // next source. The cooldown is scaled by retry_count so a
+                    // repeatedly-failing upstream is given progressively more
+                    // breathing room (back-pressure), and a per-channel jitter
+                    // prevents dozens of dead channels from retrying on the
+                    // exact same tick — which previously serialised through
+                    // refreshIngest's wait loop and starved the whole monitor.
                     $ch = $channel->fresh();
-                    if ($ch->stream_status === 'offline' && ! $ch->source_live) {
+                    if (($ch->stream_status === 'offline' || $ch->stream_status === 'starting')
+                        && ! $ch->source_live
+                        && ! $manager->isIngestRunning($ch)) {
                         $lastRestart = $this->lastAutoRestart[$ch->id] ?? 0;
-                        // Cooldown: 15s for pull channels, 20s for push-ingest
-                        $cooldown = $ch->isPushIngest() ? 20 : 15;
+                        // Base: 15s (pull) / 20s (push), + deterministic jitter
+                        // based on channel id (0-4s) so retries spread out,
+                        // + up to 60s back-pressure scaled by retry_count.
+                        $base = $ch->isPushIngest() ? 20 : 15;
+                        $jitter = $ch->id % 5;
+                        $backoff = min(60, ((int) $ch->retry_count) * 5);
+                        $cooldown = $base + $jitter + $backoff;
                         if ((time() - $lastRestart) < $cooldown) {
                             return;
                         }
@@ -78,9 +93,10 @@ class MonitorStreams extends Command
                                 $manager->refreshIngest($ch);
                                 $this->lastAutoRestart[$ch->id] = time();
                                 $this->line(sprintf(
-                                    '[%s] %-22s  AUTO-REFRESH: trying next source',
+                                    '[%s] %-22s  AUTO-REFRESH: trying next source (cd=%ds)',
                                     now()->format('H:i:s'),
-                                    mb_substr($ch->name, 0, 22)
+                                    mb_substr($ch->name, 0, 22),
+                                    $cooldown
                                 ));
                             }
                         } catch (\Throwable $e) {

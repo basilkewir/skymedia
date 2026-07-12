@@ -14,9 +14,10 @@ class IngestService
     /**
      * Start the ingest ffmpeg process.
      *
-     * @param bool $cleanSegments Whether to clean stale segments before starting.
-     *        Pass false when restarting a listener for a push-ingest channel
-     *        (to avoid breaking the push process reading live.m3u8).
+     * @param  bool  $cleanSegments  Whether to clean stale segments before starting.
+     *                               Pass false when restarting a listener for a push-ingest channel
+     *                               (to avoid breaking the push process reading live.m3u8).
+     *
      * @throws \RuntimeException with the ffmpeg stderr on failure
      */
     public function start(Channel $channel, bool $cleanSegments = true): bool
@@ -44,8 +45,8 @@ class IngestService
         }
 
         $dvrDir = $channel->dvr_directory;
-        if (!is_dir($dvrDir)) {
-            if (!mkdir($dvrDir, 0755, true) && !is_dir($dvrDir)) {
+        if (! is_dir($dvrDir)) {
+            if (! mkdir($dvrDir, 0755, true) && ! is_dir($dvrDir)) {
                 throw new \RuntimeException("Cannot create DVR directory: {$dvrDir}");
             }
         }
@@ -61,18 +62,18 @@ class IngestService
         }
 
         // Verify ffmpeg binary exists and is executable
-        $bin     = $this->ffmpeg->getBin();
+        $bin = $this->ffmpeg->getBin();
         $binPath = trim((string) shell_exec("which {$bin} 2>/dev/null"))
                    ?: trim((string) shell_exec("command -v {$bin} 2>/dev/null"));
 
         if (empty($binPath)) {
             throw new \RuntimeException(
                 "ffmpeg binary not found in PATH. Configured as: '{$bin}'. "
-                . "Run: which ffmpeg   or set FFMPEG_BINARY=/full/path in .env"
+                . 'Run: which ffmpeg   or set FFMPEG_BINARY=/full/path in .env'
             );
         }
 
-        $cmd     = $this->ffmpeg->buildIngestCommand($channel);
+        $cmd = $this->ffmpeg->buildIngestCommand($channel);
         $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
         $logFile = $this->ffmpeg->logFile($channel, 'ingest');
 
@@ -82,27 +83,43 @@ class IngestService
         $stabilise = $channel->isPushIngest() ? 1 : 3;
         $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, $stabilise);
 
+        // Determining whether the source is *actually* live requires waiting for
+        // the first HLS segments to land on disk. Prematurely marking the
+        // channel as live here (the previous behaviour for pull ingest) is the
+        // root cause of the "stuck on fallback with source_live=1" symptom:
+        // ffmpeg would start, hold the port for ~3s, then exit when the remote
+        // returned 5xx/timeout — by which time the DB already claimed the
+        // source was live, and the monitor's stale `source_live` flag kept
+        // the channel out of the auto-recovery loop.
+        //
+        // We now start in a neutral "starting" state for both push and pull
+        // ingest. The monitor (StreamManager::monitorChannel) is the *only*
+        // authority that promotes the channel to `live` — and it does so on
+        // segment evidence (hasRecentSegments / liveHlsReady) via
+        // onSourceRecovered / onSourceStillLive.
         $waitingForPush = $channel->isPushIngest();
         $channel->update([
-            'pid'           => $pid,
-            'stream_status' => $waitingForPush ? 'starting' : 'live',
-            'dvr_status'    => $channel->isPushIngest() || $channel->dvr_enabled === false
-                ? 'idle'
-                : ($waitingForPush ? 'starting' : 'recording'),
-            'source_live'   => ! $waitingForPush,
-            'last_live_at'  => $waitingForPush ? $channel->last_live_at : now(),
-            'retry_count'   => 0,
-            'last_error'    => null,
+            'pid' => $pid,
+            'stream_status' => 'starting',
+            'dvr_status' => ($waitingForPush || $channel->dvr_enabled === false) ? 'idle' : 'starting',
+            // Never declare live here; the monitor decides on segment evidence.
+            'source_live' => false,
+            // Preserve last_live_at — it tracks the last confirmed-live moment,
+            // not the last "we tried to start ffmpeg" moment.
+            'last_live_at' => $channel->last_live_at,
+            'retry_count' => 0,
+            'last_error' => null,
         ]);
 
         Log::info("[Ingest] {$channel->name} started — PID {$pid} — DVR: {$dvrDir}");
+
         return true;
     }
 
     public function stop(Channel $channel): void
     {
         $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
-        $pid     = $this->ffmpeg->readPid($pidFile);
+        $pid = $this->ffmpeg->readPid($pidFile);
 
         if ($pid > 0) {
             $this->ffmpeg->stopProcess($pid);
@@ -153,7 +170,7 @@ class IngestService
             // 1. Find all loop shells that reference this channel's listen URL.
             $loopLines = [];
             if ($listenUrl !== '') {
-                exec("ps aux | grep -F " . escapeshellarg($listenUrl) . " | grep -F 'while' | grep -v grep | awk '{print \$2}' 2>/dev/null", $loopLines);
+                exec('ps aux | grep -F ' . escapeshellarg($listenUrl) . " | grep -F 'while' | grep -v grep | awk '{print \$2}' 2>/dev/null", $loopLines);
             }
 
             foreach ($loopLines as $line) {
@@ -195,6 +212,7 @@ class IngestService
         }
 
         usleep(300_000); // 300ms for kernel to release port
+
         return $totalKilled;
     }
 
@@ -210,9 +228,9 @@ class IngestService
         if ($channel->isPushIngest() && $channel->ingest_port) {
             $port = (int) $channel->ingest_port;
             $hexPort = strtoupper(dechex($port));
-            $tcpContent  = @file_get_contents('/proc/net/tcp');
+            $tcpContent = @file_get_contents('/proc/net/tcp');
             $tcp6Content = @file_get_contents('/proc/net/tcp6');
-            if (($tcpContent  !== false && str_contains($tcpContent,  ":{$hexPort} "))
+            if (($tcpContent !== false && str_contains($tcpContent, ":{$hexPort} "))
              || ($tcp6Content !== false && str_contains($tcp6Content, ":{$hexPort} "))) {
                 return true;
             }
@@ -249,6 +267,7 @@ class IngestService
                     Log::info("[Ingest] Killed orphan PID {$pid} holding port {$port} (fuser)");
                 }
             }
+
             return;
         }
 
@@ -284,6 +303,7 @@ class IngestService
             usleep(200_000); // 200ms
         }
         Log::warning("[Ingest] Port {$port} still in use after {$maxSeconds}s — proceeding anyway");
+
         return false;
     }
 
@@ -294,9 +314,13 @@ class IngestService
      */
     protected function cleanSegments(string $dvrDir): void
     {
-        if (! is_dir($dvrDir)) return;
+        if (! is_dir($dvrDir)) {
+            return;
+        }
 
-        foreach (glob("{$dvrDir}/seg_*.ts") ?: [] as $f) @unlink($f);
+        foreach (glob("{$dvrDir}/seg_*.ts") ?: [] as $f) {
+            @unlink($f);
+        }
         @unlink("{$dvrDir}/live.m3u8");
         // Never remove output.m3u8 here: it may still point at a healthy VOD
         // fallback while a returning live source is warming up.

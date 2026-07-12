@@ -94,9 +94,13 @@ class StreamManager
             Log::info("[Debug] startChannel {$channel->name} step 6 startHlsRelay");
             $this->startHlsRelay($channel);
 
-            $status = $channel->isPushIngest() ? 'starting' : 'live';
-            $channel->update(['stream_status' => $status]);
-            event(new StreamStatusChanged($channel, $status));
+            // Both pull and push ingest start in "starting" and are promoted to
+            // "live" by the monitor once segment evidence confirms the source
+            // is actually producing. Previously pull ingest was marked "live"
+            // immediately which created a stale state if the source never came
+            // back — masking the failure in the dashboard.
+            $channel->update(['stream_status' => 'starting']);
+            event(new StreamStatusChanged($channel, 'starting'));
 
             return true;
 
@@ -224,9 +228,28 @@ class StreamManager
 
     /**
      * Refresh ingest without stopping the external push.
-     * For pull channels: stops only the ingest, tries next source in failover
-     * chain, restarts ingest. Push continues running (pushing DVR/fallback).
-     * For push-ingest channels: falls back to full restartChannel().
+     *
+     * Pull channels: stops only the ingest, tries the next source in the
+     * failover chain, restarts ingest. Push continues running (pushing
+     * DVR/fallback). Push-ingest channels: falls back to full restartChannel().
+     *
+     * Implementation notes (the bugs this fixes):
+     *   • The previous implementation synchronously waited up to 10s per
+     *     source for `liveHlsReady`. With several channels in fallback and
+     *     multiple backup sources, this stalled the single-threaded monitor
+     *     for minutes at a time — `last_check_at` for some channels drifted
+     *     >40 min stale and onSourceLost/onSourceRecovered never ran for
+     *     them, even though `ingest->start` had set `source_live=true`
+     *     on a process that exited seconds later. The dashboard showed
+     *     `live=1 pl=fallback` for hours — exactly the user-visible symptom.
+     *
+     *   • The wait is now capped at a few seconds per source. If segments
+     *     do not arrive in that window, we leave the channel in
+     *     `stream_status='starting'` and let the *next* monitor tick either
+     *     promote it via onSourceRecovered (segments arrived) or demote it
+     *     via onSourceStillDown (they did not), re-entering the cooldown-
+     *     gated refresh loop. State is ALWAYS cleaned up before returning,
+     *     so no stale `source_live=true` can survive a failed refresh.
      */
     public function refreshIngest(Channel $channel): bool
     {
@@ -234,86 +257,65 @@ class StreamManager
             return $this->restartChannel($channel);
         }
 
+        // Capped, per-source confirmation wait. Long enough to catch fast
+        // HLS/MPEG-TS providers (first segment in ≤1 seg duration), short
+        // enough that the monitor never blocks long enough to starve other
+        // channels. The next monitor tick confirms slower sources.
+        $maxWait = max(2, min(5, (int) $channel->segment_duration * 2));
+
         try {
             $this->log($channel, 'info', 'refreshing_ingest',
                 'Refreshing ingest — push continues running');
 
-            // 1. Stop only the ingest (not push, not playout, not recording)
+            // 1. Stop only the ingest (not push, not playout, not recording).
             $this->ingest->stop($channel);
-            $channel->update(['pid' => null, 'source_live' => false]);
+            $channel->update([
+                'pid' => null,
+                'source_live' => false,
+                'stream_status' => 'offline',
+            ]);
 
-            // 2. Try next sources in the failover chain
-            //    cleanSegments=false preserves live.m3u8 so push keeps running
+            // 2. Try the next source in the failover chain (or restart the
+            //    same one if there is only one).
             if ($channel->hasMultipleSources()) {
                 while ($next = $channel->nextSource()) {
+                    $prevUrl = $channel->source_url;
+                    $prevSourceId = $channel->current_source_id;
+
+                    // Tentatively point the channel at this source. ingest->start
+                    // reads source_url from the channel directly.
+                    $channel->update([
+                        'source_url' => $next->source_url,
+                        'source_type' => $next->source_type,
+                    ]);
+
                     try {
-                        // Temporarily set source_url for this attempt (don't activate yet)
-                        $prevUrl = $channel->source_url;
-                        $prevSourceId = $channel->current_source_id;
-                        $channel->update([
-                            'source_url' => $next->source_url,
-                            'source_type' => $next->source_type,
-                        ]);
-
+                        // cleanSegments=false preserves live.m3u8 so the push
+                        // process keeps a live playlist to read while we wait.
                         $this->ingest->start($channel, cleanSegments: false);
-                        $this->log($channel, 'info', 'source_switched',
-                            "Refresh: trying source [{$next->id}]: {$next->source_url}");
-
-                        // 3. Wait for live.m3u8 to have segments
-                        $start = time();
-                        $maxWait = max(10, (int) $channel->segment_duration * 3 + 2);
-                        while (time() - $start < $maxWait) {
-                            if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) {
-                                break;
-                            }
-                            usleep(250_000);
-                        }
-
-                        if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) {
-                            // Source is working — NOW activate it permanently
-                            $channel->activateSource($next);
-                            $this->playout->switchToLive($channel->fresh());
-                            $channel->update([
-                                'source_live' => true,
-                                'last_live_at' => now(),
-                                'stream_status' => 'live',
-                                'playout_status' => 'live',
-                            ]);
-                            $channel->resetRetries();
-                            $this->alert->sendRecoveryAlert($channel->fresh());
-                            event(new StreamStatusChanged($channel, 'live'));
-                            $this->log($channel, 'info', 'refresh_recovered',
-                                'Ingest refreshed — source recovered');
-
-                            return true;
-                        }
-                        // live.m3u8 not ready — this source is also dead, revert
-                        $this->log($channel, 'warning', 'source_refresh_no_segments',
-                            "Source [{$next->id}] started but no segments — trying next");
-                        $this->ingest->stop($channel);
+                    } catch (\Throwable $e) {
+                        // ffmpeg exited immediately (5xx / DNS / TCP refused).
+                        // Revert and try the next source synchronously — fast fail.
+                        $this->log($channel, 'error', 'source_refresh_failed',
+                            "Source [{$next->id}] failed to start: " . $e->getMessage());
+                        $next->update(['last_error' => $e->getMessage()]);
                         $channel->update([
                             'source_url' => $prevUrl,
                             'current_source_id' => $prevSourceId,
                             'pid' => null,
+                            'source_live' => false,
+                            'stream_status' => 'offline',
                         ]);
-                    } catch (\Throwable $e) {
-                        $this->log($channel, 'error', 'source_refresh_failed',
-                            "Source [{$next->id}] failed: " . $e->getMessage());
-                        $next->update(['last_error' => $e->getMessage()]);
                         $channel->refresh();
+
+                        continue;
                     }
-                }
-                $this->log($channel, 'info', 'all_sources_exhausted',
-                    'Refresh: all backup sources exhausted — staying in fallback');
-                // Reset current_source_id so next refresh cycles from priority 1
-                $channel->update(['current_source_id' => null, 'source_url' => $channel->channelSources()->where('is_active', true)->orderBy('priority')->first()?->source_url
-                    ?? $channel->source_url]);
-            } else {
-                // No multiple sources — try restarting the same source
-                try {
-                    $this->ingest->start($channel, cleanSegments: false);
+
+                    $this->log($channel, 'info', 'source_switched',
+                        "Refresh: trying source [{$next->id}]: {$next->source_url}");
+
+                    // Brief confirmation wait for the first segment(s).
                     $start = time();
-                    $maxWait = max(10, (int) $channel->segment_duration * 3 + 2);
                     while (time() - $start < $maxWait) {
                         if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) {
                             break;
@@ -322,6 +324,8 @@ class StreamManager
                     }
 
                     if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) {
+                        // Source confirmed producing segments — promote now.
+                        $channel->activateSource($next);
                         $this->playout->switchToLive($channel->fresh());
                         $channel->update([
                             'source_live' => true,
@@ -333,24 +337,74 @@ class StreamManager
                         $this->alert->sendRecoveryAlert($channel->fresh());
                         event(new StreamStatusChanged($channel, 'live'));
                         $this->log($channel, 'info', 'refresh_recovered',
-                            'Ingest refreshed — source recovered');
+                            "Ingest refreshed — source [{$next->id}] recovered");
 
                         return true;
                     }
-                    $this->log($channel, 'warning', 'source_refresh_no_segments',
-                        'Refresh: source started but no segments — staying in fallback');
-                    $this->ingest->stop($channel);
-                    $channel->update(['pid' => null]);
+
+                    // ffmpeg started but no segments appeared in the capped
+                    // window — leave it running and defer verification to the
+                    // next monitor tick, which will promote via
+                    // onSourceRecovered (segments arrive) or demote via
+                    // onSourceStillDown (they don't, and we re-enter the
+                    // cooldown-gated refresh loop with the next source).
+                    $channel->activateSource($next);
+                    $channel->update([
+                        'stream_status' => 'starting',
+                        'source_live' => false,
+                    ]);
+                    $this->log($channel, 'info', 'source_refresh_pending',
+                        "Source [{$next->id}] started — awaiting segment confirmation on next tick");
+
+                    return true;
+                }
+
+                // Every source threw on start — none even spawned ffmpeg.
+                $this->log($channel, 'info', 'all_sources_exhausted',
+                    'Refresh: all backup sources failed to start — staying in fallback');
+            } else {
+                // Single-source channel: restart the same source. The next
+                // monitor tick confirms via onSourceRecovered / onSourceStillDown.
+                try {
+                    $this->ingest->start($channel, cleanSegments: false);
+                    $channel->update([
+                        'stream_status' => 'starting',
+                        'source_live' => false,
+                    ]);
+                    $this->log($channel, 'info', 'source_refresh_pending',
+                        'Ingest restarted — awaiting segment confirmation on next tick');
+
+                    return true;
                 } catch (\Throwable $e) {
                     $this->log($channel, 'error', 'source_refresh_failed',
                         'Refresh failed: ' . $e->getMessage());
                 }
             }
 
+            // Failed to confirm any source. Final clean-up to ensure no
+            // stale `source_live=true` survives this refresh attempt.
+            $channel->update([
+                'source_live' => false,
+                'stream_status' => 'offline',
+                'pid' => null,
+                'current_source_id' => null,
+                'source_url' => $channel->channelSources()
+                    ->where('is_active', true)
+                    ->orderBy('priority')
+                    ->first()?->source_url
+                    ?? $channel->source_url,
+            ]);
+
             return false;
         } catch (\Throwable $e) {
             $this->log($channel, 'error', 'refresh_error', $e->getMessage());
             Log::error("[Channel {$channel->id}] refreshIngest: {$e->getMessage()}");
+            // Defensive: any uncaught path must leave DB state clean too.
+            $channel->update([
+                'source_live' => false,
+                'stream_status' => 'offline',
+                'pid' => null,
+            ]);
 
             return false;
         }
@@ -358,8 +412,12 @@ class StreamManager
 
     public function activateAll(): void
     {
+        // Re-activate channels that are not currently confirmed live, including
+        // the new 'starting' transitional state introduced by the recovery
+        // rewrite. On boot we'd rather rebuild cleanly than trust a stale
+        // starting flag from before the restart.
         Channel::where('is_active', true)
-            ->whereIn('stream_status', ['idle', 'stopped', 'error', 'offline'])
+            ->whereIn('stream_status', ['idle', 'stopped', 'error', 'offline', 'starting'])
             ->each(fn (Channel $c) => $this->startChannel($c));
     }
 
@@ -453,17 +511,35 @@ class StreamManager
                 'dvr_status' => 'idle',
             ]);
 
-            // ── Multi-source failover: try ALL remaining sources before VOD ──
+            // ── Multi-source failover: try each backup source in turn. ──
+            //
+            // ingest->start launches ffmpeg and waits three seconds for it
+            // to stabilise — a process that's still alive after that window
+            // is *promising* but not *confirmed*. The previous code returned
+            // immediately after a successful start, skipping the fallback
+            // switch entirely on the assumption that "ffmpeg started" equals
+            // "source is back". For IPTV/MPEG-TS providers that accept the
+            // connection and then return 5xx a few seconds later, this left
+            // the channel pointing at a dead live.m3u8 while the dashboard
+            // claimed live=1.
+            //
+            // We now treat every successful start as unconfirmed: we break
+            // out of the rotation and let the next monitor tick verify (via
+            // onSourceRecovered / onSourceStillDown). And we ALWAYS proceed
+            // to switchToFallback below so the push never starves during the
+            // verification window.
             if ($channel->hasMultipleSources()) {
                 while ($next = $channel->nextSource()) {
                     $channel->activateSource($next);
                     try {
                         $this->ingest->start($channel);
                         $this->log($channel, 'info', 'source_switched',
-                            "Switched to backup source [{$next->id}]: {$next->source_url}");
-                        $this->alert->sendOfflineAlert($channel->fresh(), 'Primary source down — using backup', $this->playout->hasFallback($channel));
-
-                        return;
+                            "Switched to backup source [{$next->id}]: {$next->source_url} (verification deferred to next tick)");
+                        // Started — let the monitor confirm segments and
+                        // either promote to live (onSourceRecovered) or roll
+                        // forward to the next source via the cooldown-gated
+                        // auto-refresh loop.
+                        break;
                     } catch (\Throwable $e) {
                         $this->log($channel, 'error', 'source_switch_failed',
                             "Backup source [{$next->id}] failed: " . $e->getMessage());
@@ -471,8 +547,13 @@ class StreamManager
                         $channel->refresh();
                     }
                 }
-                $this->log($channel, 'info', 'all_sources_exhausted',
-                    'All backup sources exhausted — falling back to VOD');
+                // If the while loop completed without `break`-ing, every
+                // source threw on start. The fall-through to switchToFallback
+                // below is the only thing keeping the push on-air.
+                if (! $this->ingest->isRunning($channel)) {
+                    $this->log($channel, 'info', 'all_sources_exhausted',
+                        'All backup sources exhausted — falling back to VOD');
+                }
             }
         }
 
@@ -497,14 +578,25 @@ class StreamManager
     protected function onSourceRecovered(Channel $channel): void
     {
         if (! $channel->isPushIngest()) {
-            // Pull ingest: restart to pick up the new stream
-            $this->ingest->stop($channel);
-            try {
-                $this->ingest->start($channel);
-            } catch (\Throwable $e) {
-                $this->log($channel, 'error', 'ingest_restart_failed', $e->getMessage());
+            // Pull ingest: restart ONLY if the ingest process died.
+            // If the ingest is still running and writing fresh segments
+            // (the common case for IPTV/HLS flows — refreshIngest started
+            // ffmpeg, the source came back, segments started flowing) then
+            // restarting it would needlessly tear down a healthy capture
+            // and create a brief on-air gap. Only fall through to a restart
+            // when ffprobe confirmed the remote is back but our local ffmpeg
+            // had already exited (probe-driven recovery for non-IPTV HLS).
+            if (! $this->ingest->isRunning($channel)) {
+                try {
+                    $this->ingest->start($channel);
+                } catch (\Throwable $e) {
+                    $this->log($channel, 'error', 'ingest_restart_failed', $e->getMessage());
 
-                return;
+                    return;
+                }
+            } else {
+                $this->log($channel, 'info', 'source_recovered',
+                    'Source back online — existing ingest is already capturing segments');
             }
         } else {
             // Push ingest (listener): the encoder reconnected to the
@@ -639,6 +731,14 @@ class StreamManager
 
         if ($channel->stream_status !== 'live') {
             $channel->update(['stream_status' => 'live', 'source_live' => true]);
+        }
+
+        // Keep last_live_at fresh while the source is confirmed alive so it
+        // reflects "the last time we actually observed live segments" rather
+        // than the moment ffmpeg was launched. We only persist when it's more
+        // than a minute stale to avoid useless write churn on every 3s tick.
+        if (! $channel->last_live_at || now()->diffInSeconds($channel->last_live_at) > 60) {
+            $channel->update(['last_live_at' => now()]);
         }
 
         $dvrStatus = ! $channel->isPushIngest()
@@ -890,6 +990,17 @@ class StreamManager
         }
         $this->stopHlsRelay($channel);
         $this->startHlsRelay($channel);
+    }
+
+    /**
+     * True when the ingest ffmpeg process (push listener loop or pull
+     * capture) is alive. Used by the monitor command to decide whether
+     * a "starting" channel is mid-verification (don't disturb) or fully
+     * dead (safe to refresh again).
+     */
+    public function isIngestRunning(Channel $channel): bool
+    {
+        return $this->ingest->isRunning($channel);
     }
 
     /**
