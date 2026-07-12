@@ -42,15 +42,19 @@ class YoutubeService
 
     /**
      * Run yt-dlp and return the best HLS URL.
-     * Tries multiple player clients with retries to handle YouTube anti-bot detection.
+     * Tries multiple player clients with retries to handle YouTube anti-bot
+     * detection ("I'm not a robot"). The tv/tv_embedded clients in particular
+     * usually bypass the bot challenge without cookies; web/android/ios/web_safari
+     * are fallbacks. A supplied PO token + cookies (Netscape) gives the best
+     * chance of a stable extraction.
      */
     private function extract(Channel $channel): string
     {
         $ytdlp = $this->findBin();
         $url   = $channel->source_url;
 
-        // Player clients to try: web (default), android, ios — different fingerprints
-        $playerClients = ['web', 'android', 'ios'];
+        // Player clients, ordered best-chance-first for bot evasion.
+        $playerClients = ['tv', 'tv_embedded', 'web', 'web_safari', 'ios', 'android'];
         $maxAttempts = count($playerClients) * 2; // 2 attempts per client
 
         $cookieFile = null;
@@ -58,6 +62,8 @@ class YoutubeService
             $cookieFile = tempnam(sys_get_temp_dir(), 'yt_cookies_');
             file_put_contents($cookieFile, trim($channel->youtube_cookies));
         }
+
+        $poToken = trim((string) ($channel->youtube_po_token ?? ''));
 
         $lastError = '';
         $attempt = 0;
@@ -67,10 +73,15 @@ class YoutubeService
                 $attempt++;
                 Log::debug("[YouTube] Attempt {$attempt}: trying player_client={$client} for channel {$channel->id}");
 
+                $ytArgs = "youtube:player_client={$client}";
+                if ($poToken !== '') {
+                    $ytArgs .= ",po_token={$poToken}";
+                }
+
                 $cmd = [$ytdlp, '--js-runtimes', 'node', '--no-warnings', '-g',
                         '--format', 'best[protocol=m3u8_native]/best',
                         '--no-playlist',
-                        '--extractor-args', "youtube:player_client={$client}"];
+                        '--extractor-args', $ytArgs];
 
                 if ($cookieFile) {
                     $cmd[] = '--cookies';

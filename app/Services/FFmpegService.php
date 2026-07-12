@@ -46,6 +46,58 @@ class FFmpegService
     }
 
     /**
+     * Browser-like User-Agent used for HTTP(S) inputs.
+     * A real UA is required by most CDNs (Infomaniak, Catcast, Nimble,
+     * Akamai, …) — the default ffmpeg "Lavf/..." UA is routinely 403'd.
+     */
+    protected function defaultUserAgent(): string
+    {
+        return $this->httpUserAgent()
+            ?? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    }
+
+    /**
+     * Origin (scheme://host[:port]) of a URL, or null when not HTTP(S).
+     */
+    protected function urlOrigin(string $url): ?string
+    {
+        $p = parse_url($url);
+        if (! isset($p['scheme'], $p['host'])) {
+            return null;
+        }
+        $origin = strtolower($p['scheme']) . '://' . $p['host'];
+        if (isset($p['port'])) {
+            $origin .= ':' . $p['port'];
+        }
+
+        return $origin;
+    }
+
+    /**
+     * HTTP input options that maximise the chance a CDN actually serves the
+     * stream: a browser User-Agent, a matching Referer and an Origin header.
+     * Many providers (Infomaniak livecast, Catcast, etc.) reject requests that
+     * lack these, which is why previously-valid URLs started "no longer
+     * working" once they tightened anti-bot rules.
+     */
+    protected function httpInputHeaders(string $url): array
+    {
+        $flags = [
+            '-user_agent', $this->defaultUserAgent(),
+        ];
+
+        $origin = $this->urlOrigin($url);
+        if ($origin !== null) {
+            $flags[] = '-referer';
+            $flags[] = $origin . '/';
+            $flags[] = '-headers';
+            $flags[] = "Origin: {$origin}\r\n";
+        }
+
+        return $flags;
+    }
+
+    /**
      * True when the URL uses HTTP(S).
      */
     protected function isHttpUrl(string $url): bool
@@ -1085,10 +1137,7 @@ class FFmpegService
                 } catch (\Throwable $e) {
                     throw new \RuntimeException("YouTube URL resolution failed: {$e->getMessage()}");
                 }
-                $ua = $this->httpUserAgent()
-                    ?? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
-                return [
+                return array_merge([
                     '-re',
                     '-fflags',             '+genpts+discardcorrupt',
                     '-probesize',          '5000000',
@@ -1096,13 +1145,13 @@ class FFmpegService
                     '-allowed_extensions', 'ALL',
                     '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
                     '-live_start_index',   '-3',
-                    '-user_agent',         $ua,
                     '-timeout',            '15000000',
                     '-reconnect',          '1',
                     '-reconnect_streamed', '1',
                     '-reconnect_delay_max', '30',
+                ], $this->httpInputHeaders($inputUrl), [
                     '-i',                  $inputUrl,
-                ];
+                ]);
 
                 // HLS: http/https URLs ending in .m3u8/.m3u OR explicitly set to hls
             case $type === 'hls' && ! $isHttpMpegts:
@@ -1123,18 +1172,12 @@ class FFmpegService
 
                 // Network-specific options are invalid for local file:// playlists
                 if (! $isFile) {
-                    $ua = $this->httpUserAgent();
-                    if ($ua) {
-                        $flags[] = '-user_agent';
-                        $flags[] = $ua;
-                    }
-
                     $flags = array_merge($flags, $this->tlsVerifyFlag($channel), [
                         '-timeout', '15000000',
                         '-reconnect', '1',
                         '-reconnect_streamed', '1',
                         '-reconnect_delay_max', '30',
-                    ]);
+                    ], $this->httpInputHeaders($inputUrl));
                 }
 
                 $flags[] = '-i';
@@ -1155,11 +1198,32 @@ class FFmpegService
                     '-reconnect_delay_max', '5',
                 ];
 
-                // Use a browser UA — many IPTV providers block the default ffmpeg UA
-                $ua = $this->httpUserAgent()
-                    ?? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-                $flags[] = '-user_agent';
-                $flags[] = $ua;
+                // Use a browser UA + Referer/Origin — many IPTV providers block
+                // the default ffmpeg UA or require a matching Referer.
+                $flags = array_merge($flags, $this->httpInputHeaders($url));
+
+                $flags[] = '-i';
+                $flags[] = $url;
+
+                return $flags;
+
+                // DASH (.mpd) — FFmpeg reads DASH manifests natively. Treat like
+                // HLS: reconnect on drop, browser headers, no master resolution.
+            case $type === 'dash':
+                $flags = [
+                    '-re',
+                    '-fflags',             '+genpts+discardcorrupt',
+                    '-probesize',          '8000000',
+                    '-analyzeduration',    '5000000',
+                    '-allowed_extensions', 'ALL',
+                    '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
+                    '-timeout',            '15000000',
+                    '-reconnect',          '1',
+                    '-reconnect_streamed', '1',
+                    '-reconnect_delay_max', '30',
+                ];
+
+                $flags = array_merge($flags, $this->httpInputHeaders($url));
 
                 $flags[] = '-i';
                 $flags[] = $url;
@@ -1191,13 +1255,21 @@ class FFmpegService
 
                 // RTMP and anything else
             default:
-                return [
+                $flags = [
                     '-fflags',          '+genpts+discardcorrupt',
                     '-probesize',       $probesize,
                     '-analyzeduration', $analyze,
                     '-timeout',         '10000000',
-                    '-i',               $url,
                 ];
+
+                if ($this->isHttpUrl($url)) {
+                    $flags = array_merge($flags, $this->httpInputHeaders($url));
+                }
+
+                $flags[] = '-i';
+                $flags[] = $url;
+
+                return $flags;
         }
     }
 

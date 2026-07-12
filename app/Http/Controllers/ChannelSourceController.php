@@ -25,7 +25,7 @@ class ChannelSourceController extends Controller
     {
         $data = $request->validate([
             'source_url'  => 'required|string|max:1000',
-            'source_type' => 'required|in:hls,udp,mpegts,rtmp,srt,youtube',
+            'source_type' => 'required|in:hls,dash,udp,mpegts,rtmp,srt,youtube',
             'priority'    => 'nullable|integer|min:0',
         ]);
 

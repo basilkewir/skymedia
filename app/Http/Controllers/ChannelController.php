@@ -597,7 +597,7 @@ class ChannelController extends Controller
             'name' => 'required|string|max:255',
             'slug' => $update ? 'nullable' : 'nullable|string|max:255|unique:channels,slug',
             'user_id' => 'nullable|exists:users,id',
-            'source_type' => 'required|in:hls,udp,mpegts,rtmp,srt,youtube',
+            'source_type' => 'required|in:hls,dash,udp,mpegts,rtmp,srt,youtube',
             'ingest_mode' => 'required|in:pull,push',
             'ingest_port' => "nullable|integer|min:{$ingestPortMin}|max:{$ingestPortMax}",
             'source_url' => 'nullable|required_if:ingest_mode,pull|string|max:1000',

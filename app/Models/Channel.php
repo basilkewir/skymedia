@@ -18,7 +18,7 @@ class Channel extends Model
     protected $fillable = [
         'name', 'slug', 'notes',
         'user_id',
-        'source_type', 'ingest_mode', 'source_url', 'reencode_ingest', 'youtube_cookies', 'ingest_port', 'rtmp_input_key', 'relay_pid',
+        'source_type', 'ingest_mode', 'source_url', 'reencode_ingest', 'youtube_cookies', 'youtube_po_token', 'ingest_port', 'rtmp_input_key', 'relay_pid',
         'current_source_id',
         'push_protocol', 'push_url', 'push_stream_key', 'push_username', 'push_password',
         'push_hls_segment_duration', 'push_hls_list_size',

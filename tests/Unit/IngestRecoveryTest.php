@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Log;
 use Mockery;
 use Tests\TestCase;
 
+
 /**
  * Locks in the state-machine contract that fixes the "stuck on fallback with
  * source_live=1" bug: ingest must NOT mark the channel live before segment
@@ -156,5 +157,54 @@ class IngestRecoveryTest extends TestCase
 
         $this->assertSame('starting', $channel->fresh()->stream_status);
         $this->assertFalse((bool) $channel->fresh()->source_live);
+    }
+
+    /** @test */
+    public function hls_ingest_sends_browser_headers_to_cdn(): void
+    {
+        // Many CDNs (Infomaniak livecast, Catcast, Nimble, Akamai) 403 the
+        // default ffmpeg "Lavf" UA and require a Referer/Origin. The hardened
+        // HLS input must always send a browser User-Agent + matching Referer
+        // and Origin header, regardless of config.
+        $channel = $this->makeChannel([
+            'source_type' => 'hls',
+            'source_url'  => 'https://edge16.vedge.infomaniak.com/livecast/ik:africa24/manifest.m3u8',
+            'dvr_enabled' => false,
+        ]);
+
+        $cmd = app(FFmpegService::class)->buildIngestCommand($channel);
+
+        $this->assertContains('-user_agent', $cmd, 'HLS input must send a User-Agent');
+        $uaIndex = array_search('-user_agent', $cmd, true);
+        $this->assertStringContainsString('Mozilla', $cmd[$uaIndex + 1]);
+
+        $this->assertContains('-referer', $cmd, 'HLS input must send a Referer');
+        $refIndex = array_search('-referer', $cmd, true);
+        $this->assertStringContainsString('vedge.infomaniak.com', $cmd[$refIndex + 1]);
+
+        $this->assertContains('-headers', $cmd, 'HLS input must send an Origin header');
+        $hdrIndex = array_search('-headers', $cmd, true);
+        $this->assertStringContainsString('Origin: https://edge16.vedge.infomaniak.com', $cmd[$hdrIndex + 1]);
+    }
+
+    /** @test */
+    public function dash_ingest_is_supported_and_keeps_url(): void
+    {
+        // DASH (.mpd) sources must be ingestable. FFmpeg reads DASH natively,
+        // so the command should pass the URL straight through with browser
+        // headers and reconnect flags.
+        $channel = $this->makeChannel([
+            'source_type' => 'dash',
+            'source_url'  => 'https://example.com/live/manifest.mpd',
+            'dvr_enabled' => false,
+        ]);
+
+        $cmd = app(FFmpegService::class)->buildIngestCommand($channel);
+
+        $this->assertContains('-reconnect', $cmd);
+        $this->assertContains('-user_agent', $cmd);
+        $this->assertContains('-i', $cmd);
+        $iIndex = array_search('-i', $cmd, true);
+        $this->assertSame('https://example.com/live/manifest.mpd', $cmd[$iIndex + 1]);
     }
 }
