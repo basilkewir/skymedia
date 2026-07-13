@@ -80,8 +80,8 @@ class MonitorStreams extends Command
                         }
 
                         try {
-                            if ($ch->isPushIngest()) {
-                                // The loop wrapper keeps the listener alive automatically.
+                            if ($ch->isPushIngest() && $ch->source_type === 'srt') {
+                                // SRT push: The loop wrapper keeps the listener alive automatically.
                                 // Only restart if the loop process itself has died.
                                 if (! $manager->isListenerLoopRunning($ch)) {
                                     $manager->restartChannel($ch);
@@ -92,6 +92,9 @@ class MonitorStreams extends Command
                                         mb_substr($ch->name, 0, 22)
                                     ));
                                 }
+                            } elseif ($ch->isPushIngest() && $ch->source_type === 'rtmp') {
+                                // RTMP push: on_publish/on_publish_done handle lifecycle.
+                                // Nothing to restart — wait for encoder reconnect.
                             } else {
                                 // Pull channel: refresh ingest without stopping push.
                                 $manager->refreshIngest($ch);
