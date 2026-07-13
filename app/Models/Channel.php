@@ -202,35 +202,43 @@ class Channel extends Model
 
     public function getIngestListenUrlAttribute(): ?string
     {
-        if (! $this->isPushIngest() || ! $this->ingest_port) {
+        if (! $this->isPushIngest()) {
             return null;
         }
 
-        if ($this->source_type === 'srt') {
+        // SRT still uses per-channel ports (direct listener)
+        if ($this->source_type === 'srt' && $this->ingest_port) {
             return "srt://0.0.0.0:{$this->ingest_port}?mode=listener";
         }
 
-        return "rtmp://0.0.0.0:{$this->ingest_port}/live/{$this->rtmp_input_key}";
+        // RTMP push channels use nginx-rtop on port 1935, no per-channel listener needed
+        return null;
     }
 
     public function getPublishedIngestUrlAttribute(): ?string
     {
         $host = (string) config('skymedia.server_ip', request()->getHost());
-        if (! $this->isPushIngest() || ! $this->ingest_port) return null;
+        if (! $this->isPushIngest()) return null;
 
-        return $this->source_type === 'srt'
-            ? "srt://{$host}:{$this->ingest_port}"
-            : "rtmp://{$host}:{$this->ingest_port}/live/{$this->rtmp_input_key}";
+        if ($this->source_type === 'srt') {
+            return "srt://{$host}:{$this->ingest_port}";
+        }
+
+        // RTMP push channels all ingest through port 1935 (nginx-rtop front door).
+        // on_publish callback triggers ffmpeg HLS pull from internal endpoint.
+        return "rtmp://{$host}:1935/live/{$this->rtmp_input_key}";
     }
 
     public function getPublishedIngestServerAttribute(): ?string
     {
         $host = (string) config('skymedia.server_ip', request()->getHost());
-        if (! $this->isPushIngest() || ! $this->ingest_port) return null;
+        if (! $this->isPushIngest()) return null;
 
-        return $this->source_type === 'srt'
-            ? "srt://{$host}:{$this->ingest_port}"
-            : "rtmp://{$host}:{$this->ingest_port}/live";
+        if ($this->source_type === 'srt') {
+            return "srt://{$host}:{$this->ingest_port}";
+        }
+
+        return "rtmp://{$host}:1935/live";
     }
 
     public function getDvrDirectoryAttribute(): string

@@ -92,22 +92,27 @@ class ChannelController extends Controller
         $data['user_id'] = auth()->id();
 
         if (($data['ingest_mode'] ?? 'pull') === 'push') {
-            $data['source_url'] = $data['source_url'] ?: 'push://listener';
+            $data['source_url'] = !empty($data['source_url']) ? $data['source_url'] : 'push://listener';
             if (empty($data['rtmp_input_key'])) {
                 $data['rtmp_input_key'] = Str::random(24);
             }
             $data['dvr_enabled'] = false;
             $data['record_duration'] = 0;
+
+            // Only allocate ingest ports for SRT push channels.
+            // RTMP push channels use nginx-rtop on port 1935 (no per-channel port needed).
+            if (($data['source_type'] ?? '') === 'srt') {
+                $port = $data['ingest_port'] ?? null;
+                $portTaken = $port && Channel::withTrashed()->where('ingest_port', $port)->exists();
+                if (! $port || $portTaken) {
+                    $data['ingest_port'] = $this->availableIngestPort($data['source_type']);
+                }
+            } else {
+                $data['ingest_port'] = null;
+            }
         }
 
         $channel = Channel::create($data);
-        if ($channel->isPushIngest()) {
-            $port = $channel->ingest_port;
-            $portTaken = $port && Channel::where('ingest_port', $port)->where('id', '!=', $channel->id)->exists();
-            if (! $port || $portTaken) {
-                $channel->update(['ingest_port' => $this->availableIngestPort($channel->source_type, $channel->id)]);
-            }
-        }
 
         // Managed channels must immediately listen for OBS/vMix publishers.
         // A stopped listener presents as "Failed to connect to server".
@@ -200,11 +205,25 @@ class ChannelController extends Controller
         $data = $request->validate($this->rules(update: true));
 
         if (($data['ingest_mode'] ?? 'pull') === 'push') {
-            $data['source_url'] = $data['source_url'] ?: 'push://listener';
+            $data['source_url'] = !empty($data['source_url']) ? $data['source_url'] : 'push://listener';
             $data['rtmp_input_key'] = $channel->rtmp_input_key ?: Str::random(24);
-            $data['ingest_port'] ??= $channel->ingest_port ?: $this->availableIngestPort($data['source_type'], $channel->id);
+
+            // Only allocate ingest ports for SRT push channels.
+            // RTMP push channels use nginx-rtop on port 1935 (no per-channel port needed).
+            if (($data['source_type'] ?? $channel->source_type) === 'srt') {
+                $desiredPort = $data['ingest_port'] ?? null;
+                if ($desiredPort && Channel::withTrashed()->where('ingest_port', $desiredPort)->whereKeyNot($channel->id)->exists()) {
+                    $desiredPort = null;
+                }
+                $data['ingest_port'] = $desiredPort ?: ($channel->ingest_port ?: $this->availableIngestPort($data['source_type'], $channel->id));
+            } else {
+                $data['ingest_port'] = null;
+            }
+
             $data['dvr_enabled'] = false;
             $data['record_duration'] = 0;
+        } else {
+            $data['ingest_port'] = null;
         }
 
         // Convert GB to bytes — also handle clearing the quota (unlimited)
@@ -339,7 +358,11 @@ class ChannelController extends Controller
         $clone->record_pid = null;
         $clone->relay_pid = null;
         $clone->rtmp_input_key = $channel->isPushIngest() ? Str::random(24) : null;
-        $clone->ingest_port = $channel->isPushIngest() ? $this->availableIngestPort($channel->source_type) : null;
+        // Only allocate ingest ports for SRT push channels.
+        // RTMP push channels use nginx-rtop on port 1935 (no per-channel port needed).
+        $clone->ingest_port = ($channel->isPushIngest() && $channel->source_type === 'srt')
+            ? $this->availableIngestPort($channel->source_type)
+            : null;
         $clone->retry_count = 0;
         $clone->last_error = null;
         $clone->last_live_at = null;
@@ -642,7 +665,7 @@ class ChannelController extends Controller
     private function availableIngestPort(string $protocol, ?int $exceptId = null): int
     {
         $port = $protocol === 'srt' ? 30000 : 20000;
-        while (Channel::where('ingest_port', $port)
+        while (Channel::withTrashed()->where('ingest_port', $port)
             ->when($exceptId, fn ($q) => $q->whereKeyNot($exceptId))->exists()) {
             $port++;
         }

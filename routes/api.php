@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\API\ChannelApiController;
 use App\Http\Controllers\HealthController;
+use App\Http\Controllers\RtmpController;
 use Illuminate\Support\Facades\Route;
 
 // ── Public health checks (no auth) ─────────────────────────────────────────────
@@ -10,6 +11,10 @@ Route::get('health/live',     [HealthController::class, 'live']);
 Route::get('health/ready',    [HealthController::class, 'ready']);
 Route::get('health/metrics',  [HealthController::class, 'metrics']);
 Route::get('health/resources', [HealthController::class, 'resources']);
+
+// ── nginx-rtmp callbacks (no auth — called internally by rtmp container) ────────
+Route::post('rtmp/on-publish', [RtmpController::class, 'onPublish']);
+Route::post('rtmp/on-publish-done', [RtmpController::class, 'onPublishDone']);
 
 // ── Authenticated API ──────────────────────────────────────────────────────────
 Route::middleware('auth:sanctum')->group(function () {

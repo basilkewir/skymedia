@@ -346,6 +346,98 @@ class FFmpegService
     }
 
     /**
+     * HLS PULL INGEST for push-mode RTMP channels.
+     *
+     * nginx-rtmp on port 1935 receives the encoder push and writes HLS
+     * segments to /tmp/hls/{key}/.  This command pulls from the nginx-rtop
+     * internal HLS endpoint and writes the channel's DVR/live playlists.
+     *
+     * The input URL uses the nginx-rtop container hostname (resolves inside
+     * Docker network) on port 8081.
+     */
+    public function buildHlsPullCommand(Channel $channel): array
+    {
+        $dvrDir = $channel->dvr_directory;
+        $m3u8 = "{$dvrDir}/live.m3u8";
+        $segPattern = "{$dvrDir}/seg_%05d.ts";
+        $key = $channel->rtmp_input_key;
+
+        $dvrEnabled = $channel->dvr_enabled !== false;
+        $reencode = config('skymedia.llod_v3_reencode_ingest', false) || $channel->reencode_ingest;
+
+        $fps = max(1, (int) ($channel->push_framerate ?? 25));
+        $videoCodec = $reencode ? 'libx264' : 'copy';
+        $audioCodec = $reencode ? 'aac' : 'copy';
+
+        $codecFlags = ['-c:v', $videoCodec, '-c:a', $audioCodec];
+
+        if ($reencode) {
+            $codecFlags = array_merge($codecFlags, [
+                '-preset',   'veryfast',
+                '-tune',     'zerolatency',
+                '-b:v',      ((int) ($channel->push_video_bitrate ?? 2000)) . 'k',
+                '-maxrate',  ((int) (($channel->push_video_bitrate ?? 2000) * 1.2)) . 'k',
+                '-bufsize',  ((int) (($channel->push_video_bitrate ?? 2000) * 2)) . 'k',
+                '-pix_fmt',  'yuv420p',
+                '-g',        (string) ($fps * 2),
+                '-keyint_min', (string) ($fps * 2),
+                '-sc_threshold', '0',
+                '-b:a',      '128k',
+                '-ar',       '48000',
+                '-ac',       '2',
+            ]);
+        }
+
+        // Pull from the internal nginx-rtop HLS endpoint.
+        // nginx-rtop writes to /tmp/hls/{key}/ and serves on port 8081.
+        $hlsUrl = "http://rtmp:8081/hls/{$key}/live.m3u8";
+
+        $inputFlags = [
+            '-fflags',          '+genpts+discardcorrupt',
+            '-probesize',       '5000000',
+            '-analyzeduration', '3000000',
+            '-thread_queue_size', '4096',
+            // Retry on disconnect — nginx-rtop may take a moment to generate
+            // the first segments after the encoder connects.
+            '-reconnect',       '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '5',
+            '-reconnect_at_eof', '1',
+            '-max_reload',      '1000',
+            '-m3u8_hold_counters', '1000',
+            '-allowed_extensions', 'ALL',
+            '-protocol_whitelist', 'file,http,https,tcp,tls',
+            '-i',               $hlsUrl,
+        ];
+
+        return array_merge(
+            [
+                $this->ffmpegBin,
+                '-y',
+                '-loglevel', 'warning',
+                '-stats',
+            ],
+            $inputFlags,
+            $codecFlags,
+            [
+                '-f',                    'hls',
+                '-hls_time',             (string) max(1, (int) $channel->segment_duration),
+                '-hls_list_size',        $dvrEnabled ? '15' : '10',
+                '-hls_flags',            'delete_segments+omit_endlist+append_list',
+                '-hls_delete_threshold', $dvrEnabled ? '4' : '3',
+                '-hls_segment_type',     'mpegts',
+                '-hls_segment_filename', $segPattern,
+                '-hls_allow_cache',      '0',
+                '-hls_start_number_source', 'epoch',
+                '-max_muxing_queue_size', '4096',
+                '-force_key_frames',     'expr:gte(t,n_forced*2)',
+                '-bf',                   '0',
+                $m3u8,
+            ]
+        );
+    }
+
+    /**
      * PUSH: reads the stable output playlist → encode → RTMP/SRT.
      *
      * Design goals:

@@ -71,9 +71,9 @@ class MonitorStreams extends Command
                         // Base: 15s (pull) / 20s (push), + deterministic jitter
                         // based on channel id (0-4s) so retries spread out,
                         // + up to 60s back-pressure scaled by retry_count.
-                        $base = $ch->isPushIngest() ? 20 : 15;
+                        $base = $ch->isPushIngest() ? 12 : 8;
                         $jitter = $ch->id % 5;
-                        $backoff = min(60, ((int) $ch->retry_count) * 5);
+                        $backoff = min(45, ((int) $ch->retry_count) * 3);
                         $cooldown = $base + $jitter + $backoff;
                         if ((time() - $lastRestart) < $cooldown) {
                             return;

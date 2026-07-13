@@ -6,6 +6,7 @@ namespace App\Services;
 
 use App\Events\StreamStatusChanged;
 use App\Models\Channel;
+use App\Models\ChannelSource;
 use App\Models\StreamLog;
 use Illuminate\Support\Facades\Log;
 
@@ -63,15 +64,39 @@ class StreamManager
 
             // Kill any orphan listeners from a previous run before starting fresh.
             Log::info("[Debug] startChannel {$channel->name} step 2.5 stopAllListeners");
-            if ($channel->isPushIngest()) {
+            if ($channel->isPushIngest() && $channel->source_type === 'srt') {
                 $this->ingest->stopAllListeners($channel);
             }
 
             // 3. Start ingest — source → HLS segments → live.m3u8
+            //    For RTMP push channels, ingest is triggered by the on_publish
+            //    callback when the encoder connects to port 1935 — skip here.
             Log::info("[Debug] startChannel {$channel->name} step 3 ingest start");
-            $this->ingest->start($channel);
-            $channel->refresh();
-            $this->log($channel, 'info', 'ingest_started', "Ingest PID {$channel->pid}");
+            if ($channel->isPushIngest() && $channel->source_type === 'rtmp') {
+                // RTMP push: try starting HLS pull immediately in case
+                // nginx-rtop already has the encoder connected (e.g. app
+                // restarted while encoder was pushing). If nginx-rtop doesn't
+                // have the stream yet, ffmpeg will retry via reconnect flags.
+                // The on_publish callback will also trigger startHlsPull on
+                // fresh encoder connections.
+                try {
+                    $this->ingest->startHlsPull($channel);
+                    $this->log($channel, 'info', 'hls_pull_started',
+                        'HLS pull started (encoder may already be connected)');
+                } catch (\Throwable $e) {
+                    // Not fatal — on_publish will retry when encoder reconnects
+                    $this->log($channel, 'info', 'ingest_waiting',
+                        'Waiting for encoder to connect to port 1935: ' . $e->getMessage());
+                    $channel->update([
+                        'stream_status' => 'starting',
+                        'source_live' => false,
+                    ]);
+                }
+            } else {
+                $this->ingest->start($channel);
+                $channel->refresh();
+                $this->log($channel, 'info', 'ingest_started', "Ingest PID {$channel->pid}");
+            }
 
             // 4. For push-ingest channels, start in fallback mode so output.m3u8
             //    points to a real playlist immediately. Push can start right away
@@ -170,9 +195,11 @@ class StreamManager
         $this->push->stop($channel);
         $this->stopHlsRelay($channel);
         $this->playout->stop($channel);
-        if ($channel->isPushIngest()) {
+        if ($channel->isPushIngest() && $channel->source_type === 'srt') {
+            // SRT push: stop the listener loop and all orphan processes
             $this->ingest->stopAllListeners($channel);
         } else {
+            // RTMP push or pull ingest: just stop the ffmpeg process
             $this->ingest->stop($channel);
         }
 
@@ -278,90 +305,68 @@ class StreamManager
             // 2. Try the next source in the failover chain (or restart the
             //    same one if there is only one).
             if ($channel->hasMultipleSources()) {
-                while ($next = $channel->nextSource()) {
-                    $prevUrl = $channel->source_url;
-                    $prevSourceId = $channel->current_source_id;
-
-                    // Tentatively point the channel at this source. ingest->start
-                    // reads source_url from the channel directly.
+                // Failover (wrap-around). Point the channel at the NEXT source
+                // and start ingest, but do NOT declare it live here. The monitor
+                // confirms via real segment evidence on the next tick
+                // (onSourceRecovered promotes; onSourceStillDown demotes).
+                //
+                // Previously this loop committed current_source_id the instant
+                // ingest->start() returned true — but start() only waits ~3s, and
+                // a dead source can accept the TCP connection then 403/timeout a
+                // few seconds later, so the channel got parked on a dead URL and
+                // (because nextSource() was strictly forward-only) never returned
+                // to a working primary. Now we only advance the attempt pointer;
+                // promotion to `live` happens solely on actual segment production,
+                // and nextFailoverSource() wraps around so every source — including
+                //     the working primary — is revisited.
+                //
+                // failoverCandidate() retries the SAME source when it was
+                // producing segments recently (transient blip), and only
+                // advances via nextFailoverSource() once live.m3u8 has gone
+                // stale — so a good primary is not flapped onto dead backups.
+                $candidate = $this->failoverCandidate($channel);
+                if (! $candidate) {
                     $channel->update([
-                        'source_url' => $next->source_url,
-                        'source_type' => $next->source_type,
+                        'source_live'   => false,
+                        'stream_status' => 'offline',
+                        'pid'           => null,
                     ]);
 
-                    try {
-                        // cleanSegments=false preserves live.m3u8 so the push
-                        // process keeps a live playlist to read while we wait.
-                        $this->ingest->start($channel, cleanSegments: false);
-                    } catch (\Throwable $e) {
-                        // ffmpeg exited immediately (5xx / DNS / TCP refused).
-                        // Revert and try the next source synchronously — fast fail.
-                        $this->log($channel, 'error', 'source_refresh_failed',
-                            "Source [{$next->id}] failed to start: " . $e->getMessage());
-                        $next->update(['last_error' => $e->getMessage()]);
-                        $channel->update([
-                            'source_url' => $prevUrl,
-                            'current_source_id' => $prevSourceId,
-                            'pid' => null,
-                            'source_live' => false,
-                            'stream_status' => 'offline',
-                        ]);
-                        $channel->refresh();
-
-                        continue;
-                    }
-
-                    $this->log($channel, 'info', 'source_switched',
-                        "Refresh: trying source [{$next->id}]: {$next->source_url}");
-
-                    // Brief confirmation wait for the first segment(s).
-                    $start = time();
-                    while (time() - $start < $maxWait) {
-                        if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) {
-                            break;
-                        }
-                        usleep(250_000);
-                    }
-
-                    if ($this->ffmpeg->liveHlsReady($channel->fresh(), 2)) {
-                        // Source confirmed producing segments — promote now.
-                        $channel->activateSource($next);
-                        $this->playout->switchToLive($channel->fresh());
-                        $channel->update([
-                            'source_live' => true,
-                            'last_live_at' => now(),
-                            'stream_status' => 'live',
-                            'playout_status' => 'live',
-                        ]);
-                        $channel->resetRetries();
-                        $this->alert->sendRecoveryAlert($channel->fresh());
-                        event(new StreamStatusChanged($channel, 'live'));
-                        $this->log($channel, 'info', 'refresh_recovered',
-                            "Ingest refreshed — source [{$next->id}] recovered");
-
-                        return true;
-                    }
-
-                    // ffmpeg started but no segments appeared in the capped
-                    // window — leave it running and defer verification to the
-                    // next monitor tick, which will promote via
-                    // onSourceRecovered (segments arrive) or demote via
-                    // onSourceStillDown (they don't, and we re-enter the
-                    // cooldown-gated refresh loop with the next source).
-                    $channel->activateSource($next);
-                    $channel->update([
-                        'stream_status' => 'starting',
-                        'source_live' => false,
-                    ]);
-                    $this->log($channel, 'info', 'source_refresh_pending',
-                        "Source [{$next->id}] started — awaiting segment confirmation on next tick");
-
-                    return true;
+                    return false;
                 }
 
-                // Every source threw on start — none even spawned ffmpeg.
-                $this->log($channel, 'info', 'all_sources_exhausted',
-                    'Refresh: all backup sources failed to start — staying in fallback');
+                try {
+                    $channel->update([
+                        'current_source_id' => $candidate->id,
+                        'source_url'        => $candidate->source_url,
+                        'source_type'       => $candidate->source_type,
+                        'stream_status'     => 'starting',
+                        'source_live'       => false,
+                    ]);
+                    // cleanSegments=false preserves live.m3u8 so push keeps a
+                    // playlist to read while we wait for confirmation.
+                    $this->ingest->start($channel, cleanSegments: false);
+                    $this->log($channel, 'info', 'source_refresh_pending',
+                        "Refresh: trying source [{$candidate->id}]: {$candidate->source_url} (verification deferred to next tick)");
+
+                    return true;
+                } catch (\Throwable $e) {
+                    $candidate->update(['last_error' => $e->getMessage()]);
+                    $this->log($channel, 'error', 'source_refresh_failed',
+                        "Source [{$candidate->id}] failed to start: " . $e->getMessage());
+                    // Advance past the dead candidate so the next attempt tries
+                    // the following source (wrap-around — never re-tries it).
+                    $following = $this->nextFailoverSource($channel->fresh());
+                    if ($following) {
+                        $channel->update([
+                            'current_source_id' => $following->id,
+                            'source_url'        => $following->source_url,
+                            'source_type'       => $following->source_type,
+                        ]);
+                    }
+
+                    return false;
+                }
             } else {
                 // Single-source channel: restart the same source. The next
                 // monitor tick confirms via onSourceRecovered / onSourceStillDown.
@@ -408,6 +413,62 @@ class StreamManager
 
             return false;
         }
+    }
+
+    /**
+     * Next source to attempt during failover, in priority order with wrap-around.
+     *
+     * Unlike Channel::nextSource() (strictly forward-only, which never returns to
+     * a lower-priority working primary once failover has advanced past it), this
+     * wraps back to the first active source after the last. That guarantees a
+     * working primary is always revisited, so a channel can recover even when
+     * every source "ahead" of it in priority order is currently dead.
+     */
+    private function nextFailoverSource(Channel $channel): ?ChannelSource
+    {
+        $sources = $channel->channelSources()->where('is_active', true)->orderBy('priority')->get();
+        if ($sources->isEmpty()) {
+            return null;
+        }
+
+        $ids = $sources->pluck('id')->all();
+        $pos = $channel->current_source_id ? array_search($channel->current_source_id, $ids) : false;
+        if ($pos === false) {
+            $pos = -1;
+        }
+
+        return $sources->get(($pos + 1) % count($ids));
+    }
+
+    /**
+     * Decide which source to attempt on a failure.
+     *
+     * If the channel was producing segments recently (live.m3u8 still fresh),
+     * the drop is almost always a transient ffmpeg blip on an otherwise-good
+     * source — retrying the SAME source first avoids needlessly flapping onto
+     * the dead backups in the failover chain and then spending ~90s cycling
+     * back through them. Only when a source has been dead long enough that
+     * live.m3u8 has gone stale do we advance to the next source (wrap-around).
+     */
+    private function failoverCandidate(Channel $channel): ?ChannelSource
+    {
+        if ($this->wasRecentlyLive($channel)) {
+            $same = $channel->current_source_id
+                ? $channel->channelSources()->where('id', $channel->current_source_id)->first()
+                : null;
+            if ($same) {
+                return $same;
+            }
+        }
+
+        return $this->nextFailoverSource($channel);
+    }
+
+    private function wasRecentlyLive(Channel $channel, int $seconds = 120): bool
+    {
+        $live = $channel->dvr_directory . '/live.m3u8';
+
+        return file_exists($live) && (time() - filemtime($live)) <= $seconds;
     }
 
     public function activateAll(): void
@@ -494,17 +555,29 @@ class StreamManager
         // Stale recording detection in onSourceStillDown handles cleanup.
 
         if ($channel->isPushIngest()) {
-            // Push ingest (loop wrapper): the shell loop keeps ffmpeg restarting
-            // automatically after the encoder disconnects — do NOT kill and
-            // restart the loop here. Just update state and let the loop handle it.
-            // Killing the loop is what caused "Failed to connect to server".
-            $channel->update([
-                'source_live' => false,
-                'stream_status' => 'offline',
-                'dvr_status' => 'idle',
-            ]);
-            $this->log($channel, 'info', 'listener_waiting',
-                'Encoder disconnected — listener loop waiting for reconnect');
+            if ($channel->source_type === 'rtmp') {
+                // RTMP push: on_publish starts ffmpeg, on_publish_done lets
+                // segments stop. Just mark offline — the on_publish_done
+                // callback will restart things when the encoder reconnects.
+                $channel->update([
+                    'source_live' => false,
+                    'stream_status' => 'offline',
+                    'dvr_status' => 'idle',
+                ]);
+                $this->log($channel, 'info', 'encoder_disconnected',
+                    'Encoder disconnected from port 1935 — waiting for reconnect');
+            } else {
+                // SRT push (listener loop): the shell loop keeps ffmpeg restarting
+                // automatically after the encoder disconnects — do NOT kill and
+                // restart the loop here. Just update state and let the loop handle it.
+                $channel->update([
+                    'source_live' => false,
+                    'stream_status' => 'offline',
+                    'dvr_status' => 'idle',
+                ]);
+                $this->log($channel, 'info', 'listener_waiting',
+                    'Encoder disconnected — listener loop waiting for reconnect');
+            }
         } else {
             // Pull ingest: stop the failed source.
             $this->ingest->stop($channel);
@@ -533,30 +606,39 @@ class StreamManager
             // to switchToFallback below so the push never starves during the
             // verification window.
             if ($channel->hasMultipleSources()) {
-                while ($next = $channel->nextSource()) {
-                    $channel->activateSource($next);
+                // Failover (wrap-around) — try the next source without committing
+                // it as live. Only onSourceRecovered promotes to `live` once real
+                // segments are observed, so a dead source that merely passes
+                // ffmpeg's 3s start window is no longer parked as the active
+                // source. nextFailoverSource() wraps around, so a working primary
+                // is always revisited even after failover advanced past it.
+                // failoverCandidate() retries the SAME source on a transient blip
+                // (live.m3u8 still fresh) and only advances once it has gone stale.
+                $candidate = $this->failoverCandidate($channel);
+                if ($candidate) {
                     try {
+                        $channel->update([
+                            'current_source_id' => $candidate->id,
+                            'source_url'        => $candidate->source_url,
+                            'source_type'       => $candidate->source_type,
+                        ]);
                         $this->ingest->start($channel);
                         $this->log($channel, 'info', 'source_switched',
-                            "Switched to backup source [{$next->id}]: {$next->source_url} (verification deferred to next tick)");
-                        // Started — let the monitor confirm segments and
-                        // either promote to live (onSourceRecovered) or roll
-                        // forward to the next source via the cooldown-gated
-                        // auto-refresh loop.
-                        break;
+                            "Switched to source [{$candidate->id}]: {$candidate->source_url} (verification deferred to next tick)");
                     } catch (\Throwable $e) {
+                        $candidate->update(['last_error' => $e->getMessage()]);
                         $this->log($channel, 'error', 'source_switch_failed',
-                            "Backup source [{$next->id}] failed: " . $e->getMessage());
-                        $next->update(['last_error' => $e->getMessage()]);
-                        $channel->refresh();
+                            "Source [{$candidate->id}] failed: " . $e->getMessage());
+                        // Advance past the dead candidate for the next attempt.
+                        $following = $this->nextFailoverSource($channel->fresh());
+                        if ($following) {
+                            $channel->update([
+                                'current_source_id' => $following->id,
+                                'source_url'        => $following->source_url,
+                                'source_type'       => $following->source_type,
+                            ]);
+                        }
                     }
-                }
-                // If the while loop completed without `break`-ing, every
-                // source threw on start. The fall-through to switchToFallback
-                // below is the only thing keeping the push on-air.
-                if (! $this->ingest->isRunning($channel)) {
-                    $this->log($channel, 'info', 'all_sources_exhausted',
-                        'All backup sources exhausted — falling back to VOD');
                 }
             }
         }
@@ -603,10 +685,17 @@ class StreamManager
                     'Source back online — existing ingest is already capturing segments');
             }
         } else {
-            // Push ingest (listener): the encoder reconnected to the
-            // still-listening ffmpeg. No stop/start needed — the ingest
-            // is already receiving the stream and writing segments.
-            $this->log($channel, 'info', 'source_recovered', 'Source back online — listener active');
+            // Push ingest: the encoder reconnected.
+            if ($channel->source_type === 'rtmp') {
+                // RTMP push: on_publish callback starts the ffmpeg HLS pull.
+                // Just log — the ingest is already running from the callback.
+                $this->log($channel, 'info', 'source_recovered', 'Encoder reconnected — on_publish started ingest');
+            } else {
+                // SRT push (listener): the encoder reconnected to the
+                // still-listening ffmpeg. No stop/start needed — the ingest
+                // is already receiving the stream and writing segments.
+                $this->log($channel, 'info', 'source_recovered', 'Source back online — listener active');
+            }
         }
 
         // Wait for live.m3u8 to have segments, then swap the symlink.
@@ -768,10 +857,11 @@ class StreamManager
         }
 
         // Keep RTMP/SRT listeners available while the publisher is offline.
-        // The loop wrapper restarts ffmpeg automatically — only restart the
+        // SRT: The loop wrapper restarts ffmpeg automatically — only restart the
         // loop itself if the loop process has completely died (not just because
         // the encoder disconnected, which is normal and handled by the loop).
-        if ($channel->isPushIngest()) {
+        // RTMP push: on_publish handles restart — nothing to do here.
+        if ($channel->isPushIngest() && $channel->source_type === 'srt') {
             $loopPid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'ingest'));
             $loopDead = ! ($loopPid > 0 && $this->ffmpeg->isRunning($loopPid));
             if ($loopDead && ! $this->ingest->isRunning($channel)) {
@@ -823,6 +913,48 @@ class StreamManager
         $playlist = $this->playout->outputPlaylist($channel);
         if (file_exists($playlist)) {
             $this->push->watchDestinations($channel, $playlist);
+        }
+
+        // ── Pull ingest stall watchdog ────────────────────────────────────
+        // A dead source can accept the TCP connection and then stall (return
+        // 5xx a few seconds later, or simply hang). ffmpeg keeps the PROCESS
+        // alive while it retries, so it never "dies" — and both the normal
+        // death-detection path and the monitor's auto-recovery loop are gated
+        // on `! isIngestRunning`, so neither ever fires. Detect an ingest that
+        // is alive but has produced no segments for a grace window and fail
+        // over to the next source (multi-source) or kill it so the auto-
+        // recovery loop restarts it on the same URL (single-source).
+        if (! $channel->isPushIngest() && $this->ingest->isRunning($channel)) {
+            if (! $this->ffmpeg->hasRecentSegments($channel, 30)) {
+                $pid = $channel->pid;
+                $age = ($pid > 0 && file_exists("/proc/{$pid}"))
+                    ? (time() - (int) filemtime("/proc/{$pid}"))
+                    : 9999;
+
+                if ($age >= 30) {
+                    if ($channel->hasMultipleSources()) {
+                        $candidate = $this->failoverCandidate($channel);
+                        if ($candidate) {
+                            $this->ingest->stop($channel);
+                            $channel->update([
+                                'current_source_id' => $candidate->id,
+                                'source_url'        => $candidate->source_url,
+                                'source_type'       => $candidate->source_type,
+                            ]);
+                            $this->ingest->start($channel);
+                            $this->log($channel, 'info', 'source_switched',
+                                "Stalled ingest — failing over to source [{$candidate->id}]: {$candidate->source_url} (verification deferred)");
+                        } else {
+                            $this->ingest->stop($channel);
+                        }
+                    } else {
+                        $this->ingest->stop($channel);
+                        $channel->update(['pid' => null]);
+                        $this->log($channel, 'warning', 'ingest_stalled',
+                            'Ingest process alive but no segments for 30s — killed; auto-recovery will restart');
+                    }
+                }
+            }
         }
 
         // ── HLS relay watchdog ───────────────────────────────────────────

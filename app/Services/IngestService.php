@@ -22,10 +22,10 @@ class IngestService
      */
     public function start(Channel $channel, bool $cleanSegments = true): bool
     {
-        // For push-ingest channels, use the full stopAllListeners routine so
+        // For SRT push-ingest channels, use the full stopAllListeners routine so
         // stale loop shells (which respawn ffmpeg immediately) are removed
         // before we try to bind the port again.
-        if ($channel->isPushIngest() && $channel->ingest_port) {
+        if ($channel->isPushIngest() && $channel->source_type === 'srt' && $channel->ingest_port) {
             $this->stopAllListeners($channel);
         } elseif ($this->isRunning($channel)) {
             $this->stop($channel);
@@ -35,11 +35,10 @@ class IngestService
             $channel->update(['pid' => null]);
         }
 
-        // For push-ingest channels, also kill any orphan process holding the
-        // port that wasn't tracked by the PID file, then wait for the port to
-        // be fully released before binding a new listener. Without this wait,
-        // the new ffmpeg gets "Address already in use" and fails immediately.
-        if ($channel->isPushIngest() && $channel->ingest_port) {
+        // For SRT push-ingest channels, also kill any orphan process holding
+        // the port that wasn't tracked by the PID file, then wait for the port
+        // to be fully released before binding a new listener.
+        if ($channel->isPushIngest() && $channel->source_type === 'srt' && $channel->ingest_port) {
             $this->killPortOrphan($channel->ingest_port);
             $this->waitForPortFree($channel->ingest_port, 8);
         }
@@ -112,6 +111,68 @@ class IngestService
         ]);
 
         Log::info("[Ingest] {$channel->name} started — PID {$pid} — DVR: {$dvrDir}");
+
+        return true;
+    }
+
+    /**
+     * Start an HLS pull ingest for a push-mode RTMP channel.
+     *
+     * nginx-rtmp on port 1935 receives the encoder push and writes HLS
+     * segments to /tmp/hls/{key}/.  This method starts ffmpeg in the app
+     * container pulling from http://rtmp:8081/hls/{key}/live.m3u8 and writing
+     * the channel's DVR/live playlists.
+     *
+     * Called by RtmpController::onPublish when the encoder first connects.
+     */
+    public function startHlsPull(Channel $channel): bool
+    {
+        // Stop any existing ingest for this channel first.
+        if ($this->isRunning($channel)) {
+            $this->stop($channel);
+        } else {
+            $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
+            $this->ffmpeg->clearPid($pidFile);
+            $channel->update(['pid' => null]);
+        }
+
+        $dvrDir = $channel->dvr_directory;
+        if (! is_dir($dvrDir)) {
+            if (! mkdir($dvrDir, 0755, true) && ! is_dir($dvrDir)) {
+                throw new \RuntimeException("Cannot create DVR directory: {$dvrDir}");
+            }
+        }
+
+        $this->cleanSegments($dvrDir);
+
+        $bin = $this->ffmpeg->getBin();
+        $binPath = trim((string) shell_exec("which {$bin} 2>/dev/null"))
+                   ?: trim((string) shell_exec("command -v {$bin} 2>/dev/null"));
+
+        if (empty($binPath)) {
+            throw new \RuntimeException(
+                "ffmpeg binary not found in PATH. Configured as: '{$bin}'. "
+                . 'Run: which ffmpeg   or set FFMPEG_BINARY=/full/path in .env'
+            );
+        }
+
+        $cmd = $this->ffmpeg->buildHlsPullCommand($channel);
+        $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
+        $logFile = $this->ffmpeg->logFile($channel, 'ingest');
+
+        $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 3);
+
+        $channel->update([
+            'pid' => $pid,
+            'stream_status' => 'starting',
+            'dvr_status' => $channel->dvr_enabled === false ? 'idle' : 'starting',
+            'source_live' => false,
+            'last_live_at' => $channel->last_live_at,
+            'retry_count' => 0,
+            'last_error' => null,
+        ]);
+
+        Log::info("[Ingest] {$channel->name} HLS pull started — PID {$pid} — pulling from rtmp:8081");
 
         return true;
     }
@@ -223,9 +284,9 @@ class IngestService
             return true;
         }
 
-        // For push-ingest channels the loop wrapper may have restarted ffmpeg
-        // with a new child PID. Check if the port is still bound.
-        if ($channel->isPushIngest() && $channel->ingest_port) {
+        // For SRT push-ingest channels the loop wrapper may have restarted
+        // ffmpeg with a new child PID — check if the port is still bound.
+        if ($channel->isPushIngest() && $channel->source_type === 'srt' && $channel->ingest_port) {
             $port = (int) $channel->ingest_port;
             $hexPort = strtoupper(dechex($port));
             $tcpContent = @file_get_contents('/proc/net/tcp');

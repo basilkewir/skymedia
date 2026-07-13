@@ -14,6 +14,7 @@ use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Middleware\AddLinkHeadersForPreloadedAssets;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Middleware\ThrottleRequests;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 return Application::configure(basePath: dirname(__DIR__))
@@ -43,10 +44,11 @@ return Application::configure(basePath: dirname(__DIR__))
     ])
     ->withExceptions(function (Exceptions $exceptions) {
         $exceptions->render(function (Throwable $e, Request $request) {
-            if ($request->expectsJson()) {
+            if ($request->expectsJson() && !$request->header('X-Inertia')) {
                 $status = match (true) {
                     $e instanceof AuthenticationException => 401,
                     $e instanceof AuthorizationException => 403,
+                    $e instanceof ValidationException => 422,
                     $e instanceof HttpExceptionInterface => $e->getStatusCode(),
                     default => 500,
                 };
