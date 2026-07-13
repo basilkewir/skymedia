@@ -16,9 +16,12 @@ class RtmpController extends Controller
      * nginx-rtmp on_publish callback.
      *
      * Called when an encoder starts pushing to rtmp://host:1935/live/{key}.
-     * nginx-rtmp writes HLS segments to /tmp/hls/{key}/.
-     * This callback starts ffmpeg in the app container to pull from
-     * http://rtmp:8081/hls/{key}/live.m3u8 and produce the DVR/live playlists.
+     * nginx-rtop needs to start writing HLS segments BEFORE ffmpeg can pull.
+     *
+     * Strategy: return 200 immediately (so nginx-rtop accepts the publish and
+     * starts writing HLS), then dispatch a delayed job to start the ffmpeg
+     * HLS pull.  The 3-second delay gives nginx-rtop time to generate the
+     * first HLS segments so ffmpeg doesn't hit a 404.
      */
     public function onPublish(Request $request): Response
     {
@@ -43,14 +46,12 @@ class RtmpController extends Controller
 
         Log::info("[RTMP] on_publish {$channel->name} (key={$key}) — encoder connected to port 1935");
 
-        try {
-            /** @var IngestService $ingestService */
-            $ingestService = app(IngestService::class);
-            $ingestService->startHlsPull($channel);
-        } catch (\Throwable $e) {
-            Log::error("[RTMP] on_publish {$channel->name} failed to start HLS pull: {$e->getMessage()}");
-            return response('error', 500);
-        }
+        // Return 200 IMMEDIATELY so nginx-rtop accepts the publish and
+        // starts writing HLS segments.  Then dispatch a delayed job to
+        // start the ffmpeg HLS pull — the delay gives nginx-rtop time
+        // to generate the first segments.
+        \App\Jobs\StartHlsPullIngest::dispatch($channel->id)
+            ->delay(now()->addSeconds(3));
 
         return response('ok', 200);
     }

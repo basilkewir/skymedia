@@ -73,25 +73,18 @@ class StreamManager
             //    callback when the encoder connects to port 1935 — skip here.
             Log::info("[Debug] startChannel {$channel->name} step 3 ingest start");
             if ($channel->isPushIngest() && $channel->source_type === 'rtmp') {
-                // RTMP push: try starting HLS pull immediately in case
-                // nginx-rtop already has the encoder connected (e.g. app
-                // restarted while encoder was pushing). If nginx-rtop doesn't
-                // have the stream yet, ffmpeg will retry via reconnect flags.
-                // The on_publish callback will also trigger startHlsPull on
-                // fresh encoder connections.
-                try {
-                    $this->ingest->startHlsPull($channel);
-                    $this->log($channel, 'info', 'hls_pull_started',
-                        'HLS pull started (encoder may already be connected)');
-                } catch (\Throwable $e) {
-                    // Not fatal — on_publish will retry when encoder reconnects
-                    $this->log($channel, 'info', 'ingest_waiting',
-                        'Waiting for encoder to connect to port 1935: ' . $e->getMessage());
-                    $channel->update([
-                        'stream_status' => 'starting',
-                        'source_live' => false,
-                    ]);
-                }
+                // RTMP push: dispatch a delayed HLS pull job in case the
+                // encoder is already connected (e.g. app restarted while
+                // encoder was pushing). If the encoder isn't connected yet,
+                // the on_publish callback will dispatch another job.
+                \App\Jobs\StartHlsPullIngest::dispatch($channel->id)
+                    ->delay(now()->addSeconds(3));
+                $channel->update([
+                    'stream_status' => 'starting',
+                    'source_live' => false,
+                ]);
+                $this->log($channel, 'info', 'ingest_waiting',
+                    'Waiting for encoder to connect to port 1935');
             } else {
                 $this->ingest->start($channel);
                 $channel->refresh();
