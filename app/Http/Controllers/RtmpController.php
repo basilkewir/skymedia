@@ -25,7 +25,10 @@ class RtmpController extends Controller
      */
     public function onPublish(Request $request): Response
     {
-        $key = $request->input('name', '');
+        // MTX_PATH is the full RTMP path e.g. "live/UUX8h3ozvBP1btB291W7Rwkj".
+        // Strip any leading app-name segment so we match on the key only.
+        $raw = $request->input('name', '');
+        $key = str_contains($raw, '/') ? substr($raw, strrpos($raw, '/') + 1) : $raw;
 
         if ($key === '') {
             Log::warning('[RTMP] on_publish rejected — empty stream key');
@@ -65,7 +68,8 @@ class RtmpController extends Controller
      */
     public function onPublishDone(Request $request): Response
     {
-        $key = $request->input('name', '');
+        $raw = $request->input('name', '');
+        $key = str_contains($raw, '/') ? substr($raw, strrpos($raw, '/') + 1) : $raw;
 
         $channel = $key !== '' ? Channel::where('rtmp_input_key', $key)->first() : null;
         $name = $channel?->name ?? $key;
