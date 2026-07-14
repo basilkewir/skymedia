@@ -5,6 +5,19 @@ logDestinations: [stdout]
 api: true
 apiAddress: :9997
 
+# Allow unauthenticated API access from any IP
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+        path:
+      - action: read
+        path:
+      - action: api
+        path:
+
 rtmp: true
 rtmpAddress: :1935
 rtmpEncryption: "no"
