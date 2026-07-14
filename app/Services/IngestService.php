@@ -172,7 +172,7 @@ class IngestService
             'last_error'   => null,
         ]);
 
-        Log::info("[Ingest] {$channel->name} RTMP pull started — PID {$pid} — rtmp://mediamtx:1935/live/{$channel->rtmp_input_key}");
+        Log::info("[Ingest] {$channel->name} RTMP pull started — PID {$pid} — rtmp://rtmp:1935/live/{$channel->rtmp_input_key}");
 
         return true;
     }

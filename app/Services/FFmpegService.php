@@ -387,7 +387,7 @@ class FFmpegService
 
         // Pull directly from MediaMTX RTMP — no HLS intermediary.
         // OBS pushes to rtmp://host:1935/live/{key}, so the path is live/{key}.
-        $rtmpUrl = "rtmp://mediamtx:1935/live/{$key}";
+        $rtmpUrl = "rtmp://rtmp:1935/live/{$key}";
 
         $inputFlags = [
             '-fflags',          '+genpts+discardcorrupt',
