@@ -27,6 +27,11 @@ class MonitorStreams extends Command
 
         while (true) {
             try {
+                // Poll MediaMTX API to detect encoder connect/disconnect events.
+                // The MediaMTX image has no shell so runOnReady hooks can't fire;
+                // polling is the reliable alternative.
+                $manager->syncMediaMtxPublishers();
+
                 $query = Channel::where('is_active', true);
                 if ($id = $this->option('channel')) {
                     $query->where('id', (int) $id);

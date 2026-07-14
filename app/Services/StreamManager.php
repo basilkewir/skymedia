@@ -23,6 +23,71 @@ class StreamManager
     ) {}
 
     // ═══════════════════════════════════════════════════════════════════
+    //  MEDIAMTX PUBLISHER SYNC
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Poll the MediaMTX API and start/stop HLS pull ingest based on which
+     * RTMP streams are currently publishing.  Called every monitor tick.
+     *
+     * This replaces runOnReady/runOnNotReady hooks which require a shell
+     * binary not present in the MediaMTX distroless image.
+     */
+    public function syncMediaMtxPublishers(): void
+    {
+        $apiUrl = config('skymedia.mediamtx_api', 'http://rtmp:9997');
+
+        try {
+            $response = \Illuminate\Support\Facades\Http::timeout(2)
+                ->get("{$apiUrl}/v3/paths/list");
+
+            if (! $response->successful()) {
+                return;
+            }
+
+            $activePaths = collect($response->json('items', []))
+                ->filter(fn ($item) => ($item['ready'] ?? false) === true)
+                ->pluck('name')
+                ->map(fn ($path) => str_contains($path, '/') ? substr($path, strrpos($path, '/') + 1) : $path)
+                ->all();
+
+        } catch (\Throwable) {
+            return; // MediaMTX unreachable — skip this tick
+        }
+
+        // Find all push-RTMP channels and sync their ingest state.
+        Channel::where('ingest_mode', 'push')
+            ->where('source_type', 'rtmp')
+            ->whereNotNull('rtmp_input_key')
+            ->each(function (Channel $channel) use ($activePaths) {
+                $isPublishing = in_array($channel->rtmp_input_key, $activePaths, true);
+                $ingestRunning = $this->ingest->isRunning($channel);
+
+                if ($isPublishing && ! $ingestRunning) {
+                    // Encoder connected but ingest not running — start it.
+                    Log::info("[MediaMTX] {$channel->name} is publishing — starting ingest");
+                    if (! $channel->is_active || in_array($channel->stream_status, ['stopped', 'idle', 'error'], true)) {
+                        $channel->update(['is_active' => true, 'stream_status' => 'starting']);
+                    }
+                    try {
+                        $this->ingest->startHlsPull($channel->fresh());
+                    } catch (\Throwable $e) {
+                        Log::error("[MediaMTX] {$channel->name} startHlsPull failed: {$e->getMessage()}");
+                    }
+                } elseif (! $isPublishing && $ingestRunning) {
+                    // Encoder disconnected but ingest still running — stop it.
+                    Log::info("[MediaMTX] {$channel->name} stopped publishing — stopping ingest");
+                    $this->ingest->stop($channel);
+                    $channel->update([
+                        'source_live'   => false,
+                        'stream_status' => 'offline',
+                        'pid'           => null,
+                    ]);
+                }
+            });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     //  PUBLIC API
     // ═══════════════════════════════════════════════════════════════════
 

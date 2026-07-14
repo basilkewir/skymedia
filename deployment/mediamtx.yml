@@ -22,12 +22,7 @@ rtmpAddress: :1935
 rtmpEncryption: "no"
 
 pathDefaults:
-  runOnReady: sh -c 'curl -sf -X POST http://app:80/api/rtmp/on-publish -d "name=$MTX_PATH" &'
   runOnReadyRestart: false
-  runOnNotReady: sh -c 'curl -sf -X POST http://app:80/api/rtmp/on-publish-done -d "name=$MTX_PATH" &'
 
 paths:
   "~.*":
-    runOnReady: sh -c 'curl -sf -X POST http://app:80/api/rtmp/on-publish -d "name=$MTX_PATH" &'
-    runOnReadyRestart: false
-    runOnNotReady: sh -c 'curl -sf -X POST http://app:80/api/rtmp/on-publish-done -d "name=$MTX_PATH" &'
