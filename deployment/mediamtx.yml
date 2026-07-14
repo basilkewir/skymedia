@@ -1,11 +1,10 @@
 # MediaMTX v1.19.2 — SkyMedia ingest receiver
-logLevel: warn
+logLevel: info
 logDestinations: [stdout]
 
 api: true
 apiAddress: :9997
 
-# Allow unauthenticated API access from any IP
 authInternalUsers:
   - user: any
     pass:
@@ -22,14 +21,7 @@ rtmp: true
 rtmpAddress: :1935
 rtmpEncryption: "no"
 
-hls: false
-webrtc: false
-
 pathDefaults:
-  # Called when a stream becomes ready (encoder connected).
-  # Backgrounded so MediaMTX doesn't block waiting for curl.
   runOnReady: sh -c 'curl -sf -X POST http://app:80/api/rtmp/on-publish -d "name=$MTX_PATH" &'
   runOnReadyRestart: false
-
-  # Called when the stream ends (encoder disconnected).
   runOnNotReady: sh -c 'curl -sf -X POST http://app:80/api/rtmp/on-publish-done -d "name=$MTX_PATH" &'
