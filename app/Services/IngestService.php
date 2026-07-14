@@ -160,7 +160,7 @@ class IngestService
         // ffmpeg. nginx-rtmp needs a few seconds after the encoder connects to
         // generate the playlist. Without this wait ffmpeg gets a 404 and exits
         // immediately, causing the channel to never go live.
-        $hlsUrl = "http://rtmp:8081/hls/{$channel->rtmp_input_key}/live.m3u8";
+        $hlsUrl = "http://rtmp:8081/hls/{$channel->rtmp_input_key}/index.m3u8";
         $this->waitForHlsUrl($hlsUrl, 20);
 
         $cmd = $this->ffmpeg->buildHlsPullCommand($channel);

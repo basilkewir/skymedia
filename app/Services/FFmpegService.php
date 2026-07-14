@@ -388,9 +388,9 @@ class FFmpegService
             ]);
         }
 
-        // Pull from the internal nginx-rtop HLS endpoint.
-        // nginx-rtop writes to /tmp/hls/{key}/ and serves on port 8081.
-        $hlsUrl = "http://rtmp:8081/hls/{$key}/live.m3u8";
+        // Pull from the internal nginx-rtmp HLS endpoint.
+        // nginx-rtmp writes to /tmp/hls/{key}/index.m3u8 (not live.m3u8).
+        $hlsUrl = "http://rtmp:8081/hls/{$key}/index.m3u8";
 
         $inputFlags = [
             '-fflags',          '+genpts+discardcorrupt',
