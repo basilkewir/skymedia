@@ -394,17 +394,18 @@ class FFmpegService
 
         $inputFlags = [
             '-fflags',          '+genpts+discardcorrupt',
-            '-probesize',       '5000000',
-            '-analyzeduration', '3000000',
+            '-probesize',       '500000',
+            '-analyzeduration', '500000',
             '-thread_queue_size', '4096',
-            // Retry on disconnect — nginx-rtop may take a moment to generate
+            // Retry on disconnect — nginx-rtmp may take a moment to generate
             // the first segments after the encoder connects.
             '-reconnect',       '1',
             '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '5',
+            '-reconnect_delay_max', '2',
             '-reconnect_at_eof', '1',
             '-max_reload',      '1000',
             '-m3u8_hold_counters', '1000',
+            '-live_start_index', '-3',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,http,https,tcp,tls',
             '-i',               $hlsUrl,
