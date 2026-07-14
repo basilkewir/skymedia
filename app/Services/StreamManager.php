@@ -66,13 +66,20 @@ class StreamManager
                 if ($isPublishing && ! $ingestRunning) {
                     // Encoder connected but ingest not running — start it.
                     Log::info("[MediaMTX] {$channel->name} is publishing — starting ingest");
-                    if (! $channel->is_active || in_array($channel->stream_status, ['stopped', 'idle', 'error'], true)) {
-                        $channel->update(['is_active' => true, 'stream_status' => 'starting']);
-                    }
-                    try {
-                        $this->ingest->startHlsPull($channel->fresh());
-                    } catch (\Throwable $e) {
-                        Log::error("[MediaMTX] {$channel->name} startHlsPull failed: {$e->getMessage()}");
+                    if (! $channel->is_active
+                        || in_array($channel->stream_status, ['stopped', 'idle', 'error'], true)
+                        || ! file_exists($channel->dvr_directory . '/output.m3u8')) {
+                        // Channel not fully started — run the full startup sequence
+                        // (slate, fallback, output.m3u8 symlink, push).
+                        $this->startChannel($channel->fresh());
+                    } else {
+                        // Channel already running (push live, output.m3u8 exists)
+                        // — just start the ingest pull.
+                        try {
+                            $this->ingest->startHlsPull($channel->fresh());
+                        } catch (\Throwable $e) {
+                            Log::error("[MediaMTX] {$channel->name} startHlsPull failed: {$e->getMessage()}");
+                        }
                     }
                 } elseif (! $isPublishing && $ingestRunning) {
                     // Encoder disconnected but ingest still running — stop it.
@@ -1029,9 +1036,9 @@ class StreamManager
     // ═══════════════════════════════════════════════════════════════════
 
     /**
-     * Start a relay that pushes channel output to the local nginx-rtmp
-     * "static" application so it generates HLS files at:
-     *   http://<host>:8081/hls-static/<slug>/index.m3u8
+     * Start a relay that pushes channel output to MediaMTX "static" path
+     * so it generates HLS at:
+     *   http://<host>:8888/static/<slug>/index.m3u8
      */
     public function startHlsRelay(Channel $channel): bool
     {
@@ -1039,12 +1046,10 @@ class StreamManager
             return true;
         }
 
-        // The tracked HLS relay is dead — kill any orphan relays for this
-        // channel before starting a fresh one.
         $this->killOrphanHlsRelays($channel);
 
         $playlist = $this->playout->outputPlaylist($channel);
-        if (! file_exists($playlist)) {
+        if (! file_exists($playlist) && ! is_link($playlist)) {
             return false;
         }
 
@@ -1069,12 +1074,8 @@ class StreamManager
             '-ac',  '2',
             '-f',   'flv',
             '-rtmp_live', 'live',
-            // LLOD v3 — low-latency flags for instant playback on nginx-rtmp
-            '-flvflags',           'no_duration_filesize',
-            '-flags',              '+global_header',
-            '-bsf:v',              'h264_mp4toannexb',
-            '-force_key_frames',   'expr:gte(t,n_forced*2)',
-            '-bf',                 '0',
+            '-flvflags',  'no_duration_filesize',
+            '-flags',     '+global_header',
             $rtmpUrl,
         ];
 
