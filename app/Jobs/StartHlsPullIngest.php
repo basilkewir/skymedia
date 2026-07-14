@@ -47,9 +47,10 @@ class StartHlsPullIngest implements ShouldQueue
             return;
         }
 
-        // If the encoder disconnected while the job was queued, skip.
-        if ($channel->stream_status !== 'starting' && $channel->stream_status !== 'offline') {
-            Log::info("[RTMP] StartHlsPullIngest — {$channel->name} status is {$channel->stream_status}, skipping");
+        // If the encoder disconnected while the job was queued and the channel
+        // was manually stopped, skip.
+        if ($channel->stream_status === 'stopped' && ! $channel->is_active) {
+            Log::info("[RTMP] StartHlsPullIngest — {$channel->name} manually stopped, skipping");
             return;
         }
 

@@ -156,6 +156,13 @@ class IngestService
             );
         }
 
+        // Wait for nginx-rtmp to write the first HLS segments before starting
+        // ffmpeg. nginx-rtmp needs a few seconds after the encoder connects to
+        // generate the playlist. Without this wait ffmpeg gets a 404 and exits
+        // immediately, causing the channel to never go live.
+        $hlsUrl = "http://rtmp:8081/hls/{$channel->rtmp_input_key}/live.m3u8";
+        $this->waitForHlsUrl($hlsUrl, 20);
+
         $cmd = $this->ffmpeg->buildHlsPullCommand($channel);
         $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
         $logFile = $this->ffmpeg->logFile($channel, 'ingest');
@@ -175,6 +182,35 @@ class IngestService
         Log::info("[Ingest] {$channel->name} HLS pull started — PID {$pid} — pulling from rtmp:8081");
 
         return true;
+    }
+
+    /**
+     * Poll an HLS URL until it returns HTTP 200 or the timeout expires.
+     * Uses a raw TCP socket so it works inside Docker without curl/wget.
+     */
+    protected function waitForHlsUrl(string $url, int $maxSeconds = 20): void
+    {
+        $deadline = time() + $maxSeconds;
+        $parts    = parse_url($url);
+        $host     = $parts['host'] ?? 'rtmp';
+        $port     = $parts['port'] ?? 8081;
+        $path     = $parts['path'] ?? '/';
+
+        while (time() < $deadline) {
+            $fp = @fsockopen($host, $port, $errno, $errstr, 2);
+            if ($fp) {
+                fwrite($fp, "HEAD {$path} HTTP/1.0\r\nHost: {$host}\r\nConnection: close\r\n\r\n");
+                $response = fgets($fp, 128);
+                fclose($fp);
+                if ($response && str_contains($response, ' 200')) {
+                    Log::debug("[Ingest] HLS URL ready: {$url}");
+                    return;
+                }
+            }
+            usleep(500_000); // 500ms
+        }
+
+        Log::warning("[Ingest] HLS URL not ready after {$maxSeconds}s — starting ffmpeg anyway: {$url}");
     }
 
     public function stop(Channel $channel): void

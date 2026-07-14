@@ -39,16 +39,19 @@ class RtmpController extends Controller
             return response('rejected', 403);
         }
 
-        if (! $channel->is_active) {
-            Log::warning("[RTMP] on_publish rejected — channel {$channel->name} is not active");
-            return response('rejected', 403);
-        }
-
         Log::info("[RTMP] on_publish {$channel->name} (key={$key}) — encoder connected to port 1935");
 
-        // Return 200 IMMEDIATELY so nginx-rtop accepts the publish and
-        // starts writing HLS segments.  Then dispatch a delayed job to
-        // start the ffmpeg HLS pull — the delay gives nginx-rtop time
+        // Auto-activate the channel if it is not already running.
+        // This ensures OBS/vMix can push at any time without the operator
+        // having to manually start the channel first.
+        if (! $channel->is_active || in_array($channel->stream_status, ['stopped', 'idle', 'error'], true)) {
+            $channel->update(['is_active' => true, 'stream_status' => 'starting']);
+            Log::info("[RTMP] on_publish {$channel->name} — auto-activating channel");
+        }
+
+        // Return 200 IMMEDIATELY so nginx-rtmp accepts the publish and
+        // starts writing HLS segments. Then dispatch a delayed job to
+        // start the ffmpeg HLS pull — the delay gives nginx-rtmp time
         // to generate the first segments.
         \App\Jobs\StartHlsPullIngest::dispatch($channel->id)
             ->delay(now()->addSeconds(3));
@@ -70,7 +73,7 @@ class RtmpController extends Controller
         $channel = $key !== '' ? Channel::where('rtmp_input_key', $key)->first() : null;
         $name = $channel?->name ?? $key;
 
-        Log::info("[RTMP] on_publish_done — {$name} disconnected — stopping HLS pull ingest");
+        Log::info("[RTMP] on_publish_done — {$name} disconnected");
 
         if ($channel) {
             try {
@@ -78,9 +81,11 @@ class RtmpController extends Controller
                 $ingestService = app(IngestService::class);
                 $ingestService->stop($channel);
                 $channel->update([
-                    'source_live' => false,
+                    'source_live'   => false,
                     'stream_status' => 'offline',
+                    'pid'           => null,
                 ]);
+                Log::info("[RTMP] on_publish_done {$name} — ingest stopped, monitor will switch to fallback");
             } catch (\Throwable $e) {
                 Log::warning("[RTMP] on_publish_done {$name} — failed to stop ingest: {$e->getMessage()}");
             }
