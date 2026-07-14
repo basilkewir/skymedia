@@ -14,18 +14,18 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Start the ffmpeg HLS pull for a push-mode RTMP channel.
+ * Start the ffmpeg RTMP pull for a push-mode RTMP channel.
  *
- * Dispatched by RtmpController::onPublish with a 3-second delay so
- * nginx-rtop has time to start writing HLS segments before ffmpeg
- * tries to pull them.
+ * Dispatched by RtmpController::onPublish immediately when the encoder
+ * connects to MediaMTX. MediaMTX makes the stream available as
+ * rtmp://mediamtx:1935/{key} the instant it receives the first data.
  */
 class StartHlsPullIngest implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public int $tries = 2;
-    public int $backoff = 5;
+    public int $backoff = 3;
     public int $maxExceptions = 3;
 
     public function __construct(

@@ -116,18 +116,17 @@ class IngestService
     }
 
     /**
-     * Start an HLS pull ingest for a push-mode RTMP channel.
+     * Start RTMP pull ingest for a push-mode RTMP channel.
      *
-     * nginx-rtmp on port 1935 receives the encoder push and writes HLS
-     * segments to /tmp/hls/{key}/.  This method starts ffmpeg in the app
-     * container pulling from http://rtmp:8081/hls/{key}/live.m3u8 and writing
-     * the channel's DVR/live playlists.
+     * MediaMTX on port 1935 receives the encoder push and immediately
+     * re-publishes it as rtmp://mediamtx:1935/{key}.  This method starts
+     * ffmpeg pulling directly from that RTMP path — no HLS intermediary,
+     * no segment window race, no polling delay.
      *
-     * Called by RtmpController::onPublish when the encoder first connects.
+     * Called by RtmpController::onPublish the instant the encoder connects.
      */
     public function startHlsPull(Channel $channel): bool
     {
-        // Stop any existing ingest for this channel first.
         if ($this->isRunning($channel)) {
             $this->stop($channel);
         } else {
@@ -148,7 +147,6 @@ class IngestService
         $bin = $this->ffmpeg->getBin();
         $binPath = trim((string) shell_exec("which {$bin} 2>/dev/null"))
                    ?: trim((string) shell_exec("command -v {$bin} 2>/dev/null"));
-
         if (empty($binPath)) {
             throw new \RuntimeException(
                 "ffmpeg binary not found in PATH. Configured as: '{$bin}'. "
@@ -156,13 +154,8 @@ class IngestService
             );
         }
 
-        // Wait for nginx-rtmp to write the first HLS segments before starting
-        // ffmpeg. nginx-rtmp needs a few seconds after the encoder connects to
-        // generate the playlist. Without this wait ffmpeg gets a 404 and exits
-        // immediately, causing the channel to never go live.
-        $hlsUrl = "http://rtmp:8081/hls/{$channel->rtmp_input_key}/index.m3u8";
-        $this->waitForHlsUrl($hlsUrl, 20);
-
+        // MediaMTX makes the stream available as RTMP immediately when the
+        // encoder connects — no warmup wait needed.
         $cmd = $this->ffmpeg->buildHlsPullCommand($channel);
         $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
         $logFile = $this->ffmpeg->logFile($channel, 'ingest');
@@ -170,47 +163,18 @@ class IngestService
         $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 3);
 
         $channel->update([
-            'pid' => $pid,
+            'pid'          => $pid,
             'stream_status' => 'starting',
-            'dvr_status' => $channel->dvr_enabled === false ? 'idle' : 'starting',
-            'source_live' => false,
+            'dvr_status'   => $channel->dvr_enabled === false ? 'idle' : 'starting',
+            'source_live'  => false,
             'last_live_at' => $channel->last_live_at,
-            'retry_count' => 0,
-            'last_error' => null,
+            'retry_count'  => 0,
+            'last_error'   => null,
         ]);
 
-        Log::info("[Ingest] {$channel->name} HLS pull started — PID {$pid} — pulling from rtmp:8081");
+        Log::info("[Ingest] {$channel->name} RTMP pull started — PID {$pid} — rtmp://mediamtx:1935/{$channel->rtmp_input_key}");
 
         return true;
-    }
-
-    /**
-     * Poll an HLS URL until it returns HTTP 200 or the timeout expires.
-     * Uses a raw TCP socket so it works inside Docker without curl/wget.
-     */
-    protected function waitForHlsUrl(string $url, int $maxSeconds = 20): void
-    {
-        $deadline = time() + $maxSeconds;
-        $parts    = parse_url($url);
-        $host     = $parts['host'] ?? 'rtmp';
-        $port     = $parts['port'] ?? 8081;
-        $path     = $parts['path'] ?? '/';
-
-        while (time() < $deadline) {
-            $fp = @fsockopen($host, $port, $errno, $errstr, 2);
-            if ($fp) {
-                fwrite($fp, "HEAD {$path} HTTP/1.0\r\nHost: {$host}\r\nConnection: close\r\n\r\n");
-                $response = fgets($fp, 128);
-                fclose($fp);
-                if ($response && str_contains($response, ' 200')) {
-                    Log::debug("[Ingest] HLS URL ready: {$url}");
-                    return;
-                }
-            }
-            usleep(500_000); // 500ms
-        }
-
-        Log::warning("[Ingest] HLS URL not ready after {$maxSeconds}s — starting ffmpeg anyway: {$url}");
     }
 
     public function stop(Channel $channel): void

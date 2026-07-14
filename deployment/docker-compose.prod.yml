@@ -32,13 +32,12 @@ services:
         condition: service_healthy
 
   rtmp:
-    image: tiangolo/nginx-rtmp
+    image: bluenviron/mediamtx:latest
     restart: unless-stopped
     ports:
       - "1935:1935"
-      - "8082:8081"
     volumes:
-      - ./nginx-rtmp.conf:/etc/nginx/nginx.conf
+      - ./mediamtx.yml:/mediamtx.yml
 
   db:
     image: mysql:8.0

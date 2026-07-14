@@ -49,12 +49,9 @@ class RtmpController extends Controller
             Log::info("[RTMP] on_publish {$channel->name} — auto-activating channel");
         }
 
-        // Return 200 IMMEDIATELY so nginx-rtmp accepts the publish and
-        // starts writing HLS segments. Then dispatch a delayed job to
-        // start the ffmpeg HLS pull — the delay gives nginx-rtmp time
-        // to generate the first segments.
-        \App\Jobs\StartHlsPullIngest::dispatch($channel->id)
-            ->delay(now()->addSeconds(3));
+        // Dispatch immediately — MediaMTX makes the RTMP stream available
+        // the instant the encoder connects, no warmup wait needed.
+        \App\Jobs\StartHlsPullIngest::dispatch($channel->id);
 
         return response('ok', 200);
     }

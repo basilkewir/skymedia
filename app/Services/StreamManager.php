@@ -984,7 +984,7 @@ class StreamManager
         }
 
         $slug = $channel->slug;
-        $rtmpUrl = "rtmp://rtmp:1935/static/{$slug}";
+        $rtmpUrl = "rtmp://mediamtx:1935/static/{$slug}";
 
         $cmd = [
             $this->ffmpeg->getBin(),
@@ -1049,7 +1049,7 @@ class StreamManager
      */
     private function killOrphanHlsRelays(Channel $channel): int
     {
-        $rtmpUrl = "rtmp://rtmp:1935/static/{$channel->slug}";
+        $rtmpUrl = "rtmp://mediamtx:1935/static/{$channel->slug}";
         exec('ps aux | grep -F ' . escapeshellarg($rtmpUrl) . " | grep -F 'ffmpeg' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
 
         $count = 0;
@@ -1089,7 +1089,7 @@ class StreamManager
 
     private function findHlsRelayPids(Channel $channel): array
     {
-        $rtmpUrl = "rtmp://rtmp:1935/static/{$channel->slug}";
+        $rtmpUrl = "rtmp://mediamtx:1935/static/{$channel->slug}";
         exec('ps aux | grep -F ' . escapeshellarg($rtmpUrl) . " | grep -F 'ffmpeg' | grep -v grep | awk '{print \$2}' 2>/dev/null", $lines);
 
         return array_values(array_filter(array_map('intval', $lines)));

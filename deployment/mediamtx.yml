@@ -1,0 +1,28 @@
+# MediaMTX configuration for SkyMedia
+# Receives RTMP from OBS/vMix on port 1935.
+# Each stream is available as rtmp://mediamtx:1935/{key} for ffmpeg pull.
+
+logLevel: warn
+logDestinations: [stdout]
+
+api: yes
+apiAddress: :9997
+
+rtmp: yes
+rtmpAddress: :1935
+rtmpEncryption: no
+
+# Disable unused protocols
+hls: no
+webrtc: no
+srt: no
+
+pathDefaults:
+  # Fired the instant an encoder starts publishing.
+  # app starts ffmpeg pulling rtmp://mediamtx:1935/{key} immediately.
+  runOnPublish: curl -sf -X POST http://app:80/api/rtmp/on-publish -d "name=$MTX_PATH"
+  runOnPublishRestart: no
+
+  # Fired when the encoder disconnects.
+  runOnUnpublish: curl -sf -X POST http://app:80/api/rtmp/on-publish-done -d "name=$MTX_PATH"
+  runOnUnpublishRestart: no

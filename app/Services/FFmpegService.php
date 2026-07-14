@@ -346,14 +346,11 @@ class FFmpegService
     }
 
     /**
-     * HLS PULL INGEST for push-mode RTMP channels.
+     * RTMP PULL INGEST for push-mode RTMP channels.
      *
-     * nginx-rtmp on port 1935 receives the encoder push and writes HLS
-     * segments to /tmp/hls/{key}/.  This command pulls from the nginx-rtop
-     * internal HLS endpoint and writes the channel's DVR/live playlists.
-     *
-     * The input URL uses the nginx-rtop container hostname (resolves inside
-     * Docker network) on port 8081.
+     * MediaMTX on port 1935 receives the encoder push and re-publishes it
+     * as rtmp://mediamtx:1935/{key}.  This command pulls directly from that
+     * RTMP path — no HLS intermediary, no segment window race.
      */
     public function buildHlsPullCommand(Channel $channel): array
     {
@@ -388,27 +385,15 @@ class FFmpegService
             ]);
         }
 
-        // Pull from the internal nginx-rtmp HLS endpoint.
-        // nginx-rtmp writes to /tmp/hls/{key}/index.m3u8 (not live.m3u8).
-        $hlsUrl = "http://rtmp:8081/hls/{$key}/index.m3u8";
+        // Pull directly from MediaMTX RTMP — no HLS intermediary.
+        $rtmpUrl = "rtmp://mediamtx:1935/{$key}";
 
         $inputFlags = [
             '-fflags',          '+genpts+discardcorrupt',
             '-probesize',       '500000',
             '-analyzeduration', '500000',
             '-thread_queue_size', '4096',
-            // Retry on disconnect — nginx-rtmp may take a moment to generate
-            // the first segments after the encoder connects.
-            '-reconnect',       '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '2',
-            '-reconnect_at_eof', '1',
-            '-max_reload',      '1000',
-            '-m3u8_hold_counters', '1000',
-            '-live_start_index', '-3',
-            '-allowed_extensions', 'ALL',
-            '-protocol_whitelist', 'file,http,https,tcp,tls',
-            '-i',               $hlsUrl,
+            '-i',               $rtmpUrl,
         ];
 
         return array_merge(
