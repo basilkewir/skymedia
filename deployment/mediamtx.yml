@@ -1,32 +1,22 @@
-# MediaMTX v1.19.2 configuration for SkyMedia
-# Receives RTMP from OBS/vMix on port 1935.
-# Each stream is available as rtmp://mediamtx:1935/{key} for ffmpeg pull.
-
+# MediaMTX v1.19.2 — SkyMedia ingest receiver
 logLevel: warn
 logDestinations: [stdout]
 
-api: yes
+api: true
 apiAddress: :9997
 
-rtmp: yes
+rtmp: true
 rtmpAddress: :1935
-rtmpEncryption: no
+rtmpEncryption: "no"
 
-# Disable unused protocols to save resources
 hls: false
 webrtc: false
-srt: false
 
 pathDefaults:
-  # Fired when a stream becomes ready (encoder connected and publishing).
-  # runOnReady is kept alive for the duration of the stream; we background
-  # the curl call so MediaMTX doesn't wait for it to exit.
-  runOnReady: >-
-    sh -c 'curl -sf -X POST http://app:80/api/rtmp/on-publish
-    -d "name=$MTX_PATH" &'
+  # Called when a stream becomes ready (encoder connected).
+  # Backgrounded so MediaMTX doesn't block waiting for curl.
+  runOnReady: sh -c 'curl -sf -X POST http://app:80/api/rtmp/on-publish -d "name=$MTX_PATH" &'
   runOnReadyRestart: false
 
-  # Fired when the stream is no longer available (encoder disconnected).
-  runOnNotReady: >-
-    sh -c 'curl -sf -X POST http://app:80/api/rtmp/on-publish-done
-    -d "name=$MTX_PATH" &'
+  # Called when the stream ends (encoder disconnected).
+  runOnNotReady: sh -c 'curl -sf -X POST http://app:80/api/rtmp/on-publish-done -d "name=$MTX_PATH" &'
