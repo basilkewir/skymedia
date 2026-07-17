@@ -37,10 +37,10 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('channels/{channel}/restart', [ChannelController::class, 'restart'])->name('channels.restart');
     Route::post('channels/{channel}/clone', [ChannelController::class, 'clone'])->name('channels.clone');
     Route::delete('channels/{channel}/dvr', [ChannelController::class, 'purgeDvr'])->name('channels.purge-dvr');
-    Route::get('channels/{channel}/status', [ChannelController::class, 'status'])->name('channels.status');
-    Route::get('channels/{channel}/probe', [ChannelController::class, 'probe'])->name('channels.probe');
-    Route::get('channels/{channel}/diagnose', [ChannelController::class, 'diagnose'])->name('channels.diagnose');
-    Route::get('channels/{channel}/logs', [ChannelController::class, 'logs'])->name('channels.logs');
+    Route::get('channels/{channel}/status', [ChannelController::class, 'status'])->name('channels.status')->withoutMiddleware(\App\Http\Middleware\HandleInertiaRequests::class);
+    Route::get('channels/{channel}/probe', [ChannelController::class, 'probe'])->name('channels.probe')->withoutMiddleware(\App\Http\Middleware\HandleInertiaRequests::class);
+    Route::get('channels/{channel}/diagnose', [ChannelController::class, 'diagnose'])->name('channels.diagnose')->withoutMiddleware(\App\Http\Middleware\HandleInertiaRequests::class);
+    Route::get('channels/{channel}/logs', [ChannelController::class, 'logs'])->name('channels.logs')->withoutMiddleware(\App\Http\Middleware\HandleInertiaRequests::class);
     Route::post('channels/{channel}/fallback-vod', [ChannelController::class, 'uploadFallbackVod'])->name('channels.fallback-vod.upload');
     Route::delete('channels/{channel}/fallback-vod', [ChannelController::class, 'removeFallbackVod'])->name('channels.fallback-vod.remove');
     Route::get('channels/{channel}/content', [ChannelContentController::class, 'index'])->name('channels.content');
