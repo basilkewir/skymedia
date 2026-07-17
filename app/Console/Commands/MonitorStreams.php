@@ -6,6 +6,7 @@ namespace App\Console\Commands;
 
 use App\Models\Channel;
 use App\Models\Setting;
+use App\Services\FFmpegService;
 use App\Services\StreamManager;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
@@ -20,16 +21,34 @@ class MonitorStreams extends Command
 
     private array $lastAutoRestart = [];
 
-    public function handle(StreamManager $manager): void
+    private array $consecutiveFailures = [];
+
+    private int $restartsInWindow = 0;
+
+    private int $windowStart = 0;
+
+    private const RESTART_WINDOW_SECONDS = 300;
+
+    private const MAX_RESTARTS_PER_WINDOW = 50;
+
+    public function handle(StreamManager $manager, FFmpegService $ffmpeg): void
     {
         $this->info('SkyMedia Monitor started — PID ' . getmypid());
         $tick = max(1, (int) (Setting::get('monitor_tick') ?? config('skymedia.monitor_tick', 3)));
 
         while (true) {
+            if ((time() - $this->windowStart) > self::RESTART_WINDOW_SECONDS) {
+                $this->restartsInWindow = 0;
+                $this->windowStart = time();
+            }
+
             try {
-                // Poll MediaMTX API to detect encoder connect/disconnect events.
-                // The MediaMTX image has no shell so runOnReady hooks can't fire;
-                // polling is the reliable alternative.
+                $ffmpegCount = $ffmpeg->countFfmpegProcesses();
+                if ($ffmpegCount > 50) {
+                    Log::warning("[Monitor] High ffmpeg process count: {$ffmpegCount} — enforcing cap");
+                    $ffmpeg->enforceProcessCap();
+                }
+
                 $manager->syncMediaMtxPublishers();
 
                 $query = Channel::where('is_active', true);
@@ -61,59 +80,67 @@ class MonitorStreams extends Command
                         ));
                     }
 
-                    // Auto-recovery: if channel is offline, refresh ingest to try
-                    // next source. The cooldown is scaled by retry_count so a
-                    // repeatedly-failing upstream is given progressively more
-                    // breathing room (back-pressure), and a per-channel jitter
-                    // prevents dozens of dead channels from retrying on the
-                    // exact same tick — which previously serialised through
-                    // refreshIngest's wait loop and starved the whole monitor.
                     $ch = $channel->fresh();
                     if (($ch->stream_status === 'offline' || $ch->stream_status === 'starting')
                         && ! $ch->source_live
                         && ! $manager->isIngestRunning($ch)) {
+
+                        $failures = $this->consecutiveFailures[$ch->id] ?? 0;
+                        $this->consecutiveFailures[$ch->id] = $failures + 1;
+
+                        if ($this->restartsInWindow >= self::MAX_RESTARTS_PER_WINDOW) {
+                            $this->line(sprintf(
+                                '[%s] %-22s  SKIPPED: restart window cap reached (%d/%d)',
+                                now()->format('H:i:s'),
+                                mb_substr($ch->name, 0, 22),
+                                $this->restartsInWindow,
+                                self::MAX_RESTARTS_PER_WINDOW
+                            ));
+                            return;
+                        }
+
                         $lastRestart = $this->lastAutoRestart[$ch->id] ?? 0;
-                        // Base: 15s (pull) / 20s (push), + deterministic jitter
-                        // based on channel id (0-4s) so retries spread out,
-                        // + up to 60s back-pressure scaled by retry_count.
+
                         $base = $ch->isPushIngest() ? 12 : 8;
                         $jitter = $ch->id % 5;
-                        $backoff = min(45, ((int) $ch->retry_count) * 3);
+                        $backoff = min(300, $failures * 5);
                         $cooldown = $base + $jitter + $backoff;
+
                         if ((time() - $lastRestart) < $cooldown) {
                             return;
                         }
 
                         try {
                             if ($ch->isPushIngest() && $ch->source_type === 'srt') {
-                                // SRT push: The loop wrapper keeps the listener alive automatically.
-                                // Only restart if the loop process itself has died.
                                 if (! $manager->isListenerLoopRunning($ch)) {
                                     $manager->restartChannel($ch);
                                     $this->lastAutoRestart[$ch->id] = time();
+                                    $this->restartsInWindow++;
                                     $this->line(sprintf(
-                                        '[%s] %-22s  AUTO-RESTART: listener loop restarted',
+                                        '[%s] %-22s  AUTO-RESTART: listener loop restarted (failures: %d)',
                                         now()->format('H:i:s'),
-                                        mb_substr($ch->name, 0, 22)
+                                        mb_substr($ch->name, 0, 22),
+                                        $failures + 1
                                     ));
                                 }
                             } elseif ($ch->isPushIngest() && $ch->source_type === 'rtmp') {
-                                // RTMP push: on_publish/on_publish_done handle lifecycle.
-                                // Nothing to restart — wait for encoder reconnect.
                             } else {
-                                // Pull channel: refresh ingest without stopping push.
                                 $manager->refreshIngest($ch);
                                 $this->lastAutoRestart[$ch->id] = time();
+                                $this->restartsInWindow++;
                                 $this->line(sprintf(
-                                    '[%s] %-22s  AUTO-REFRESH: trying next source (cd=%ds)',
+                                    '[%s] %-22s  AUTO-REFRESH: trying next source (cd=%ds, failures=%d)',
                                     now()->format('H:i:s'),
                                     mb_substr($ch->name, 0, 22),
-                                    $cooldown
+                                    $cooldown,
+                                    $failures + 1
                                 ));
                             }
                         } catch (\Throwable $e) {
                             Log::error("Auto-recovery failed for {$ch->name}: {$e->getMessage()}");
                         }
+                    } else {
+                        unset($this->consecutiveFailures[$ch->id]);
                     }
                 });
 

@@ -17,6 +17,10 @@ class FFmpegService
 
     protected string $ffprobeBin;
 
+    /** Hard cap on total ffmpeg processes across all channels. Prevents CPU
+     *  saturation when many channels restart simultaneously or fail rapidly. */
+    private const MAX_FFMPEG_PROCESSES = 64;
+
     public function __construct(protected YoutubeService $youtube)
     {
         $this->ffmpegBin = config('skymedia.ffmpeg_binary', 'ffmpeg');
@@ -697,6 +701,70 @@ class FFmpegService
     // ===================================================================
 
     /**
+     * Count how many ffmpeg processes are currently running on the system.
+     */
+    public function countFfmpegProcesses(): int
+    {
+        exec('pgrep -c -f "ffmpeg" 2>/dev/null', $out, $code);
+        if ($code === 0 && ! empty($out)) {
+            return (int) trim($out[0]);
+        }
+
+        return 0;
+    }
+
+    /**
+     * Kill all ffmpeg processes on the system (emergency recovery).
+     * Returns the number of processes killed.
+     */
+    public function killAllFfmpeg(): int
+    {
+        $before = $this->countFfmpegProcesses();
+        exec('pkill -9 -f "ffmpeg" 2>/dev/null');
+        usleep(500_000); // 500ms for kernel to reap
+        $after = $this->countFfmpegProcesses();
+
+        if ($after > 0) {
+            // Some survived — force kill with pkill -9 -f
+            exec('killall -9 ffmpeg 2>/dev/null');
+            usleep(500_000);
+        }
+
+        $killed = $before - $this->countFfmpegProcesses();
+        if ($killed > 0) {
+            Log::warning("[FFmpeg] Emergency: killed {$killed} ffmpeg processes ({$before} → {$this->countFfmpegProcesses()})");
+        }
+
+        return max(0, $killed);
+    }
+
+    /**
+     * Check whether the system is within the ffmpeg process cap.
+     * If over the cap, kill the oldest/least important processes first.
+     */
+    public function enforceProcessCap(): bool
+    {
+        $count = $this->countFfmpegProcesses();
+        if ($count < self::MAX_FFMPEG_PROCESSES) {
+            return true;
+        }
+
+        Log::warning("[FFmpeg] Process cap reached ({$count}/" . self::MAX_FFMPEG_PROCESSES . ') — killing oldest processes');
+
+        // Kill processes sorted by CPU usage (least active first)
+        // Use ps to find ffmpeg processes with lowest CPU and kill them
+        exec("ps aux | grep '[f]fmpeg' | sort -k3 -n | head -n " . ($count - self::MAX_FFMPEG_PROCESSES + 5) . " | awk '{print $2}' 2>/dev/null", $pids);
+        foreach ($pids as $pid) {
+            $pid = (int) trim($pid);
+            if ($pid > 0) {
+                $this->stopProcess($pid, 2);
+            }
+        }
+
+        return $this->countFfmpegProcesses() < self::MAX_FFMPEG_PROCESSES;
+    }
+
+    /**
      * Launch an ffmpeg process in the background.
      * For push-ingest RTMP listeners, wraps ffmpeg in a shell loop so the
      * listener restarts immediately after the encoder disconnects — the port
@@ -709,6 +777,11 @@ class FFmpegService
             if (! is_dir($dir)) {
                 mkdir($dir, 0755, true);
             }
+        }
+
+        // Enforce global ffmpeg process cap to prevent CPU saturation
+        if (! $this->enforceProcessCap()) {
+            throw new \RuntimeException('ffmpeg process cap reached (' . self::MAX_FFMPEG_PROCESSES . ') — too many processes. Some channels may need to be stopped.');
         }
 
         // Rotate log when it exceeds 200 KB
@@ -1243,6 +1316,7 @@ class FFmpegService
                 } catch (\Throwable $e) {
                     throw new \RuntimeException("YouTube URL resolution failed: {$e->getMessage()}");
                 }
+
                 return array_merge([
                     '-re',
                     '-fflags',             '+genpts+discardcorrupt',
@@ -1524,6 +1598,66 @@ class FFmpegService
 
         return [
             '-c:a', $ffCodec,
+            '-b:a', ((int) ($channel->push_audio_bitrate ?? 128)) . 'k',
+            '-ar',  (string) (int) ($channel->push_audio_samplerate ?? 48000),
+            '-ac',  (string) (int) ($channel->push_audio_channels ?? 2),
+        ];
+    }
+
+    // ===================================================================
+    //  RECORDING / COMPRESSION ENCODING FLAGS
+    // ===================================================================
+
+    /**
+     * Video encoding flags for recordings and fallback loop assets.
+     * Always re-encodes with H.264 compression to reduce file sizes
+     * while maintaining broadcast-quality output.
+     *
+     * Uses the channel's configured bitrate when available, falls back
+     * to CRF 23 (visually lossless) for channels without explicit settings.
+     */
+    public function recordingEncodeFlags(Channel $channel): array
+    {
+        $videoFlags = ['-c:v', 'libx264'];
+
+        if (! empty($channel->push_video_bitrate)) {
+            $kbps = (int) $channel->push_video_bitrate;
+            $videoFlags = array_merge($videoFlags, [
+                '-b:v', "{$kbps}k",
+                '-maxrate', (int) ($kbps * 1.2) . 'k',
+                '-bufsize', ($kbps * 2) . 'k',
+            ]);
+        } else {
+            $videoFlags = array_merge($videoFlags, ['-crf', '23']);
+        }
+
+        if (! empty($channel->push_resolution)) {
+            $videoFlags = array_merge($videoFlags, ['-vf', "scale={$channel->push_resolution}"]);
+        }
+
+        $fps = $channel->push_framerate ?? 25;
+        $videoFlags = array_merge($videoFlags, [
+            '-preset', 'medium',
+            '-tune',   'zerolatency',
+            '-g',      (string) ($fps * 2),
+            '-keyint_min', (string) $fps,
+            '-sc_threshold', '0',
+            '-pix_fmt', 'yuv420p',
+            '-threads', '1',
+        ]);
+
+        return $videoFlags;
+    }
+
+    /**
+     * Audio encoding flags for recordings and fallback loop assets.
+     * Always re-encodes to AAC for universal playback compatibility
+     * and smaller file sizes.
+     */
+    public function recordingAudioEncodeFlags(Channel $channel): array
+    {
+        return [
+            '-c:a', 'aac',
             '-b:a', ((int) ($channel->push_audio_bitrate ?? 128)) . 'k',
             '-ar',  (string) (int) ($channel->push_audio_samplerate ?? 48000),
             '-ac',  (string) (int) ($channel->push_audio_channels ?? 2),

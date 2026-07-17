@@ -139,14 +139,21 @@ class PlayoutService
         if ($pid === null) {
             $loopAsset = $this->buildFallbackLoopAsset($channel, $files, 'a');
             if ($loopAsset === null) {
-                return false;
+                // Last resort: try copy-concat with all files. This ensures
+                // ALL recordings are included in the playlist.
+                $copyCmd = $this->buildFallbackCommand($channel, $concatFile, useCopy: true, slot: 'a');
+                $pid = $this->tryStartFallback($channel, $copyCmd, $pidFile, $this->ffmpeg->logFile($channel, 'playout'));
+                if ($pid === null) {
+                    return false;
+                }
+            } else {
+                $pid = $this->tryStartFallback(
+                    $channel,
+                    $this->buildFallbackCommand($channel, $loopAsset, useCopy: false, slot: 'a'),
+                    $pidFile,
+                    $this->ffmpeg->logFile($channel, 'playout')
+                );
             }
-            $pid = $this->tryStartFallback(
-                $channel,
-                $this->buildFallbackCommand($channel, $loopAsset, useCopy: false, slot: 'a'),
-                $pidFile,
-                $this->ffmpeg->logFile($channel, 'playout')
-            );
         }
         if ($pid === null) {
             return false;
@@ -238,19 +245,28 @@ class PlayoutService
             Log::info("[Playout] {$channel->name} building fallback loop asset (this may be slow for large files)");
             $loopAsset = $this->buildFallbackLoopAsset($channel, $files, $slot);
             if ($loopAsset === null) {
-                Log::error("[Playout] {$channel->name}: could not build fallback loop asset");
-                if (! $hasWorkingFallback) {
-                    $channel->update(['playout_pid' => null, 'playout_status' => 'error']);
-                }
+                Log::warning("[Playout] {$channel->name}: re-encode loop asset failed, trying copy-concat with all files");
+                // Last resort: try copy-concat again. Even if it failed before,
+                // transient issues may have resolved. This ensures ALL files are
+                // included in the fallback playlist — never just 1 file.
+                $copyCmd = $this->buildFallbackCommand($channel, $concatFile, useCopy: true, slot: $slot);
+                $pid = $this->tryStartFallback($channel, $copyCmd, $pidFile, $logFile);
+                if ($pid === null) {
+                    Log::error("[Playout] {$channel->name}: all fallback methods exhausted");
+                    if (! $hasWorkingFallback) {
+                        $channel->update(['playout_pid' => null, 'playout_status' => 'error']);
+                    }
 
-                return false;
+                    return false;
+                }
+            } else {
+                $pid = $this->tryStartFallback(
+                    $channel,
+                    $this->buildFallbackCommand($channel, $loopAsset, useCopy: false, slot: $slot),
+                    $pidFile,
+                    $logFile
+                );
             }
-            $pid = $this->tryStartFallback(
-                $channel,
-                $this->buildFallbackCommand($channel, $loopAsset, useCopy: false, slot: $slot),
-                $pidFile,
-                $logFile
-            );
         }
 
         if ($pid === null) {
@@ -562,6 +578,10 @@ class PlayoutService
      * Build a single re-encoded MP4 containing all fallback files concatenated.
      * Used only when stream-copy concat fails (incompatible codecs/params).
      * Returns the path to the loop asset, or null on failure.
+     *
+     * IMPORTANT: Never falls back to a single file. If the re-encode fails,
+     * returns null so the caller can try the copy-concat path with all files
+     * as a last resort. This ensures ALL recordings are always played.
      */
     private function buildFallbackLoopAsset(Channel $channel, array $files, string $slot = 'a'): ?string
     {
@@ -572,8 +592,13 @@ class PlayoutService
         // normalises codec params so the loop plays cleanly.
         $concatFile = $this->buildConcatList($channel, $files, repeat: 1, slot: $slot);
 
-        // Re-encode the loop asset to the channel's configured output settings
-        // so fallback quality matches the live push.
+        // Re-encode the loop asset with compression to reduce disk usage.
+        // Use the channel's configured output settings so fallback quality
+        // matches the live push, with CRF fallback for channels without
+        // explicit bitrate settings.
+        $encodeFlags = $this->ffmpeg->recordingEncodeFlags($channel);
+        $audioFlags = $this->ffmpeg->recordingAudioEncodeFlags($channel);
+
         $cmd = array_merge([
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
@@ -582,20 +607,23 @@ class PlayoutService
             '-safe', '0',
             '-f',    'concat',
             '-i',    $concatFile,
-        ], $this->ffmpeg->videoEncodeFlags($channel), $this->ffmpeg->audioEncodeFlags($channel), [
+        ], $encodeFlags, $audioFlags, [
             '-movflags', '+faststart',
             $output,
         ]);
 
         $proc = new Process($cmd);
-        $proc->setTimeout(300);
+        $proc->setTimeout(900);
         $proc->run();
 
         if (! $proc->isSuccessful() || ! file_exists($output) || filesize($output) < 1024) {
             Log::error("[Playout] {$channel->name} fallback loop asset failed: " . $proc->getErrorOutput());
 
-            // Last resort: return the first file so something plays
-            return $files[0] ?? null;
+            // Do NOT return $files[0] — that would break playlist playback.
+            // Return null so the caller can try copy-concat with all files.
+            @unlink($output);
+
+            return null;
         }
 
         return $output;
@@ -628,13 +656,15 @@ class PlayoutService
 
     /**
      * How many times to repeat the file list so the concat covers at least
-     * 2 hours. This prevents ffmpeg from reaching the end of the concat list
-     * and exiting before -stream_loop kicks in for the next iteration.
-     * Minimum 3 repetitions regardless of duration.
+     * 24 hours of continuous playout without restarting ffmpeg. This is
+     * critical: when ffmpeg reaches the end of the concat list it exits,
+     * even with -stream_loop -1, in some FFmpeg versions. A sufficiently
+     * long concat file is the only reliable way to guarantee infinite
+     * playback. Minimum 10 repetitions regardless of duration.
      */
     private function fallbackPlaylistRepetitions(array $files): int
     {
-        $targetSeconds = 7200; // 2 hours
+        $targetSeconds = 86400; // 24 hours — playlist must never run out
         $totalDuration = 0.0;
 
         foreach ($files as $f) {
@@ -645,12 +675,12 @@ class PlayoutService
         }
 
         if ($totalDuration <= 0) {
-            return 10;
+            return 50;
         }
 
         $repeat = (int) ceil($targetSeconds / $totalDuration);
 
-        return max(3, min($repeat, 100));
+        return max(10, min($repeat, 500));
     }
 
     private function probeDuration(string $file): float

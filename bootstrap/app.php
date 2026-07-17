@@ -37,6 +37,7 @@ return Application::configure(basePath: dirname(__DIR__))
     })
     ->withSchedule(function (Schedule $schedule) {
         $schedule->command('dvr:cleanup')->everyFiveMinutes()->withoutOverlapping();
+        $schedule->command('disk:cleanup --target=95')->everyTwoMinutes()->withoutOverlapping();
         $schedule->command('streams:schedule')->everyMinute()->withoutOverlapping();
     })
     ->withCommands([

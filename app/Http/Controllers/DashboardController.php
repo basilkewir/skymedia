@@ -11,6 +11,10 @@ use Illuminate\Http\RedirectResponse;
 
 class DashboardController extends Controller
 {
+    /** Cache system metrics for 10 seconds to avoid repeated /proc reads under load */
+    private static ?array $cachedMetrics = null;
+    private static int $metricsCachedAt = 0;
+
     public function index(): Response|RedirectResponse
     {
         if (! auth()->user()?->is_admin) return redirect()->route('channels.index');
@@ -61,6 +65,10 @@ class DashboardController extends Controller
         $diskFree = disk_free_space($dvrPath);
         $diskTotal = disk_total_space($dvrPath);
 
+        // Count ffmpeg processes for monitoring
+        exec('pgrep -c -f "ffmpeg" 2>/dev/null', $ffmpegCount, $code);
+        $ffmpegProcesses = ($code === 0 && ! empty($ffmpegCount)) ? (int) trim($ffmpegCount[0]) : 0;
+
         return response()->json([
             'channels' => $channels,
             'system' => $this->systemMetrics(),
@@ -68,14 +76,22 @@ class DashboardController extends Controller
                 'used' => $diskTotal - $diskFree,
                 'total' => $diskTotal,
             ],
+            'ffmpeg_processes' => $ffmpegProcesses,
         ]);
     }
 
     /**
      * Read system CPU / RAM / load metrics from /proc.
+     * Cached for 10 seconds to avoid repeated expensive /proc reads
+     * when the dashboard polls every 5s.
      */
     private function systemMetrics(): array
     {
+        // Return cached metrics if fresh (< 10s old)
+        if (self::$cachedMetrics !== null && (time() - self::$metricsCachedAt) < 10) {
+            return self::$cachedMetrics;
+        }
+
         $load = sys_getloadavg() ?: [0.0, 0.0, 0.0];
         $cpuCores = max(1, (int) shell_exec('nproc 2>/dev/null'));
 
@@ -106,7 +122,7 @@ class DashboardController extends Controller
             }
         }
 
-        return [
+        $metrics = [
             'cpu_percent' => $this->readCpuPercent(),
             'cpu_cores' => $cpuCores,
             'load_average_1m' => round($load[0], 2),
@@ -114,6 +130,11 @@ class DashboardController extends Controller
             'load_average_15m' => round($load[2], 2),
             'memory' => $memory,
         ];
+
+        self::$cachedMetrics = $metrics;
+        self::$metricsCachedAt = time();
+
+        return $metrics;
     }
 
     private function readCpuPercent(): float
@@ -123,7 +144,7 @@ class DashboardController extends Controller
         }
 
         $first = $this->parseProcStat(file_get_contents('/proc/stat'));
-        usleep(250_000);
+        usleep(100_000); // 100ms instead of 250ms to reduce CPU overhead
         $second = $this->parseProcStat(file_get_contents('/proc/stat'));
 
         $totalDiff = $second['total'] - $first['total'];

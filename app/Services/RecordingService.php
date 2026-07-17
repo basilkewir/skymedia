@@ -322,8 +322,17 @@ class RecordingService
         }
 
         $free = disk_free_space($dvrDir);
-        if ($free === false) {
+        $total = disk_total_space($dvrDir);
+        if ($free === false || $total === false) {
             Log::warning("[Recording] {$channel->name}: unable to determine free disk space");
+
+            return false;
+        }
+
+        // Enforce 95% max disk usage — never start recording if disk is 95%+ full
+        $usagePct = $total > 0 ? round(($total - $free) / $total * 100, 1) : 0;
+        if ($usagePct >= 95) {
+            Log::warning("[Recording] {$channel->name}: disk {$usagePct}% full — above 95% limit");
 
             return false;
         }
@@ -443,10 +452,14 @@ class RecordingService
             ]);
         }
 
-        $cmd = array_merge($cmd, [
+        // Compress recordings with H.264 + AAC to significantly reduce file
+        // sizes while maintaining broadcast quality. Uses the channel's
+        // configured output settings (bitrate, resolution, framerate).
+        $encodeFlags = $this->ffmpeg->recordingEncodeFlags($channel);
+        $audioFlags = $this->ffmpeg->recordingAudioEncodeFlags($channel);
+
+        $cmd = array_merge($cmd, $encodeFlags, $audioFlags, [
             '-t',                  (string) $segmentDuration,
-            '-c:v',                $channel->recording_burn_timestamp ? 'libx264' : 'copy',
-            '-c:a',                $channel->recording_burn_timestamp ? 'aac' : 'copy',
             '-movflags',           '+faststart',
             '-avoid_negative_ts',  'make_zero',
             '-max_muxing_queue_size', '4096',
