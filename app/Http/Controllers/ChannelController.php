@@ -188,12 +188,17 @@ class ChannelController extends Controller
         $channel->append(['published_ingest_url', 'published_ingest_server']);
         $users = auth()->user()->is_admin ? User::orderBy('name')->get(['id', 'name', 'email']) : collect();
         $sources = $channel->channelSources()->orderBy('priority')->get();
+        $recordings = \App\Models\Recording::where('channel_id', $channel->id)
+            ->where('status', 'completed')
+            ->orderBy('completed_at', 'asc')
+            ->get(['id', 'filename', 'filepath', 'duration', 'filesize', 'completed_at']);
         return Inertia::render('Channels/Edit', [
             'channel' => $channel,
             'users' => $users,
             'isAdmin' => auth()->user()->is_admin ?? false,
             'sources' => $sources,
             'currentSourceId' => $channel->current_source_id,
+            'recordings' => $recordings,
         ]);
     }
 
@@ -627,6 +632,8 @@ class ChannelController extends Controller
             'reencode_ingest' => 'nullable|boolean',
             'youtube_cookies' => 'nullable|string|max:65535',
             'youtube_po_token' => 'nullable|string|max:255',
+            'excluded_recordings' => 'nullable|array',
+            'excluded_recordings.*' => 'integer',
             'rtmp_input_key' => 'nullable|string|max:255',
             'push_protocol' => 'required|in:rtmp,srt,hls',
             'push_url' => 'required|string|max:500',

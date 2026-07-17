@@ -18,8 +18,10 @@ class FFmpegService
     protected string $ffprobeBin;
 
     /** Hard cap on total ffmpeg processes across all channels. Prevents CPU
-     *  saturation when many channels restart simultaneously or fail rapidly. */
-    private const MAX_FFMPEG_PROCESSES = 64;
+     *  saturation when many channels restart simultaneously or fail rapidly.
+     *  With 31 channels each needing ingest+push+relay+fallback = 4 processes,
+     *  minimum capacity is ~124. Set to 256 for headroom. */
+    private const MAX_FFMPEG_PROCESSES = 256;
 
     public function __construct(protected YoutubeService $youtube)
     {

@@ -744,12 +744,17 @@ class PlayoutService
         //    in order, looping back to the oldest after the newest.
         //    Using DB ordering is more reliable than filemtime which can be
         //    affected by filesystem operations (copies, moves, etc.)
+        //    Excluded recordings (operator-selected via UI) are skipped.
+        $excludedIds = $channel->excluded_recordings ?? [];
         $recordings = Recording::where('channel_id', $channel->id)
             ->where('status', 'completed')
             ->orderBy('completed_at', 'asc')
             ->get();
 
         foreach ($recordings as $rec) {
+            if (in_array($rec->id, $excludedIds, true)) {
+                continue;
+            }
             if (file_exists($rec->filepath) && filesize($rec->filepath) >= $minFileSize) {
                 $files[] = $rec->filepath;
             }

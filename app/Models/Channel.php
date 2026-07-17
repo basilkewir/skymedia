@@ -34,7 +34,7 @@ class Channel extends Model
         // Locale
         'timezone', 'locale',
         // Recording / fallback
-        'record_duration', 'keep_recordings', 'recording_burn_timestamp', 'fallback_recording_path', 'fallback_vod_name',
+        'record_duration', 'keep_recordings', 'recording_burn_timestamp', 'fallback_recording_path', 'fallback_vod_name', 'excluded_recordings',
         // Schedule
         'schedule_start', 'schedule_stop', 'schedule_days',
         // Runtime state
@@ -78,6 +78,7 @@ class Channel extends Model
         'push_audio_channels' => 'integer',
         'storage_quota_bytes' => 'integer',
         'storage_used_bytes' => 'integer',
+        'excluded_recordings' => 'array',
         'last_live_at' => 'datetime',
         'last_check_at' => 'datetime',
     ];

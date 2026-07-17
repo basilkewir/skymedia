@@ -380,6 +380,30 @@
                     </div>
                 </Section>
 
+                <!-- Fallback Recording Selection -->
+                <Section v-if="recordings.length > 0 && channel.ingest_mode !== 'push'" title="Fallback Recordings">
+                    <p class="text-xs text-slate-500 mb-3">All recordings play oldest→newest as fallback when the source is offline. Uncheck recordings to exclude them from the fallback playlist.</p>
+                    <div class="space-y-1 max-h-64 overflow-y-auto">
+                        <label v-for="rec in recordings" :key="rec.id"
+                               class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-slate-800/40 cursor-pointer transition-colors">
+                            <input type="checkbox"
+                                   :value="rec.id"
+                                   v-model="form.excluded_recordings"
+                                   class="form-checkbox rounded" />
+                            <div class="flex-1 min-w-0">
+                                <div class="text-sm text-slate-300 truncate">{{ rec.filename }}</div>
+                                <div class="text-xs text-slate-500">
+                                    {{ formatDuration(rec.duration) }} &middot; {{ (rec.filesize / 1024 / 1024).toFixed(1) }} MB
+                                    <span v-if="rec.completed_at" class="ml-2">{{ new Date(rec.completed_at).toLocaleDateString() }}</span>
+                                </div>
+                            </div>
+                            <span v-if="form.excluded_recordings.includes(rec.id)" class="text-xs text-red-400">excluded</span>
+                            <span v-else class="text-xs text-emerald-400">included</span>
+                        </label>
+                    </div>
+                    <p class="mt-2 text-xs text-slate-500">{{ recordings.length - form.excluded_recordings.length }} of {{ recordings.length }} recordings in fallback playlist</p>
+                </Section>
+
                 <div class="flex justify-end gap-3 pb-4">
                     <Link :href="route('channels.show', channel.id)"
                           class="px-4 py-2 text-sm text-slate-400 border border-slate-700 rounded-lg hover:border-slate-500 hover:text-white transition-colors">
@@ -415,7 +439,7 @@ import AppLayout from '@/Layouts/AppLayout.vue'
 import FormField from '@/Components/FormField.vue'
 import Section from '@/Components/Section.vue'
 
-const props = defineProps({ channel: Object, users: Array, isAdmin: Boolean, sources: Array, currentSourceId: Number })
+const props = defineProps({ channel: Object, users: Array, isAdmin: Boolean, sources: Array, currentSourceId: Number, recordings: { type: Array, default: () => [] } })
 
 import { ref, onMounted } from 'vue'
 
@@ -437,7 +461,6 @@ const form = useForm({
     source_url:             props.channel.source_url,
     reencode_ingest:        props.channel.reencode_ingest ?? false,
     youtube_cookies:        props.channel.youtube_cookies ?? '',
-    youtube_po_token:       props.channel.youtube_po_token ?? '',
     youtube_po_token:       props.channel.youtube_po_token ?? '',
     push_protocol:          props.channel.push_protocol,
     push_url:               props.channel.push_url,
@@ -463,6 +486,7 @@ const form = useForm({
     locale:                 props.channel.locale              ?? 'en',
     check_interval:         props.channel.check_interval,
     max_retries:            props.channel.max_retries,
+    excluded_recordings:    props.channel.excluded_recordings ?? [],
 })
 
 const fallbackForm = useForm({ fallback_vod: null })
