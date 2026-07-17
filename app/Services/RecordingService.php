@@ -253,11 +253,11 @@ class RecordingService
     public function hasFallback(Channel $channel): bool
     {
         if ($channel->fallback_recording_path && file_exists($channel->fallback_recording_path)) {
-            return filesize($channel->fallback_recording_path) >= 100 * 1024 * 1024;
+            return filesize($channel->fallback_recording_path) >= 1 * 1024 * 1024;
         }
 
         foreach (glob($channel->dvr_directory . '/rec_*.mp4') ?: [] as $f) {
-            if (filesize($f) >= 100 * 1024 * 1024) {
+            if (filesize($f) >= 1 * 1024 * 1024) {
                 return true;
             }
         }

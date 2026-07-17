@@ -723,10 +723,9 @@ class PlayoutService
      */
     private function resolveFallbackFiles(Channel $channel, bool $generateSlate = true): array
     {
-        // Minimum file size: 100 MB. Recordings smaller than this are
-        // typically incomplete, corrupted, or contain only a few seconds of
-        // content. Playing them causes jarring jumps and short loops.
-        $minFileSize = 100 * 1024 * 1024; // 100 MB
+        // Minimum file size for recordings: 1 MB. Keeps truly empty or
+        // truncated files out while accepting legitimate short recordings.
+        $minFileSize = 1 * 1024 * 1024; // 1 MB
 
         // 1. Operator-curated VOD playlist (highest priority)
         $playlist = $channel->media()->where('type', 'vod')->where('is_active', true)->orderBy('sort_order')->get();
