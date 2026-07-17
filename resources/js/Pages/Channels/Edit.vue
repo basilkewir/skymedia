@@ -82,6 +82,11 @@
                                       placeholder="Netscape-format cookies from your browser (for private/restricted streams)&#10;Example:&#10;.youtube.com	TRUE	/	TRUE	0	SID	xxxxx"></textarea>
                             <p class="mt-1 text-xs text-slate-500">Export cookies from your browser using a cookies.txt extension. Required only for age-restricted or private streams.</p>
                         </FormField>
+                        <FormField v-if="form.source_type === 'youtube'" label="YouTube PO Token (optional)" :error="form.errors.youtube_po_token">
+                            <input v-model="form.youtube_po_token" type="text" class="form-input font-mono text-sm"
+                                   placeholder="Visitor data + PO token pair" />
+                            <p class="mt-1 text-slate-500">Bypasses YouTube bot detection. Get one from <a href="https://github.com/nickoala/youtube-po-token" target="_blank" class="text-indigo-400 hover:underline">youtube-po-token</a> or similar tools.</p>
+                        </FormField>
                         <FormField v-if="form.ingest_mode === 'pull'" label="Re-encode on ingest" :error="form.errors.reencode_ingest">
                             <label class="inline-flex items-center gap-2 mt-2">
                                 <input v-model="form.reencode_ingest" type="checkbox" class="form-checkbox rounded" />
@@ -432,6 +437,8 @@ const form = useForm({
     source_url:             props.channel.source_url,
     reencode_ingest:        props.channel.reencode_ingest ?? false,
     youtube_cookies:        props.channel.youtube_cookies ?? '',
+    youtube_po_token:       props.channel.youtube_po_token ?? '',
+    youtube_po_token:       props.channel.youtube_po_token ?? '',
     push_protocol:          props.channel.push_protocol,
     push_url:               props.channel.push_url,
     push_stream_key:        props.channel.push_stream_key,

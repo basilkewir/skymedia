@@ -86,6 +86,11 @@
                                       placeholder="Netscape-format cookies from your browser (for private/restricted streams)&#10;Example:&#10;.youtube.com	TRUE	/	TRUE	0	SID	xxxxx"></textarea>
                             <p class="mt-1 text-xs text-slate-500">Export cookies from your browser using a cookies.txt extension. Required only for age-restricted or private streams.</p>
                         </FormField>
+                        <FormField v-if="channelKind === 'streamed' && form.source_type === 'youtube'" label="YouTube PO Token (optional)" :error="form.errors.youtube_po_token">
+                            <input v-model="form.youtube_po_token" type="text" class="form-input font-mono text-sm"
+                                   placeholder="Visitor data + PO token pair" />
+                            <p class="mt-1 text-slate-500">Bypasses YouTube bot detection. Get one from <a href="https://github.com/nickoala/youtube-po-token" target="_blank" class="text-indigo-400 hover:underline">youtube-po-token</a> or similar tools.</p>
+                        </FormField>
                         <FormField v-if="channelKind === 'streamed'" label="Re-encode on ingest" :error="form.errors.reencode_ingest">
                             <label class="inline-flex items-center gap-2 mt-2">
                                 <input v-model="form.reencode_ingest" type="checkbox" class="form-checkbox rounded" />
@@ -384,6 +389,7 @@ const form = useForm({
     source_type: 'rtmp', ingest_mode: 'push', ingest_port: null, source_url: '',
     reencode_ingest: false,
     youtube_cookies: '',
+    youtube_po_token: '',
     push_protocol: 'rtmp', push_url: '', push_stream_key: '',
     push_username: '', push_password: '',
     push_hls_segment_duration: null, push_hls_list_size: null,

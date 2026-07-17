@@ -626,6 +626,7 @@ class ChannelController extends Controller
             'source_url' => 'nullable|required_if:ingest_mode,pull|string|max:1000',
             'reencode_ingest' => 'nullable|boolean',
             'youtube_cookies' => 'nullable|string|max:65535',
+            'youtube_po_token' => 'nullable|string|max:255',
             'rtmp_input_key' => 'nullable|string|max:255',
             'push_protocol' => 'required|in:rtmp,srt,hls',
             'push_url' => 'required|string|max:500',
