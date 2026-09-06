@@ -409,8 +409,8 @@ class TvPlayoutEngine
             $lastLabel = 'with_ticker';
         }
 
-        // Clock overlay — localtime format uses \: inside the drawtext expression
-        $filterParts[] = "[{$lastLabel}]drawtext=text='%{localtime\\:%H\\\\:%M\\\\:%S}':x=15:y=15:fontcolor=white:fontsize=28:box=1:boxcolor=black@0.5:boxborderw=6[final_video]";
+        // Clock overlay
+        $filterParts[] = "[{$lastLabel}]drawtext=text='%{localtime\:%H\:%M\:%S}':x=15:y=15:fontcolor=white:fontsize=28:box=1:boxcolor=black@0.5:boxborderw=6[final_video]";
         $lastLabel = 'final_video';
 
         // Video encoding
