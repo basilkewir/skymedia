@@ -70,6 +70,7 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('channels/{channel}/playout/youtube', [TvPlayoutController::class, 'addYouTube'])->name('channels.playout.youtube');
     Route::delete('channels/{channel}/playout/items/{item}', [TvPlayoutController::class, 'destroyItem'])->name('channels.playout.items.destroy');
     Route::post('channels/{channel}/playout/reorder', [TvPlayoutController::class, 'reorder'])->name('channels.playout.reorder');
+    Route::post('channels/{channel}/playout/recalculate', [TvPlayoutController::class, 'recalculate'])->name('channels.playout.recalculate');
     Route::post('channels/{channel}/playout/ticker', [TvPlayoutController::class, 'updateTicker'])->name('channels.playout.ticker');
     Route::post('channels/{channel}/playout/logo', [TvPlayoutController::class, 'updateLogo'])->name('channels.playout.logo');
     Route::post('channels/{channel}/playout/toggle-ticker', [TvPlayoutController::class, 'toggleTicker'])->name('channels.playout.toggle-ticker');

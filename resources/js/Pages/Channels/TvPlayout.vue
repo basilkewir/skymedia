@@ -45,7 +45,7 @@
                 </div>
 
                 <!-- Summary stats -->
-                <div class="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div class="mt-6 grid grid-cols-2 sm:grid-cols-5 gap-3">
                     <div class="bg-slate-800/60 rounded-lg px-4 py-3">
                         <div class="text-xs text-slate-500 uppercase tracking-wider">Total Runtime</div>
                         <div class="text-lg font-mono text-emerald-400 font-bold mt-1">{{ summary.formatted_total || '00:00:00' }}</div>
@@ -61,9 +61,29 @@
                         </div>
                     </div>
                     <div class="bg-slate-800/60 rounded-lg px-4 py-3">
+                        <div class="text-xs text-slate-500 uppercase tracking-wider">Ends At</div>
+                        <div class="text-lg font-mono text-rose-400 font-bold mt-1">{{ formatTime(summary.end_anchor) }}</div>
+                    </div>
+                    <div class="bg-slate-800/60 rounded-lg px-4 py-3">
                         <div class="text-xs text-slate-500 uppercase tracking-wider">Output</div>
                         <div class="text-lg font-mono text-cyan-400 font-bold mt-1">HLS → MediaMTX</div>
                     </div>
+                </div>
+
+                <!-- Schedule Controls -->
+                <div class="mt-4 flex items-end gap-3 flex-wrap">
+                    <div v-if="isAdmin" class="flex items-center gap-2">
+                        <label class="text-xs text-slate-500">Start Time (optional)</label>
+                        <input v-model="customStartTime" type="datetime-local" step="1"
+                               class="form-input text-xs font-mono w-56" />
+                    </div>
+                    <button @click="recalculateSchedule"
+                            :disabled="recalculating"
+                            class="px-4 py-1.5 text-xs font-semibold bg-amber-600/20 text-amber-400 border border-amber-500/30 rounded-lg hover:bg-amber-600/30 transition-colors disabled:opacity-50">
+                        {{ recalculating ? 'Updating…' : '↻ Update Playlist' }}
+                    </button>
+                    <span v-if="recalcMessage" class="text-xs text-green-400">{{ recalcMessage }}</span>
+                    <span v-if="recalcError" class="text-xs text-red-400">{{ recalcError }}</span>
                 </div>
             </div>
 
@@ -284,6 +304,10 @@ const youtubeError = ref('')
 const youtubeSuccess = ref('')
 const engineLog = ref('')
 const previewPlayer = ref(null)
+const customStartTime = ref('')
+const recalculating = ref(false)
+const recalcMessage = ref('')
+const recalcError = ref('')
 let hlsPlayer = null
 let statusTimer = null
 
@@ -348,6 +372,41 @@ async function saveReorder() {
         }
     } catch (e) {
         console.error('Reorder failed', e)
+    }
+}
+
+async function recalculateSchedule() {
+    recalculating.value = true
+    recalcMessage.value = ''
+    recalcError.value = ''
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const body = {}
+        if (customStartTime.value) {
+            body.start_time = customStartTime.value
+        }
+        const res = await fetch(route('channels.playout.recalculate', props.channel.id), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+            body: JSON.stringify(body),
+        })
+        const data = await res.json()
+        if (data.success) {
+            items.value = data.items
+            Object.assign(props.summary, data.summary)
+            recalcMessage.value = data.message || 'Playlist updated!'
+            setTimeout(() => recalcMessage.value = '', 4000)
+        } else {
+            recalcError.value = data.error || 'Failed to recalculate'
+        }
+    } catch (e) {
+        recalcError.value = 'Network error: ' + e.message
+    } finally {
+        recalculating.value = false
     }
 }
 

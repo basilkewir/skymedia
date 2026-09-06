@@ -10,7 +10,6 @@ use App\Services\FFmpegService;
 use App\Services\TvPlayoutEngine;
 use App\Services\YouTubeMetadataService;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Process;
@@ -298,6 +297,39 @@ class TvPlayoutController extends Controller
         ]);
     }
 
+    /**
+     * Recalculate the playlist schedule.
+     * Optionally set a custom anchor start time (admin only).
+     */
+    public function recalculate(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $data = $request->validate([
+            'start_time' => 'nullable|string|max:30',
+        ]);
+
+        $anchor = $data['start_time'] ?? null;
+        $summary = $this->engine->recalculateSchedule($channel, $anchor);
+
+        if ($this->engine->isRunning($channel)) {
+            $this->engine->rebuild($channel);
+        }
+
+        $freshItems = $channel->playlistItems()
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Playlist schedule recalculated',
+            'items' => $freshItems,
+            'summary' => $summary,
+        ]);
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     //  CG CONTROLS
     // ═══════════════════════════════════════════════════════════════════
@@ -322,7 +354,7 @@ class TvPlayoutController extends Controller
     /**
      * Update the logo.
      */
-    public function updateLogo(Request $request, Channel $channel): RedirectResponse
+    public function updateLogo(Request $request, Channel $channel): JsonResponse
     {
         abort_unless($channel->source_type === 'tv_playout', 404);
         $this->ensureAccess($channel);
@@ -360,7 +392,7 @@ class TvPlayoutController extends Controller
 
         $this->engine->updateLogo($channel, $media->id);
 
-        return back()->with('success', 'Logo updated');
+        return response()->json(['success' => true, 'message' => 'Logo updated']);
     }
 
     /**
