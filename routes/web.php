@@ -73,6 +73,10 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('channels/{channel}/playout/recalculate', [TvPlayoutController::class, 'recalculate'])->name('channels.playout.recalculate');
     Route::post('channels/{channel}/playout/ticker', [TvPlayoutController::class, 'updateTicker'])->name('channels.playout.ticker');
     Route::post('channels/{channel}/playout/logo', [TvPlayoutController::class, 'updateLogo'])->name('channels.playout.logo');
+    Route::delete('channels/{channel}/playout/logo', [TvPlayoutController::class, 'removeLogo'])->name('channels.playout.logo.remove');
+    Route::get('channels/{channel}/playout/logo-preview', [TvPlayoutController::class, 'logoPreview'])->name('channels.playout.logo.preview');
+    Route::post('channels/{channel}/playout/logo-scale', [TvPlayoutController::class, 'updateLogoScale'])->name('channels.playout.logo-scale');
+    Route::post('channels/{channel}/playout/logo-toggle', [TvPlayoutController::class, 'toggleLogo'])->name('channels.playout.logo-toggle');
     Route::post('channels/{channel}/playout/logo-position', [TvPlayoutController::class, 'updateLogoPosition'])->name('channels.playout.logo-position');
     Route::post('channels/{channel}/playout/toggle-ticker', [TvPlayoutController::class, 'toggleTicker'])->name('channels.playout.toggle-ticker');
 

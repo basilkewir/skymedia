@@ -105,6 +105,8 @@ class TvPlayoutController extends Controller
             'is_running' => $this->engine->isRunning($channel),
             'playout_status' => $channel->fresh()->playout_status,
             'playout_pid' => $channel->fresh()->playout_pid,
+            'push_status' => $channel->fresh()->push_status,
+            'push_running' => $this->engine->isPushRunning($channel),
             'current_item' => $item ? [
                 'title' => $item->title,
                 'duration' => $item->formatted_duration,
@@ -360,8 +362,8 @@ class TvPlayoutController extends Controller
         $this->ensureAccess($channel);
 
         $data = $request->validate([
-            'x' => 'required|integer|min:0|max:3840',
-            'y' => 'required|integer|min:0|max:2160',
+            'x' => 'required|integer|min:-3840|max:3840',
+            'y' => 'required|integer|min:-2160|max:2160',
         ]);
 
         $this->engine->updateLogoPosition($channel, "{$data['x']}:{$data['y']}");
@@ -387,7 +389,7 @@ class TvPlayoutController extends Controller
             mkdir($directory, 0755, true);
         }
 
-        // Remove old logo
+        // Remove old logo files on disk
         foreach (glob($directory . '/logo.*') ?: [] as $old) {
             @unlink($old);
         }
@@ -396,21 +398,98 @@ class TvPlayoutController extends Controller
         $filepath = $directory . '/logo.' . $ext;
         $file->move($directory, 'logo.' . $ext);
 
-        // Create a ChannelMedia entry
+        // Create a ChannelMedia entry (updateLogo() will clean up old ones)
         $media = \App\Models\ChannelMedia::create([
             'channel_id' => $channel->id,
             'type' => 'vod',
             'name' => 'Logo',
             'filepath' => $filepath,
             'mime_type' => $file->getMimeType(),
-            'filesize' => $file->getSize(),
+            'filesize' => filesize($filepath),
             'sort_order' => 0,
             'is_active' => true,
         ]);
 
         $this->engine->updateLogo($channel, $media->id);
 
-        return response()->json(['success' => true, 'message' => 'Logo updated']);
+        return response()->json(['success' => true, 'message' => 'Logo updated', 'logo_media_id' => $media->id]);
+    }
+
+    /**
+     * Serve the logo image file for browser preview.
+     * Logo files live outside the public directory so they need a controller route.
+     */
+    public function logoPreview(Channel $channel): \Symfony\Component\HttpFoundation\Response
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $dir = $channel->dvr_directory . '/cg';
+        foreach (['png', 'jpg', 'jpeg', 'webp'] as $ext) {
+            $path = "{$dir}/logo.{$ext}";
+            if (file_exists($path)) {
+                $mime = match ($ext) {
+                    'jpg', 'jpeg' => 'image/jpeg',
+                    'webp'        => 'image/webp',
+                    default       => 'image/png',
+                };
+                return response()->file($path, [
+                    'Content-Type'  => $mime,
+                    'Cache-Control' => 'no-cache, no-store',
+                ]);
+            }
+        }
+
+        abort(404);
+    }
+
+    /**
+     * Remove the logo entirely.
+     */
+    public function removeLogo(Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $directory = $channel->dvr_directory . '/cg';
+        foreach (glob($directory . '/logo.*') ?: [] as $old) {
+            @unlink($old);
+        }
+        \App\Models\ChannelMedia::where('channel_id', $channel->id)
+            ->where('name', 'Logo')
+            ->get()->each(fn ($m) => $m->delete());
+
+        $this->engine->updateLogo($channel, null);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Update logo scale (% of video width).
+     */
+    public function updateLogoScale(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $data = $request->validate(['scale' => 'required|integer|min:1|max:50']);
+        $this->engine->updateLogoScale($channel, $data['scale']);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Toggle logo overlay on/off.
+     */
+    public function toggleLogo(Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $this->engine->toggleLogoEnabled($channel);
+        $channel->refresh();
+
+        return response()->json(['success' => true, 'logo_enabled' => (bool) $channel->logo_enabled]);
     }
 
     /**

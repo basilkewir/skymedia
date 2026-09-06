@@ -14,12 +14,14 @@ use Illuminate\Support\Facades\Log;
 /**
  * TvPlayoutEngine — manages TV playout channels that run entirely on the VPS.
  *
- * These channels have NO external ingest and NO push output.
  * FFmpeg reads a concat playlist file, applies CG overlays (logo, ticker, clock),
  * and outputs HLS segments that MediaMTX serves as the distribution edge.
+ * When push_url is configured, a second ffmpeg process reads live.m3u8 and
+ * pushes to the external RTMP/SRT server continuously.
  *
  * Architecture:
  *   playlist_items (DB) → concat.txt → FFmpeg (filter_complex) → HLS → MediaMTX
+ *                                                                    └──→ Push ffmpeg → RTMP/SRT
  */
 class TvPlayoutEngine
 {
@@ -50,6 +52,7 @@ class TvPlayoutEngine
         // Write initial CG files
         $this->writeTickerFile($channel);
         $this->writeMetaFile($channel);
+        $this->updateLogoSymlink($channel);
 
         // Build the concat playlist file
         $concatFile = $this->buildConcatFile($channel);
@@ -82,6 +85,11 @@ class TvPlayoutEngine
 
         Log::info("[TvPlayout] {$channel->name} started — PID {$pid}");
 
+        // Start external push if configured
+        if (! empty($channel->push_url)) {
+            $this->startPush($channel);
+        }
+
         return true;
     }
 
@@ -90,6 +98,8 @@ class TvPlayoutEngine
      */
     public function stop(Channel $channel): void
     {
+        $this->stopPush($channel);
+
         $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
         $pid = $this->ffmpeg->readPid($pidFile);
         if ($pid > 0) {
@@ -102,6 +112,8 @@ class TvPlayoutEngine
             'stream_status' => 'stopped',
             'playout_status' => 'stopped',
             'playout_pid' => null,
+            'push_pid' => null,
+            'push_status' => 'stopped',
             'source_live' => false,
         ]);
 
@@ -116,6 +128,95 @@ class TvPlayoutEngine
         $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
         $pid = $this->ffmpeg->readPid($pidFile);
         return $pid > 0 && $this->ffmpeg->isRunning($pid);
+    }
+
+    /**
+     * Start the external RTMP/SRT push process reading live.m3u8.
+     * Called automatically by start() when push_url is set.
+     * Safe to call again if already running (no-op).
+     */
+    public function startPush(Channel $channel): bool
+    {
+        if (empty($channel->push_url)) {
+            return false;
+        }
+
+        if ($this->isPushRunning($channel)) {
+            return true;
+        }
+
+        // live.m3u8 must exist before push can read it.
+        // Wait up to 10s for the HLS engine to write the first segment.
+        $m3u8 = $channel->dvr_directory . '/live.m3u8';
+        $waited = 0;
+        while (! file_exists($m3u8) && $waited < 10) {
+            sleep(1);
+            $waited++;
+        }
+
+        if (! file_exists($m3u8)) {
+            Log::warning("[TvPlayout] {$channel->name}: live.m3u8 not ready, push deferred");
+            return false;
+        }
+
+        $cmd = $this->ffmpeg->buildPushCommand($channel, $m3u8);
+        $pidFile = $this->ffmpeg->pidFile($channel, 'push');
+        $logFile = $this->ffmpeg->logFile($channel, 'push');
+
+        try {
+            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 6);
+        } catch (\Throwable $e) {
+            Log::error("[TvPlayout] {$channel->name} push failed to start: {$e->getMessage()}");
+            $channel->update(['push_status' => 'error', 'last_error' => substr($e->getMessage(), 0, 500)]);
+            return false;
+        }
+
+        $channel->update(['push_pid' => $pid, 'push_status' => 'live']);
+        Log::info("[TvPlayout] {$channel->name} push started — PID {$pid} → {$channel->push_url}");
+
+        return true;
+    }
+
+    /**
+     * Stop the external push process.
+     */
+    public function stopPush(Channel $channel): void
+    {
+        $pidFile = $this->ffmpeg->pidFile($channel, 'push');
+        $pid = $this->ffmpeg->readPid($pidFile);
+        if ($pid > 0) {
+            $this->ffmpeg->stopProcess($pid);
+        }
+        $this->ffmpeg->clearPid($pidFile);
+        Log::info("[TvPlayout] {$channel->name} push stopped");
+    }
+
+    /**
+     * Check if the external push process is running.
+     */
+    public function isPushRunning(Channel $channel): bool
+    {
+        $pidFile = $this->ffmpeg->pidFile($channel, 'push');
+        $pid = $this->ffmpeg->readPid($pidFile);
+        return $pid > 0 && $this->ffmpeg->isRunning($pid);
+    }
+
+    /**
+     * Watchdog: ensure push is running if it should be.
+     * Called from the monitor tick. Uses exponential backoff.
+     */
+    public function ensurePushRunning(Channel $channel): void
+    {
+        if (empty($channel->push_url) || ! $this->isRunning($channel)) {
+            return;
+        }
+
+        if ($this->isPushRunning($channel)) {
+            return;
+        }
+
+        Log::warning("[TvPlayout] {$channel->name}: push died — restarting");
+        $this->startPush($channel);
     }
 
     /**
@@ -150,7 +251,7 @@ class TvPlayoutEngine
     }
 
     /**
-     * Update logo position (x:y pixels) without restarting if possible.
+     * Update logo position (x:y pixels) — requires restart (baked into filter_complex).
      */
     public function updateLogoPosition(Channel $channel, string $position): void
     {
@@ -172,15 +273,45 @@ class TvPlayoutEngine
     }
 
     /**
-     * Update logo and do a full restart (filter_complex must be rebuilt).
+     * Update logo — swaps the active symlink so ffmpeg picks it up without restart.
+     * Deletes the previous ChannelMedia logo record to avoid accumulation.
      */
     public function updateLogo(Channel $channel, ?int $mediaId): void
     {
+        // Delete old logo media records for this channel (type=logo)
+        if ($channel->logo_media_id && $channel->logo_media_id !== $mediaId) {
+            \App\Models\ChannelMedia::where('channel_id', $channel->id)
+                ->where('name', 'Logo')
+                ->where('id', '!=', $mediaId)
+                ->get()
+                ->each(function ($m) {
+                    @unlink($m->filepath);
+                    $m->delete();
+                });
+        }
         $channel->update(['logo_media_id' => $mediaId]);
+        $this->updateLogoSymlink($channel->fresh());
+    }
+
+    /**
+     * Update logo scale (% of video width, 1–50) — requires restart (baked into filter_complex).
+     */
+    public function updateLogoScale(Channel $channel, int $scale): void
+    {
+        $channel->update(['logo_scale' => max(1, min(50, $scale))]);
         if ($this->isRunning($channel)) {
             $this->stop($channel);
             $this->start($channel->fresh());
         }
+    }
+
+    /**
+     * Toggle logo overlay on/off — swaps symlink to blank PNG, no restart needed.
+     */
+    public function toggleLogoEnabled(Channel $channel): void
+    {
+        $channel->update(['logo_enabled' => ! ($channel->logo_enabled ?? true)]);
+        $this->updateLogoSymlink($channel->fresh());
     }
 
     /**
@@ -366,39 +497,38 @@ class TvPlayoutEngine
             '-i', $concatFile,
         ];
 
-        // Logo overlay input
-        $channel->loadMissing('logoMedia');
-        $logo = $channel->logoMedia;
-        $hasLogo = $logo && file_exists($logo->filepath);
-        if ($hasLogo) {
-            $cmd = array_merge($cmd, ['-loop', '1', '-i', $logo->filepath]);
+        // Logo overlay — always include via movie filter using fixed symlink path.
+        // Symlink points to actual logo or blank PNG; swapping it updates overlay without restart.
+        $this->ensureLogoBlank($channel);
+        $logoActivePath = $this->logoActivePath($channel);
+        $scalePct = max(1, min(50, (int) ($channel->logo_scale ?? 12)));
+
+        // logo_position stored as "x:y" pixels; negative = from right/bottom edge.
+        $position = $channel->logo_position ?? '20:20';
+        if (preg_match('/^(-?\d+):(-?\d+)$/', $position, $m)) {
+            $px = (int) $m[1];
+            $py = (int) $m[2];
+            $ox = $px < 0 ? "W-w{$px}" : (string) $px;
+            $oy = $py < 0 ? "H-h{$py}" : (string) $py;
+            $overlayPos = "{$ox}:{$oy}";
+        } else {
+            $overlayPos = match ($position) {
+                'top-left'     => '20:20',
+                'bottom-left'  => '20:H-h-20',
+                'bottom-right' => 'W-w-20:H-h-20',
+                default        => 'W-w-20:20',
+            };
         }
 
         // Build filter_complex
         $filterParts = [];
         $lastLabel = '0:v';
 
-        // Logo overlay — logo_position stored as "x:y" pixels
-        // Negative values mean offset from right/bottom edge
-        if ($hasLogo) {
-            $position = $channel->logo_position ?? '20:20';
-            if (preg_match('/^(-?\d+):(-?\d+)$/', $position, $m)) {
-                $px = (int) $m[1];
-                $py = (int) $m[2];
-                $ox = $px < 0 ? "W-w{$px}" : (string) $px;
-                $oy = $py < 0 ? "H-h{$py}" : (string) $py;
-                $position = "{$ox}:{$oy}";
-            } else {
-                $position = match ($position) {
-                    'top-left'     => '20:20',
-                    'bottom-left'  => '20:H-h-20',
-                    'bottom-right' => 'W-w-20:H-h-20',
-                    default        => 'W-w-20:20',
-                };
-            }
-            $filterParts[] = "[{$lastLabel}][1:v]scale2ref=w=main_w*0.12:h=-1[logo][base];[base][logo]overlay={$position}[with_logo]";
-            $lastLabel = 'with_logo';
-        }
+        // movie filter re-reads the file on each loop — symlink swap takes effect immediately.
+        $escapedLogoPath = str_replace("'", "'\\''", $logoActivePath);
+        $filterParts[] = "movie='{$escapedLogoPath}':loop=0,scale=iw*{$scalePct}/100:-1[logo_scaled]";
+        $filterParts[] = "[{$lastLabel}][logo_scaled]overlay={$overlayPos}[with_logo]";
+        $lastLabel = 'with_logo';
 
         // Ticker (scrolling text)
         $tickerText = trim((string) $channel->ticker_text);
@@ -502,6 +632,57 @@ class TvPlayoutEngine
     private function cgDirectory(Channel $channel): string
     {
         return $channel->dvr_directory . '/cg';
+    }
+
+    private function logoActivePath(Channel $channel): string
+    {
+        return $this->cgDirectory($channel) . '/logo_active.png';
+    }
+
+    private function logoBlankPath(Channel $channel): string
+    {
+        return $this->cgDirectory($channel) . '/logo_blank.png';
+    }
+
+    /**
+     * Create a 1×1 transparent PNG used when logo is disabled or missing.
+     */
+    private function ensureLogoBlank(Channel $channel): void
+    {
+        $blank = $this->logoBlankPath($channel);
+        if (file_exists($blank)) {
+            return;
+        }
+        // Minimal 1×1 transparent PNG (67 bytes)
+        $png = base64_decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+        );
+        file_put_contents($blank, $png);
+    }
+
+    /**
+     * Point logo_active.png symlink to the real logo or blank PNG.
+     * Called on start, logo upload, logo remove, and toggle.
+     */
+    public function updateLogoSymlink(Channel $channel): void
+    {
+        $this->ensureLogoBlank($channel);
+        $active = $this->logoActivePath($channel);
+
+        $channel->loadMissing('logoMedia');
+        $logo = $channel->logoMedia;
+        $enabled = $channel->logo_enabled ?? true;
+        $target = ($enabled && $logo && file_exists($logo->filepath))
+            ? $logo->filepath
+            : $this->logoBlankPath($channel);
+
+        // Atomic symlink swap
+        $tmp = $active . '.tmp';
+        if (is_link($tmp) || file_exists($tmp)) {
+            unlink($tmp);
+        }
+        symlink($target, $tmp);
+        rename($tmp, $active);
     }
 
     private function tickerFilePath(Channel $channel): string

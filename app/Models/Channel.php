@@ -28,7 +28,7 @@ class Channel extends Model
         'push_audio_codec', 'push_audio_bitrate', 'push_audio_samplerate', 'push_audio_channels',
         // DVR
         'dvr_duration', 'segment_duration', 'dvr_enabled', 'dvr_path',
-        'logo_media_id', 'logo_position', 'ticker_enabled', 'ticker_text',
+        'logo_media_id', 'logo_position', 'logo_scale', 'logo_enabled', 'ticker_enabled', 'ticker_text',
         // Storage quota
         'storage_quota_bytes', 'storage_used_bytes',
         // Locale
@@ -56,6 +56,8 @@ class Channel extends Model
         'segment_duration' => 'integer',
         'dvr_enabled' => 'boolean',
         'reencode_ingest' => 'boolean',
+        'logo_scale' => 'integer',
+        'logo_enabled' => 'boolean',
         'ticker_enabled' => 'boolean',
         'record_duration' => 'integer',
         'keep_recordings' => 'integer',

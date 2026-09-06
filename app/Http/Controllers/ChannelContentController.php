@@ -87,7 +87,7 @@ class ChannelContentController extends Controller
         $this->access($channel);
         $data = $request->validate([
             'playlist' => 'array', 'playlist.*.id' => 'required|integer', 'playlist.*.is_active' => 'required|boolean',
-            'logo_media_id' => 'nullable|integer', 'logo_position' => 'required|in:top-left,top-right,bottom-left,bottom-right',
+            'logo_media_id' => 'nullable|integer', 'logo_position' => ['required', 'regex:/^(top-left|top-right|bottom-left|bottom-right|\d+:\d+)$/'],
             'ticker_enabled' => 'required|boolean', 'ticker_text' => 'nullable|string|max:500',
         ]);
         $brandingChanged = (int) $channel->logo_media_id !== (int) ($data['logo_media_id'] ?? 0)

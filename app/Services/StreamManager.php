@@ -609,6 +609,8 @@ class StreamManager
                 if (! $channel->last_live_at || now()->diffInSeconds($channel->last_live_at) > 60) {
                     $channel->update(['last_live_at' => now()]);
                 }
+                // Push watchdog: restart push if it died
+                $engine->ensurePushRunning($channel->fresh());
             }
             $channel->update(['last_check_at' => now()]);
             return;
@@ -1127,26 +1129,30 @@ class StreamManager
         $cmd = [
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
-'-fflags', '+genpts+discardcorrupt+flush_packets',
-            '-live_start_index',   '-1',
+            '-fflags', '+genpts+discardcorrupt+flush_packets',
+            // No -re: output.m3u8 is a local live HLS playlist already at 1x rate.
+            '-live_start_index',   '-3',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
-'-max_reload', (string) config('skymedia.push_max_reload', 100),
-            '-m3u8_hold_counters', (string) config('skymedia.push_max_reload', 100),
+            '-max_reload', '10',
+            '-m3u8_hold_counters', '10',
             '-i',                  $playlist,
             '-max_muxing_queue_size', '4096',
             '-c:v', 'copy',
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ar',  '48000',
-'-ac', '2',
-            // aresample=async=1 handles timestamp discontinuities in the audio
-            // stream that would otherwise crash the FLV muxer with Broken pipe.
+            '-ac', '2',
             '-af', 'aresample=async=1:first_pts=0',
             '-f',   'flv',
             '-rtmp_live', 'live',
+            '-rtmp_buffer', '3000',
             '-flvflags',  'no_duration_filesize',
             '-flags',     '+global_header',
+            '-bsf:v',     'h264_mp4toannexb',
+            '-max_interleave_delta', '0',
+            '-flush_packets', '1',
+            '-rw_timeout', '15000000',
             $rtmpUrl,
         ];
 

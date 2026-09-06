@@ -73,7 +73,6 @@ class PushService
         $this->killOrphanPushProcesses($channel);
 
         // Verify all old push processes are actually dead before starting a new one.
-        // stopPrimary sends SIGTERM+SIGKILL but the kernel may need a moment.
         $verifyCmd = $this->buildFindPushCmd($channel);
         for ($i = 0; $i < 10; $i++) {
             exec($verifyCmd, $lines);
@@ -87,16 +86,11 @@ class PushService
         Log::info("[Debug] PushService::start {$channel->name} getting playlist");
         $playlist = $this->playout->outputPlaylist($channel);
         Log::info("[Debug] PushService::start {$channel->name} playlist={$playlist} exists=" . (file_exists($playlist) ? 'yes' : 'no') . ' is_link=' . (is_link($playlist) ? 'yes' : 'no'));
-        // output.m3u8 may be a dangling symlink (pointing to live.m3u8 before
-        // the encoder connects). file_exists() returns false for dangling symlinks.
-        // We must allow push to start so it waits for the playlist to become live.
         if (! file_exists($playlist) && ! is_link($playlist)) {
             Log::warning("[Push] {$channel->name}: playlist not ready ({$playlist})");
 
             return false;
         }
-
-        $this->stopPrimary($channel);
 
         Log::info("[Debug] PushService::start {$channel->name} building command");
         $cmd = $this->ffmpeg->buildPushCommand($channel, $playlist);

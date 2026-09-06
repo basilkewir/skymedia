@@ -451,18 +451,23 @@ class FFmpegService
 
         $cmd = [
             $this->ffmpegBin, '-y', '-loglevel', 'warning', '-stats',
-            '-re',
+            // No -re: the input is a local live HLS playlist already at 1x rate.
+            // Adding -re causes push to lag behind the live edge and stutter.
             '-fflags',             '+genpts+discardcorrupt+flush_packets',
             '-thread_queue_size',  '4096',
-            // Low-latency: configurable probe/analyze for fast push startup.
-            '-probesize',          (string) config('skymedia.push_probe_size', 500000),
-            '-analyzeduration',    (string) config('skymedia.push_analyze_duration', 500000),
+            // Enough probe headroom to reliably detect codec params on startup.
+            '-probesize',          '2000000',
+            '-analyzeduration',    '2000000',
             '-err_detect',         'ignore_err',
-            '-live_start_index',   '-1',
+            // Start from the 3rd-to-last segment so push begins on a clean GOP
+            // boundary rather than mid-stream, avoiding broken first frames.
+            '-live_start_index',   '-3',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
-            '-max_reload',         (string) config('skymedia.push_max_reload', 100),
-            '-m3u8_hold_counters', (string) config('skymedia.push_max_reload', 100),
+            // 10 retries is enough to survive a symlink swap; 100 causes
+            // ffmpeg to hang for minutes when the playlist truly disappears.
+            '-max_reload',         '10',
+            '-m3u8_hold_counters', '10',
             '-i',                  $playlistPath,
         ];
 
@@ -579,15 +584,19 @@ class FFmpegService
             // aresample=async=1 handles timestamp discontinuities in the
             // audio stream (RTMP source timestamp jumps) that would
             // otherwise crash the FLV muxer with "Broken pipe".
-            $cmd[] = '-af';
-            $cmd[] = 'aresample=async=1:first_pts=0';
+            // Only apply when re-encoding audio — copy path must not filter.
+            if (! $ingestHandlesEncoding) {
+                $cmd[] = '-af';
+                $cmd[] = 'aresample=async=1:first_pts=0';
+            }
             $cmd[] = '-f';
             $cmd[] = 'flv';
             $cmd[] = '-rtmp_live';
             $cmd[] = 'live';
-            // Low-latency: 1s output buffer for fast push (was 10s).
+            // 3s output buffer — enough to absorb micro-stalls without
+            // overflowing the RTMP server's receive buffer.
             $cmd[] = '-rtmp_buffer';
-            $cmd[] = '1000';
+            $cmd[] = '3000';
             // Skip FLV duration recalculation so Wowza gets the stream
             // header immediately on connect.
             $cmd[] = '-flvflags';
@@ -618,11 +627,11 @@ class FFmpegService
             // jitter and prevents Wowza buffer underruns.
             $cmd[] = '-flush_packets';
             $cmd[] = '1';
-            // Write timeout (5s): if Wowza stops accepting data (buffer
-            // full, network stall), ffmpeg disconnects and the watchdog
-            // restarts it within seconds instead of hanging forever.
+            // Write timeout (15s): absorbs transient network stalls without
+            // killing the push process. 5s was too aggressive — a brief
+            // network hiccup caused a full restart with a visible gap.
             $cmd[] = '-rw_timeout';
-            $cmd[] = '5000000';
+            $cmd[] = '15000000';
             $cmd[] = $pushUrl;
         }
 
