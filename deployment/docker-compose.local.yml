@@ -1,0 +1,16 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    ports:
+      - "8888:80"
+    environment:
+      APP_URL: "http://localhost:8888"
+    volumes:
+      - storage_data:/var/www/skymedia/storage
+      - dvr_data:/var/skymedia/dvr
+
+volumes:
+  storage_data:
+  dvr_data:

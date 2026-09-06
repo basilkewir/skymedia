@@ -38,6 +38,7 @@ RUN rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/*default* 2>
         > /etc/php/8.2/fpm/conf.d/99-uploads.ini
 
 # ── Supervisor ─────────────────────────────────────────────────────
+COPY deployment/supervisord-main.conf   /etc/supervisor/supervisord.conf
 COPY deployment/supervisord-docker.conf /etc/supervisor/conf.d/skymedia.conf
 
 # ── App code ────────────────────────────────────────────────────────
