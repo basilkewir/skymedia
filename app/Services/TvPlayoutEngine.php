@@ -119,26 +119,46 @@ class TvPlayoutEngine
     }
 
     /**
-     * Rebuild the concat file and restart FFmpeg (after playlist reorder/add/remove).
+     * Rebuild the concat file seamlessly — send SIGUSR1 to the running ffmpeg
+     * process so it reloads the concat demuxer without any output gap.
+     * Falls back to a full restart only if the process is not running.
      */
     public function rebuild(Channel $channel): bool
     {
-        $wasRunning = $this->isRunning($channel);
-        if ($wasRunning) {
-            $this->stop($channel);
-        }
-
-        // Recalculate schedule
         $this->recalculateSchedule($channel);
-
-        // Write updated CG files
         $this->writeMetaFile($channel);
 
-        if ($wasRunning || $channel->is_active) {
+        // Rewrite the concat file on disk first
+        $concatFile = $this->buildConcatFile($channel);
+
+        if ($this->isRunning($channel)) {
+            // Signal ffmpeg to reload the concat list — zero gap on air
+            $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
+            $pid = $this->ffmpeg->readPid($pidFile);
+            if ($pid > 0) {
+                posix_kill($pid, SIGUSR1);
+                Log::info("[TvPlayout] {$channel->name} sent SIGUSR1 to PID {$pid} — concat reloaded seamlessly");
+                return true;
+            }
+        }
+
+        if ($channel->is_active) {
             return $this->start($channel->fresh());
         }
 
         return true;
+    }
+
+    /**
+     * Update logo position (x:y pixels) without restarting if possible.
+     */
+    public function updateLogoPosition(Channel $channel, string $position): void
+    {
+        $channel->update(['logo_position' => $position]);
+        if ($this->isRunning($channel)) {
+            $this->stop($channel);
+            $this->start($channel->fresh());
+        }
     }
 
     /**
@@ -152,13 +172,14 @@ class TvPlayoutEngine
     }
 
     /**
-     * Update logo and restart if needed.
+     * Update logo and do a full restart (filter_complex must be rebuilt).
      */
     public function updateLogo(Channel $channel, ?int $mediaId): void
     {
         $channel->update(['logo_media_id' => $mediaId]);
         if ($this->isRunning($channel)) {
-            $this->rebuild($channel);
+            $this->stop($channel);
+            $this->start($channel->fresh());
         }
     }
 
@@ -357,21 +378,25 @@ class TvPlayoutEngine
         $filterParts = [];
         $lastLabel = '0:v';
 
-        // Logo overlay
+        // Logo overlay — logo_position stored as "x:y" pixels
+        // Negative values mean offset from right/bottom edge
         if ($hasLogo) {
-            $position = $channel->logo_position;
-            if (preg_match('/^\d+:\d+$/', $position)) {
-                // Custom x:y coordinates — use directly in overlay position
-                $filterParts[] = "[{$lastLabel}][1:v]scale2ref=w=main_w*0.12:h=-1[logo][base];[base][logo]overlay=$position[with_logo]";
+            $position = $channel->logo_position ?? '20:20';
+            if (preg_match('/^(-?\d+):(-?\d+)$/', $position, $m)) {
+                $px = (int) $m[1];
+                $py = (int) $m[2];
+                $ox = $px < 0 ? "W-w{$px}" : (string) $px;
+                $oy = $py < 0 ? "H-h{$py}" : (string) $py;
+                $position = "{$ox}:{$oy}";
             } else {
                 $position = match ($position) {
-                    'top-left' => '20:20',
-                    'bottom-left' => '20:H-h-20',
+                    'top-left'     => '20:20',
+                    'bottom-left'  => '20:H-h-20',
                     'bottom-right' => 'W-w-20:H-h-20',
-                    default => 'W-w-20:20',
+                    default        => 'W-w-20:20',
                 };
-                $filterParts[] = "[{$lastLabel}][1:v]scale2ref=w=main_w*0.12:h=-1[logo][base];[base][logo]overlay={$position}[with_logo]";
             }
+            $filterParts[] = "[{$lastLabel}][1:v]scale2ref=w=main_w*0.12:h=-1[logo][base];[base][logo]overlay={$position}[with_logo]";
             $lastLabel = 'with_logo';
         }
 
@@ -384,8 +409,8 @@ class TvPlayoutEngine
             $lastLabel = 'with_ticker';
         }
 
-        // Clock overlay
-        $filterParts[] = "[{$lastLabel}]drawtext=text='%{localtime\\:%H\\:%M\\:%S}':x=15:y=15:fontcolor=white:fontsize=28:box=1:boxcolor=black@0.5:boxborderw=6[final_video]";
+        // Clock overlay — localtime format uses \: inside the drawtext expression
+        $filterParts[] = "[{$lastLabel}]drawtext=text='%{localtime\\:%H\\\\:%M\\\\:%S}':x=15:y=15:fontcolor=white:fontsize=28:box=1:boxcolor=black@0.5:boxborderw=6[final_video]";
         $lastLabel = 'final_video';
 
         // Video encoding
@@ -417,7 +442,7 @@ class TvPlayoutEngine
         ];
 
         // Assemble filter_complex
-        $filterComplex = implode(";\n", $filterParts);
+        $filterComplex = implode(';', $filterParts);
 
         $cmd = array_merge($cmd, [
             '-filter_complex', $filterComplex,

@@ -73,6 +73,7 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('channels/{channel}/playout/recalculate', [TvPlayoutController::class, 'recalculate'])->name('channels.playout.recalculate');
     Route::post('channels/{channel}/playout/ticker', [TvPlayoutController::class, 'updateTicker'])->name('channels.playout.ticker');
     Route::post('channels/{channel}/playout/logo', [TvPlayoutController::class, 'updateLogo'])->name('channels.playout.logo');
+    Route::post('channels/{channel}/playout/logo-position', [TvPlayoutController::class, 'updateLogoPosition'])->name('channels.playout.logo-position');
     Route::post('channels/{channel}/playout/toggle-ticker', [TvPlayoutController::class, 'toggleTicker'])->name('channels.playout.toggle-ticker');
 
     // ── Channels CRUD resource ────────────────────────────────────────────────

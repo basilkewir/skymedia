@@ -352,6 +352,24 @@ class TvPlayoutController extends Controller
     }
 
     /**
+     * Update the logo position (x:y pixels).
+     */
+    public function updateLogoPosition(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $data = $request->validate([
+            'x' => 'required|integer|min:0|max:3840',
+            'y' => 'required|integer|min:0|max:2160',
+        ]);
+
+        $this->engine->updateLogoPosition($channel, "{$data['x']}:{$data['y']}");
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
      * Update the logo.
      */
     public function updateLogo(Request $request, Channel $channel): JsonResponse

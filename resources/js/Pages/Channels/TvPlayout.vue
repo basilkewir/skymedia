@@ -203,19 +203,38 @@
                                            class="form-input text-xs" />
                                 </div>
                             </div>
-                            <FormField label="Logo Position">
-                                <select v-model="logoPosition" class="form-input text-xs">
-                                    <option value="top-right">Top Right</option>
-                                    <option value="top-left">Top Left</option>
-                                    <option value="bottom-right">Bottom Right</option>
-                                    <option value="bottom-left">Bottom Left</option>
-                                </select>
-                            </FormField>
                             <button type="submit" :disabled="!logoFile"
                                     class="px-4 py-2 bg-indigo-600 text-white text-xs rounded-lg disabled:opacity-50 w-full">
                                 Update Logo
                             </button>
                         </form>
+                        <!-- Logo position x/y -->
+                        <div class="mt-4 space-y-2">
+                            <p class="text-xs text-slate-500">Position (pixels from top-left)</p>
+                            <div class="flex gap-2">
+                                <div class="flex-1">
+                                    <label class="text-xs text-slate-500">X</label>
+                                    <input v-model.number="logoX" type="number" min="0" max="3840"
+                                           class="form-input text-xs mt-1" placeholder="20" />
+                                </div>
+                                <div class="flex-1">
+                                    <label class="text-xs text-slate-500">Y</label>
+                                    <input v-model.number="logoY" type="number" min="0" max="2160"
+                                           class="form-input text-xs mt-1" placeholder="20" />
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-1">
+                                <button type="button" @click="setLogoPreset(20, 20)" class="px-2 py-1 text-xs bg-slate-800 text-slate-400 rounded hover:bg-slate-700">↖ Top Left</button>
+                                <button type="button" @click="setLogoPreset(-20, 20)" class="px-2 py-1 text-xs bg-slate-800 text-slate-400 rounded hover:bg-slate-700">↗ Top Right</button>
+                                <button type="button" @click="setLogoPreset(20, -20)" class="px-2 py-1 text-xs bg-slate-800 text-slate-400 rounded hover:bg-slate-700">↙ Bottom Left</button>
+                                <button type="button" @click="setLogoPreset(-20, -20)" class="px-2 py-1 text-xs bg-slate-800 text-slate-400 rounded hover:bg-slate-700">↘ Bottom Right</button>
+                            </div>
+                            <button type="button" @click="saveLogoPosition"
+                                    class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white text-xs rounded-lg w-full">
+                                Apply Position
+                            </button>
+                            <p v-if="logoPositionMessage" class="text-xs text-green-400">{{ logoPositionMessage }}</p>
+                        </div>
                     </div>
 
                     <!-- Ticker -->
@@ -277,10 +296,9 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, watch } from 'vue'
-import { Link, router, useForm } from '@inertiajs/vue3'
+import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { Link, router } from '@inertiajs/vue3'
 import AppLayout from '@/Layouts/AppLayout.vue'
-import FormField from '@/Components/FormField.vue'
 
 const props = defineProps({
     channel: Object,
@@ -295,8 +313,21 @@ const items = ref([...props.items])
 const isRunning = ref(props.isRunning)
 const tickerText = ref(props.channel.ticker_text || '')
 const tickerMessage = ref('')
-const logoPosition = ref(props.channel.logo_position || 'top-right')
+
+// Parse stored "x:y" or named preset into x/y numbers
+function parseLogoPosition(pos) {
+    if (!pos) return { x: 20, y: 20 }
+    const match = pos.match(/^(-?\d+):(-?\d+)$/)
+    if (match) return { x: parseInt(match[1]), y: parseInt(match[2]) }
+    const presets = { 'top-left': [20,20], 'top-right': [-20,20], 'bottom-left': [20,-20], 'bottom-right': [-20,-20] }
+    const [x, y] = presets[pos] || [20, 20]
+    return { x, y }
+}
+const parsedPos = parseLogoPosition(props.channel.logo_position)
+const logoX = ref(parsedPos.x)
+const logoY = ref(parsedPos.y)
 const logoFile = ref(null)
+const logoPositionMessage = ref('')
 const uploading = ref(false)
 const youtubeUrl = ref('')
 const addingYouTube = ref(false)
@@ -565,6 +596,31 @@ async function toggleTicker() {
     } catch (e) {
         console.error('Toggle ticker failed', e)
     }
+}
+
+function setLogoPreset(x, y) {
+    logoX.value = x
+    logoY.value = y
+}
+
+async function saveLogoPosition() {
+    try {
+        const csrfToken = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.playout.logo-position', props.channel.id), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+            body: JSON.stringify({ x: logoX.value, y: logoY.value }),
+        })
+        const data = await res.json()
+        if (data.success) {
+            logoPositionMessage.value = 'Position applied'
+            setTimeout(() => logoPositionMessage.value = '', 3000)
+        }
+    } catch (e) { console.error(e) }
 }
 
 async function uploadLogo() {
