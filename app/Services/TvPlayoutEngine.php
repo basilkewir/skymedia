@@ -230,7 +230,19 @@ class TvPlayoutEngine
         }
 
         if ($files === []) {
-            return null;
+            // No items resolved yet (e.g. YouTube URLs pending prefetch).
+            // Fall back to slate so the engine can start immediately.
+            $slate = $channel->dvr_directory . '/slate.mp4';
+            if (! file_exists($slate) || filesize($slate) < 1024) {
+                try {
+                    app(\App\Console\Commands\GenerateSlate::class)->generateSlate($channel);
+                } catch (\Throwable) {}
+            }
+            if (file_exists($slate) && filesize($slate) > 1024) {
+                $files[] = $slate;
+            } else {
+                return null;
+            }
         }
 
         $totalDuration = $items->sum('duration');
@@ -347,13 +359,19 @@ class TvPlayoutEngine
 
         // Logo overlay
         if ($hasLogo) {
-            $position = match ($channel->logo_position) {
-                'top-left' => '20:20',
-                'bottom-left' => '20:H-h-20',
-                'bottom-right' => 'W-w-20:H-h-20',
-                default => 'W-w-20:20',
-            };
-            $filterParts[] = "[{$lastLabel}][1:v]scale2ref=w=main_w*0.12:h=-1[logo][base];[base][logo]overlay={$position}[with_logo]";
+            $position = $channel->logo_position;
+            if (preg_match('/^\d+:\d+$/', $position)) {
+                // Custom x:y coordinates — use directly in overlay position
+                $filterParts[] = "[{$lastLabel}][1:v]scale2ref=w=main_w*0.12:h=-1[logo][base];[base][logo]overlay=$position[with_logo]";
+            } else {
+                $position = match ($position) {
+                    'top-left' => '20:20',
+                    'bottom-left' => '20:H-h-20',
+                    'bottom-right' => 'W-w-20:H-h-20',
+                    default => 'W-w-20:20',
+                };
+                $filterParts[] = "[{$lastLabel}][1:v]scale2ref=w=main_w*0.12:h=-1[logo][base];[base][logo]overlay={$position}[with_logo]";
+            }
             $lastLabel = 'with_logo';
         }
 
