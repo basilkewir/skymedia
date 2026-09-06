@@ -15,13 +15,35 @@
                                 {{ s.label || s.key }}
                                 <span class="text-slate-600 font-mono ml-1">({{ s.key }})</span>
                             </label>
-                            <input v-if="s.type !== 'boolean'" v-model="form[s.key]"
-                                   :type="s.type === 'integer' || s.type === 'float' ? 'number' : 'text'"
-                                   class="form-input" />
-                            <select v-else v-model="form[s.key]" class="form-input">
-                                <option value="1">Enabled</option>
-                                <option value="0">Disabled</option>
-                            </select>
+                            <div class="flex items-center gap-2">
+                                <input v-if="s.type !== 'boolean'" v-model="form[s.key]"
+                                       :type="s.type === 'integer' || s.type === 'float' ? 'number' : 'text'"
+                                       class="form-input flex-1" />
+                                <select v-else v-model="form[s.key]" class="form-input flex-1">
+                                    <option value="1">Enabled</option>
+                                    <option value="0">Disabled</option>
+                                </select>
+
+                                <!-- YouTube API test button -->
+                                <button v-if="s.key === 'youtube_api_key'"
+                                        type="button"
+                                        @click="testYoutubeKey"
+                                        :disabled="testingYoutube"
+                                        class="px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap"
+                                        :class="youtubeTestResult?.success
+                                            ? 'bg-green-600 hover:bg-green-700 text-white'
+                                            : youtubeTestResult && !youtubeTestResult.success
+                                                ? 'bg-red-600 hover:bg-red-700 text-white'
+                                                : 'bg-slate-700 hover:bg-slate-600 text-slate-300'">
+                                    {{ testingYoutube ? 'Testing…' : youtubeTestResult?.success ? '✓ Valid' : youtubeTestResult ? '✗ Failed' : 'Test Key' }}
+                                </button>
+                            </div>
+                            <!-- YouTube test result message -->
+                            <p v-if="s.key === 'youtube_api_key' && youtubeTestResult"
+                               class="mt-1.5 text-xs"
+                               :class="youtubeTestResult.success ? 'text-green-400' : 'text-red-400'">
+                                {{ youtubeTestResult.message || youtubeTestResult.error }}
+                            </p>
                         </div>
                     </div>
                 </div>
@@ -66,12 +88,39 @@ Object.values(props.settings).forEach(group => {
 })
 
 const saving = ref(false)
+const testingYoutube = ref(false)
+const youtubeTestResult = ref(null)
 
 function submit() {
     saving.value = true
     const payload = Object.entries(form).map(([key, value]) => ({ key, value }))
     router.put(route('settings.update'), { settings: payload }, {
         onFinish: () => { saving.value = false },
+    })
+}
+
+function testYoutubeKey() {
+    testingYoutube.value = true
+    youtubeTestResult.value = null
+
+    // Save first so the test uses the latest key
+    const payload = Object.entries(form).map(([key, value]) => ({ key, value }))
+    router.put(route('settings.update'), { settings: payload }, {
+        preserveScroll: true,
+        onFinish: () => {
+            fetch(route('settings.test-youtube'), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-XSRF-TOKEN': decodeURIComponent(document.cookie.match(/XSRF-TOKEN=([^;]+)/)?.[1] || ''),
+                },
+            })
+                .then(r => r.json())
+                .then(data => { youtubeTestResult.value = data })
+                .catch(() => { youtubeTestResult.value = { success: false, error: 'Network error — could not reach server.' } })
+                .finally(() => { testingYoutube.value = false })
+        },
     })
 }
 </script>

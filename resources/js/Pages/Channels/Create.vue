@@ -31,7 +31,7 @@
 
                 <!-- Source -->
                 <Section title="Channel Type">
-                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <button type="button" @click="selectChannelKind('managed')"
                                 class="text-left rounded-xl border p-4 transition-colors"
                                 :class="channelKind === 'managed' ? 'border-indigo-500 bg-indigo-500/10' : 'border-slate-700 hover:border-slate-600'">
@@ -43,6 +43,12 @@
                                 :class="channelKind === 'streamed' ? 'border-indigo-500 bg-indigo-500/10' : 'border-slate-700 hover:border-slate-600'">
                             <span class="block text-sm font-semibold text-white">Streamed source channel</span>
                             <span class="block mt-1 text-xs text-slate-400">This server pulls an existing HLS, YouTube Live, UDP, MPEG-TS, RTMP, or SRT source URL.</span>
+                        </button>
+                        <button type="button" @click="selectChannelKind('tv_playout')"
+                                class="text-left rounded-xl border p-4 transition-colors"
+                                :class="channelKind === 'tv_playout' ? 'border-emerald-500 bg-emerald-500/10' : 'border-slate-700 hover:border-slate-600'">
+                            <span class="block text-sm font-semibold text-white">TV Playout channel</span>
+                            <span class="block mt-1 text-xs text-slate-400">Runs 100% on the VPS. No ingest, no push. FFmpeg renders a playlist with CG overlays and outputs HLS to MediaMTX.</span>
                         </button>
                     </div>
                 </Section>
@@ -420,6 +426,12 @@ function selectChannelKind(kind) {
         form.ingest_mode = 'push'
         form.source_url = ''
         form.dvr_enabled = false
+    } else if (kind === 'tv_playout') {
+        form.source_type = 'tv_playout'
+        form.ingest_mode = 'pull'
+        form.source_url = 'tv_playout://local'
+        form.dvr_enabled = false
+        form.record_duration = 0
     } else {
         form.source_type = 'hls'
         form.ingest_mode = 'pull'
@@ -469,6 +481,9 @@ function submit() {
     if (channelKind.value === 'managed') {
         form.ingest_mode = 'push'
         form.source_url = ''
+    } else if (channelKind.value === 'tv_playout') {
+        form.ingest_mode = 'pull'
+        form.source_url = 'tv_playout://local'
     } else {
         form.ingest_mode = 'pull'
     }

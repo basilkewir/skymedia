@@ -49,6 +49,8 @@ class PlayoutService
         $link = $this->outputPlaylist($channel);
         $dvrDir = $channel->dvr_directory;
 
+        Log::info("[Playout] {$channel->name} switching to LIVE (priority 1 when ingest is present)");
+
         if (! is_dir($dvrDir)) {
             mkdir($dvrDir, 0755, true);
         }
@@ -202,7 +204,14 @@ class PlayoutService
 
     public function switchToFallback(Channel $channel): bool
     {
-        Log::info("[Playout] {$channel->name} switchToFallback started");
+        Log::info("[Playout] {$channel->name} switchToFallback started — VOD fallback (ingest offline)");
+
+        // Kill any orphan playout processes from previous runs before starting
+        // a new one. Without this, multiple ffmpeg concat loops accumulate on
+        // the same channel — each writing to the same playout_a/b.m3u8 —
+        // wasting CPU and corrupting the output.
+        $this->killOrphanPlayoutProcesses($channel);
+
         $files = $this->resolveFallbackFiles($channel);
         if (empty($files)) {
             Log::warning("[Playout] {$channel->name}: no fallback files available");

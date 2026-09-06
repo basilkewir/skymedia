@@ -127,9 +127,16 @@ class IngestService
      */
     public function startHlsPull(Channel $channel): bool
     {
-        if ($this->isRunning($channel)) {
+        // Kill ALL existing ingest processes for this channel, not just the
+        // one tracked by the PID file. Orphans accumulate when startChannel()
+        // and StartHlsPullIngest job both start ingest, or when syncMediaMtx
+        // Detects a publisher but the PID file is stale.
+        $existingPid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'ingest'));
+        if ($existingPid > 0 && $this->ffmpeg->isRunning($existingPid)) {
             $this->stop($channel);
         } else {
+            // Kill any orphan process writing to live.m3u8 for this channel
+            $this->killOrphanIngestProcesses($channel);
             $pidFile = $this->ffmpeg->pidFile($channel, 'ingest');
             $this->ffmpeg->clearPid($pidFile);
             $channel->update(['pid' => null]);
@@ -366,6 +373,37 @@ class IngestService
         Log::warning("[Ingest] Port {$port} still in use after {$maxSeconds}s — proceeding anyway");
 
         return false;
+    }
+
+    /**
+     * Kill any ffmpeg ingest process for this channel that is not tracked by
+     * the PID file. This prevents duplicate ingests from accumulating when
+     * startChannel() and StartHlsPullIngest job both start ingest, or when
+     * syncMediaMtxPublishers detects a publisher but the PID file is stale.
+     */
+    protected function killOrphanIngestProcesses(Channel $channel): int
+    {
+        $dvrDir = $channel->dvr_directory;
+        $liveM3u8 = "{$dvrDir}/live.m3u8";
+
+        // Find all ffmpeg processes writing to this channel's live.m3u8
+        $output = shell_exec("ps aux | grep ffmpeg | grep -v grep 2>/dev/null") ?: '';
+        $killed = 0;
+        foreach (explode("\n", $output) as $line) {
+            if (! str_contains($line, $liveM3u8)) {
+                continue;
+            }
+            if (preg_match('/^\S+\s+(\d+)/', $line, $m)) {
+                $pid = (int) $m[1];
+                if ($pid > 0) {
+                    $this->ffmpeg->stopProcess($pid, 4);
+                    Log::info("[Ingest] Killed orphan PID {$pid} writing to {$liveM3u8}");
+                    $killed++;
+                }
+            }
+        }
+
+        return $killed;
     }
 
     /**

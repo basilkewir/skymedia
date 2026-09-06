@@ -84,4 +84,39 @@ return [
      * Default: false
      */
     'llod_v3_reencode_ingest' => env('SKYMEDIA_LLOD_V3_REENCODE_INGEST', false),
+
+    /*
+     * Low-latency tuning ─────────────────────────────────────────────────
+     *
+     * ingest_hls_list_size: Number of segments in the ingest HLS playlist.
+     *   Lower = faster failover detection + lower push latency.
+     *   3 segments = 6s buffer (fastest), 5 = 10s (balanced), 10+ = stable.
+     *
+     * push_probe_size: FFmpeg probe size for push input (bytes).
+     *   Lower = faster push startup. 500000 (0.5MB) is good for known-good HLS.
+     *
+     * push_analyze_duration: FFmpeg analyze duration for push input (microseconds).
+     *   Lower = faster push startup. 500000 (0.5s) is good for known-good HLS.
+     *
+     * push_max_reload: Max HLS playlist reloads without new segments before push gives up.
+     *   Lower = faster detection of dead source. 100 = ~100s at 1s reload interval.
+     *
+     * segment_freshness_seconds: How old a segment can be before ingest is considered stale.
+     *   Lower = faster failover. 10s is good for production (prevents false positives).
+     */
+    'ingest_hls_list_size' => env('SKYMEDIA_INGEST_HLS_LIST_SIZE', 3),
+    'ingest_probe_size' => env('SKYMEDIA_INGEST_PROBE_SIZE', 5000000),
+    'ingest_analyze_duration' => env('SKYMEDIA_INGEST_ANALYZE_DURATION', 3000000),
+    'push_probe_size' => env('SKYMEDIA_PUSH_PROBE_SIZE', 500000),
+    'push_analyze_duration' => env('SKYMEDIA_PUSH_ANALYZE_DURATION', 500000),
+    'push_max_reload' => env('SKYMEDIA_PUSH_MAX_RELOAD', 100),
+    'segment_freshness_seconds' => env('SKYMEDIA_SEGMENT_FRESHNESS_SECONDS', 10),
+
+    /*
+     * YouTube Data API v3 key — required for adding YouTube videos to
+     * TV playout playlists. Used to fetch video metadata (title, duration)
+     * without hitting bot detection.
+     * Get a key at: https://console.cloud.google.com/apis/credentials
+     */
+    'youtube_api_key' => env('YOUTUBE_API_KEY', ''),
 ];

@@ -333,18 +333,16 @@ class FFmpegService
             [
                 '-f',                    'hls',
                 '-hls_time',             (string) max(1, (int) $channel->segment_duration),
-                '-hls_list_size',        $dvrEnabled ? '15' : '10',
+                // Low-latency: configurable playlist window for push relay.
+                '-hls_list_size',        (string) config('skymedia.ingest_hls_list_size', 3),
                 '-hls_flags',            'delete_segments+omit_endlist+append_list',
-                '-hls_delete_threshold', $dvrEnabled ? '4' : '3',
+                '-hls_delete_threshold', '1',
                 '-hls_segment_type',     'mpegts',
                 '-hls_segment_filename', $segPattern,
                 '-hls_allow_cache',      '0',
                 '-hls_start_number_source', 'epoch',
                 '-max_muxing_queue_size', '4096',
-                // LLOD v3 — force keyframes every 2 seconds for clean
-                // segment splits and instant playback on the player side.
                 '-force_key_frames',     'expr:gte(t,n_forced*2)',
-                // LLOD v3 — skip B-frames to reduce decoder latency.
                 '-bf',                   '0',
                 $m3u8,
             ]
@@ -397,8 +395,8 @@ class FFmpegService
 
         $inputFlags = [
             '-fflags',          '+genpts+discardcorrupt',
-            '-probesize',       '500000',
-            '-analyzeduration', '500000',
+            '-probesize',       (string) config('skymedia.ingest_probe_size', 5000000),
+            '-analyzeduration', (string) config('skymedia.ingest_analyze_duration', 3000000),
             '-thread_queue_size', '4096',
             '-i',               $rtmpUrl,
         ];
@@ -415,9 +413,10 @@ class FFmpegService
             [
                 '-f',                    'hls',
                 '-hls_time',             (string) max(1, (int) $channel->segment_duration),
-                '-hls_list_size',        $dvrEnabled ? '15' : '10',
+                // Low-latency: configurable playlist window for fast failover.
+                '-hls_list_size',        (string) config('skymedia.ingest_hls_list_size', 3),
                 '-hls_flags',            'delete_segments+omit_endlist+append_list',
-                '-hls_delete_threshold', $dvrEnabled ? '4' : '3',
+                '-hls_delete_threshold', '1',
                 '-hls_segment_type',     'mpegts',
                 '-hls_segment_filename', $segPattern,
                 '-hls_allow_cache',      '0',
@@ -455,16 +454,15 @@ class FFmpegService
             '-re',
             '-fflags',             '+genpts+discardcorrupt+flush_packets',
             '-thread_queue_size',  '4096',
-            '-probesize',          '5000000',
-            '-analyzeduration',    '3000000',
+            // Low-latency: configurable probe/analyze for fast push startup.
+            '-probesize',          (string) config('skymedia.push_probe_size', 500000),
+            '-analyzeduration',    (string) config('skymedia.push_analyze_duration', 500000),
             '-err_detect',         'ignore_err',
-            '-live_start_index',   '-3',
+            '-live_start_index',   '-1',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
-            // Keep reading even when the playlist briefly disappears during
-            // an atomic symlink swap (live ↔ fallback transition).
-            '-max_reload',         '1000',
-            '-m3u8_hold_counters', '1000',
+            '-max_reload',         (string) config('skymedia.push_max_reload', 100),
+            '-m3u8_hold_counters', (string) config('skymedia.push_max_reload', 100),
             '-i',                  $playlistPath,
         ];
 
@@ -578,14 +576,18 @@ class FFmpegService
                 $cmd[] = '-ac';
                 $cmd[] = $audioChannels;
             }
+            // aresample=async=1 handles timestamp discontinuities in the
+            // audio stream (RTMP source timestamp jumps) that would
+            // otherwise crash the FLV muxer with "Broken pipe".
+            $cmd[] = '-af';
+            $cmd[] = 'aresample=async=1:first_pts=0';
             $cmd[] = '-f';
             $cmd[] = 'flv';
             $cmd[] = '-rtmp_live';
             $cmd[] = 'live';
-            // Larger RTMP buffer (10s) prevents Wowza buffer underruns during
-            // source bitrate spikes or brief ingest hiccups.
+            // Low-latency: 1s output buffer for fast push (was 10s).
             $cmd[] = '-rtmp_buffer';
-            $cmd[] = '10000';
+            $cmd[] = '1000';
             // Skip FLV duration recalculation so Wowza gets the stream
             // header immediately on connect.
             $cmd[] = '-flvflags';
@@ -1674,7 +1676,7 @@ class FFmpegService
     {
         $baseUrl = rtrim($destination?->url ?? $channel->push_url ?? '', '/');
         $segDuration = max(1, (int) ($channel->push_hls_segment_duration ?? $channel->segment_duration ?? 4));
-        $listSize = (int) ($channel->push_hls_list_size ?? 10);
+        $listSize = (int) ($channel->push_hls_list_size ?? 3);
 
         // Segments live next to the playlist. If a stream_key is provided, treat it as
         // a sub-directory / path prefix so multiple channels can share one base URL.
@@ -1737,11 +1739,11 @@ class FFmpegService
             return "srt://{$base}/{$dest->stream_key}?{$query}";
         }
 
-        // RTMP
+        // RTMP — same as pushUrl(): do NOT URL-encode credentials.
         $target = "{$baseUrl}/{$dest->stream_key}";
         if ($dest->username || $dest->password) {
-            $user = urlencode($dest->username ?? '');
-            $pass = urlencode($dest->password ?? '');
+            $user = $dest->username ?? '';
+            $pass = $dest->password ?? '';
             $target = preg_replace('#^(rtmps?://)#', "$1{$user}:{$pass}@", $target);
         }
 
@@ -1782,11 +1784,15 @@ class FFmpegService
         }
 
         // RTMP — credentials embedded as rtmp://user:pass@host/app/key
+        // Do NOT URL-encode credentials: FFmpeg's RTMP URL parser uses the
+        // last '@' before the first '/' to split userinfo from host, which
+        // correctly handles passwords containing '@'. URL-encoding (e.g.
+        // '@' → '%40') causes auth failures because FFmpeg sends the
+        // encoded form literally and the server never decodes it.
         $target = $channel->push_target;
         if ($channel->push_username || $channel->push_password) {
-            $user = urlencode($channel->push_username ?? '');
-            $pass = urlencode($channel->push_password ?? '');
-            // Insert credentials after rtmp(s)://
+            $user = $channel->push_username ?? '';
+            $pass = $channel->push_password ?? '';
             $target = preg_replace(
                 '#^(rtmps?://)#',
                 "$1{$user}:{$pass}@",

@@ -11,6 +11,7 @@ use App\Http\Controllers\IngestController;
 use App\Http\Controllers\LogController;
 use App\Http\Controllers\PushController;
 use App\Http\Controllers\SettingsController;
+use App\Http\Controllers\TvPlayoutController;
 use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
 
@@ -60,6 +61,19 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('channels/{channel}/recording/stop', [ChannelController::class, 'stopRecording'])->name('channels.recording.stop');
     Route::delete('recordings/{recording}', [ChannelController::class, 'deleteRecording'])->name('recordings.delete');
 
+    // ── TV Playout (local channels — no ingest, no push) ──────────────────
+    Route::get('channels/{channel}/playout', [TvPlayoutController::class, 'index'])->name('channels.playout');
+    Route::post('channels/{channel}/playout/start', [TvPlayoutController::class, 'start'])->name('channels.playout.start');
+    Route::post('channels/{channel}/playout/stop', [TvPlayoutController::class, 'stop'])->name('channels.playout.stop');
+    Route::get('channels/{channel}/playout/status', [TvPlayoutController::class, 'status'])->name('channels.playout.status');
+    Route::post('channels/{channel}/playout/items', [TvPlayoutController::class, 'addItem'])->name('channels.playout.items.store');
+    Route::post('channels/{channel}/playout/youtube', [TvPlayoutController::class, 'addYouTube'])->name('channels.playout.youtube');
+    Route::delete('channels/{channel}/playout/items/{item}', [TvPlayoutController::class, 'destroyItem'])->name('channels.playout.items.destroy');
+    Route::post('channels/{channel}/playout/reorder', [TvPlayoutController::class, 'reorder'])->name('channels.playout.reorder');
+    Route::post('channels/{channel}/playout/ticker', [TvPlayoutController::class, 'updateTicker'])->name('channels.playout.ticker');
+    Route::post('channels/{channel}/playout/logo', [TvPlayoutController::class, 'updateLogo'])->name('channels.playout.logo');
+    Route::post('channels/{channel}/playout/toggle-ticker', [TvPlayoutController::class, 'toggleTicker'])->name('channels.playout.toggle-ticker');
+
     // ── Channels CRUD resource ────────────────────────────────────────────────
     Route::resource('channels', ChannelController::class);
 
@@ -76,6 +90,7 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     // ── Settings ──────────────────────────────────────────────────────────────
     Route::get('settings', [SettingsController::class, 'index'])->name('settings.index');
     Route::put('settings', [SettingsController::class, 'update'])->name('settings.update');
+    Route::post('settings/test-youtube', [SettingsController::class, 'testYoutubeKey'])->name('settings.test-youtube');
 
     // ── User Management ───────────────────────────────────────────────────────
     Route::resource('users', UserController::class)->only(['index', 'create', 'store', 'show', 'edit', 'update', 'destroy']);
@@ -86,6 +101,9 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
 });
 
 // ── Public HLS output (live / fallback) ─────────────────────────────────
+// Served directly by nginx via alias for slug-based URLs.
+//   /hls/{slug}/{file} → nginx serves /var/skymedia/dvr/{slug}/{file}
+// Numeric ID-based URLs (backward compat) are redirected to slug.
 Route::get('hls/{channel}/{file}', [HlsController::class, 'serve'])
     ->where('file', '.+')
     ->name('hls.serve');

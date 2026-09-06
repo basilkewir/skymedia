@@ -111,6 +111,7 @@ class Channel extends Model
     }
 
     public function media(): HasMany { return $this->hasMany(ChannelMedia::class)->orderBy('sort_order'); }
+    public function playlistItems(): HasMany { return $this->hasMany(PlaylistItem::class)->orderBy('sort_order'); }
     public function logoMedia() { return $this->belongsTo(ChannelMedia::class, 'logo_media_id'); }
 
     public function channelSources(): HasMany
@@ -138,6 +139,11 @@ class Channel extends Model
     public function isPushIngest(): bool
     {
         return $this->ingest_mode === 'push' && in_array($this->source_type, ['rtmp', 'srt'], true);
+    }
+
+    public function isTvPlayout(): bool
+    {
+        return $this->source_type === 'tv_playout';
     }
 
     /**

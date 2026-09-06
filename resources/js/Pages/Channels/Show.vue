@@ -40,6 +40,10 @@
                     </div>
                     </div>
                     <div class="flex items-center gap-2 flex-wrap justify-end">
+                        <Link v-if="channel.source_type === 'tv_playout'" :href="route('channels.playout', channel.id)"
+                              class="px-3 py-1.5 text-xs text-emerald-300 border border-emerald-500/30 rounded-lg hover:bg-emerald-500/10 transition-colors">
+                            🎬 TV Playout
+                        </Link>
                         <Link v-if="isManaged" :href="route('channels.content', channel.id)" class="px-3 py-1.5 text-xs text-indigo-300 border border-indigo-500/30 rounded-lg hover:bg-indigo-500/10">Content Manager</Link>
                         <button v-if="isAdmin || !isManaged" @click="probeStream" :disabled="probing"
                                 class="px-3 py-1.5 text-xs text-slate-300 border border-slate-700 rounded-lg hover:border-slate-500 transition-colors disabled:opacity-40">

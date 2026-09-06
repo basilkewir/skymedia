@@ -27,3 +27,9 @@ bootstrap/cache/*.php
 !.gitignore
 database/database.sqlite
 /public/storage/.gitignore
+.opencode
+.cora/
+storage/app/temp_cache/
+*.sh
+!deployment/*.sh
+emergency_fix*.txt

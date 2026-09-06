@@ -63,7 +63,14 @@ class StreamManager
                 $isPublishing = in_array($channel->rtmp_input_key, $activePaths, true);
                 $ingestRunning = $this->ingest->isRunning($channel);
 
-                if ($isPublishing && ! $ingestRunning) {
+                // Also check if live.m3u8 is being actively updated — a more
+                // reliable signal than PID file for detecting orphan ingests.
+                $liveM3u8 = $channel->dvr_directory . '/live.m3u8';
+                $liveM3u8Fresh = file_exists($liveM3u8)
+                    && (time() - filemtime($liveM3u8)) <= max(5, (int) $channel->segment_duration * 3);
+                $effectivelyRunning = $ingestRunning || $liveM3u8Fresh;
+
+                if ($isPublishing && ! $effectivelyRunning) {
                     // Encoder connected but ingest not running — start it.
                     Log::info("[MediaMTX] {$channel->name} is publishing — starting ingest");
                     if (! $channel->is_active
@@ -81,7 +88,7 @@ class StreamManager
                             Log::error("[MediaMTX] {$channel->name} startHlsPull failed: {$e->getMessage()}");
                         }
                     }
-                } elseif (! $isPublishing && $ingestRunning) {
+                } elseif (! $isPublishing && $effectivelyRunning) {
                     // Encoder disconnected but ingest still running — stop it.
                     Log::info("[MediaMTX] {$channel->name} stopped publishing — stopping ingest");
                     $this->ingest->stop($channel);
@@ -100,6 +107,11 @@ class StreamManager
 
     public function startChannel(Channel $channel): bool
     {
+        // TV playout channels run entirely on the VPS — delegate to TvPlayoutEngine
+        if ($channel->isTvPlayout()) {
+            return app(\App\Services\TvPlayoutEngine::class)->start($channel);
+        }
+
         $channel->update(['is_active' => true, 'stream_status' => 'starting']);
         $this->log($channel, 'info', 'channel_starting', 'Starting channel');
         Log::info("[Debug] startChannel {$channel->name} begin");
@@ -220,8 +232,25 @@ class StreamManager
             return;
         }
 
-        $lastError = $channel->last_error ?? '';
-        if (str_contains($lastError, 'authfailed') || str_contains($lastError, 'AccessManager')) {
+        $lastError = strtolower($channel->last_error ?? '');
+
+        // Also check the push log for the current session, because
+        // last_error is cleared to null on each successful process start
+        // but the log retains fatal auth errors.
+        if ($lastError === '' || ! str_contains($lastError, 'auth')) {
+            $logTail = strtolower($this->ffmpeg->readLogTail(
+                $this->ffmpeg->logFile($channel, 'push'), 40
+            ));
+            foreach (['authfailed', 'accessmanager', 'incorrect username/password'] as $pattern) {
+                if (str_contains($logTail, $pattern)) {
+                    $lastError = $pattern;
+                    break;
+                }
+            }
+        }
+
+        if (str_contains($lastError, 'authfailed') || str_contains($lastError, 'accessmanager')
+            || str_contains($lastError, 'incorrect username/password')) {
             if ($channel->push_status !== 'error') {
                 $channel->update(['push_status' => 'error']);
                 $this->log($channel, 'error', 'push_auth_failed',
@@ -256,6 +285,11 @@ class StreamManager
 
     public function stopChannel(Channel $channel): bool
     {
+        // TV playout channels: delegate to TvPlayoutEngine
+        if ($channel->isTvPlayout()) {
+            return app(\App\Services\TvPlayoutEngine::class)->stop($channel) || true;
+        }
+
         $this->recording->stop($channel);
         $this->push->stop($channel);
         $this->stopHlsRelay($channel);
@@ -557,12 +591,36 @@ class StreamManager
             return;
         }
 
+        // TV playout channels: just check if the playout engine is running
+        if ($channel->isTvPlayout()) {
+            $engine = app(\App\Services\TvPlayoutEngine::class);
+            if (! $engine->isRunning($channel)) {
+                $channel->update([
+                    'stream_status' => 'error',
+                    'playout_status' => 'error',
+                    'source_live' => false,
+                    'last_error' => 'TV playout FFmpeg process died',
+                ]);
+                $this->log($channel, 'error', 'tv_playout_died', 'TV playout FFmpeg process died — restart required');
+            } else {
+                if ($channel->stream_status !== 'live') {
+                    $channel->update(['stream_status' => 'live', 'playout_status' => 'live', 'source_live' => true]);
+                }
+                if (! $channel->last_live_at || now()->diffInSeconds($channel->last_live_at) > 60) {
+                    $channel->update(['last_live_at' => now()]);
+                }
+            }
+            $channel->update(['last_check_at' => now()]);
+            return;
+        }
+
         $channel->update(['last_check_at' => now()]);
 
         // Primary health signal: is the ingest process running and writing fresh
         // segments? This is a *fast* filesystem check — no network round-trip.
         $ingestRunning = $this->ingest->isRunning($channel);
-        $recentSegments = $this->ffmpeg->hasRecentSegments($channel, 20);
+        // Low-latency: configurable freshness window for faster failover detection.
+        $recentSegments = $this->ffmpeg->hasRecentSegments($channel, config('skymedia.segment_freshness_seconds', 10));
 
         // Segment freshness + ingest-process liveness is the authoritative,
         // NON-BLOCKING health signal for *every* source type. A second ffprobe
@@ -711,10 +769,12 @@ class StreamManager
         $this->alert->sendOfflineAlert($channel->fresh(), 'Source unreachable', $this->playout->hasFallback($channel));
 
         // ── Switch to fallback immediately for both push and pull ingest ──
-        // switchToFallback generates slate on-demand if no recordings/VOD exist yet.
+        // VOD fallback ONLY activates when ingest is confirmed dead.
+        // Live ingest is ALWAYS priority 1 when present.
         if ($this->playout->switchToFallback($channel->fresh())) {
             $channel->update(['playout_status' => 'fallback']);
-            $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
+            $this->log($channel, 'info', 'fallback_activated',
+                'Ingest offline — VOD fallback activated (live is priority 1 when present)');
             event(new StreamStatusChanged($channel, 'offline'));
 
             // Restart push and HLS relay so they re-read output.m3u8 from the
@@ -782,9 +842,11 @@ class StreamManager
         }
 
         // Atomically symlink output.m3u8 → live.m3u8.
+        // Live is ALWAYS priority 1 when ingest is present.
         // Fallback loop stays running in the background for instant switch-back.
         $this->playout->switchToLive($channel->fresh());
-        $this->log($channel, 'info', 'switched_to_live', 'Playout switched to live stream');
+        $this->log($channel, 'info', 'switched_to_live',
+            'Ingest recovered — live stream restored (priority 1)');
 
         // Restart push and HLS relay so they re-read output.m3u8 from the
         // new symlink target. ffmpeg's HLS demuxer does not reliably follow
@@ -844,12 +906,15 @@ class StreamManager
             }
         }
 
-        // ── Playout: always make sure output.m3u8 points to live.m3u8 ─
+        // ── Playout: live is ALWAYS priority 1 when ingest is active ──
+        // Force output.m3u8 back to live.m3u8 if it drifted to fallback
+        // (e.g. race condition during transition). This ensures live content
+        // always flows to push when the encoder is connected.
         if (! $this->playout->isLiveOutput($channel) && $this->ffmpeg->liveHlsReady($channel, 2)) {
             $fresh = $channel->fresh();
             $this->playout->switchToLive($fresh);
             $this->log($channel, 'info', 'playout_forced_live',
-                'output.m3u8 was not pointing to live — corrected');
+                'output.m3u8 drifted to fallback — corrected to live (ingest is active)');
             // Restart push so it picks up the corrected symlink target.
             $this->restartPushForTransition($fresh);
         }
@@ -942,21 +1007,24 @@ class StreamManager
         }
 
         // ── If no fallback was available when source dropped, keep trying ──
+        // VOD fallback ONLY activates when ingest is confirmed dead.
         if ($channel->playout_status !== 'fallback') {
             if ($this->playout->switchToFallback($channel)) {
                 $channel->update(['playout_status' => 'fallback', 'stream_status' => 'offline']);
-                $this->log($channel, 'info', 'fallback_activated', 'Playout switched to VOD loop');
+                $this->log($channel, 'info', 'fallback_activated',
+                    'Ingest still offline — VOD fallback activated');
                 event(new StreamStatusChanged($channel, 'offline'));
                 $this->restartPushForTransition($channel);
             }
         }
 
         // ── Fallback watchdog: restart loop if it died (NO retry limit) ──
+        // Keep VOD running while ingest is down — push must never starve.
         if ($channel->playout_status === 'fallback' && ! $this->playout->isFallbackRunning($channel)) {
             $this->log($channel, 'warning', 'fallback_restart', 'Fallback loop died — restarting');
             if ($this->playout->switchToFallback($channel)) {
                 $channel->update(['playout_status' => 'fallback', 'stream_status' => 'offline']);
-                $this->log($channel, 'info', 'fallback_restarted', 'Fallback loop restarted');
+                $this->log($channel, 'info', 'fallback_restarted', 'Fallback loop restarted — push continues');
                 $this->restartPushForTransition($channel);
             } else {
                 $this->log($channel, 'error', 'fallback_restart_failed', 'Fallback restart failed');
@@ -1059,19 +1127,22 @@ class StreamManager
         $cmd = [
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
-            '-fflags',             '+genpts+discardcorrupt',
-            '-live_start_index',   '-3',
+'-fflags', '+genpts+discardcorrupt+flush_packets',
+            '-live_start_index',   '-1',
             '-allowed_extensions', 'ALL',
             '-protocol_whitelist', 'file,crypto,data,http,https,tcp,tls',
-            '-max_reload',         '1000',
-            '-m3u8_hold_counters', '1000',
+'-max_reload', (string) config('skymedia.push_max_reload', 100),
+            '-m3u8_hold_counters', (string) config('skymedia.push_max_reload', 100),
             '-i',                  $playlist,
             '-max_muxing_queue_size', '4096',
             '-c:v', 'copy',
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ar',  '48000',
-            '-ac',  '2',
+'-ac', '2',
+            // aresample=async=1 handles timestamp discontinuities in the audio
+            // stream that would otherwise crash the FLV muxer with Broken pipe.
+            '-af', 'aresample=async=1:first_pts=0',
             '-f',   'flv',
             '-rtmp_live', 'live',
             '-flvflags',  'no_duration_filesize',
@@ -1178,16 +1249,20 @@ class StreamManager
      */
     private function restartPushForTransition(Channel $channel): void
     {
-        // NOTE: The push process reads output.m3u8, which is a symlink that the
-        // playout module swaps atomically between live.m3u8 and playout_a.m3u8.
-        // ffmpeg's HLS demuxer re-resolves that symlink on every playlist reload,
-        // so the running push follows the transition automatically WITHOUT a
-        // restart. Force-restarting it here dropped the external RTMP connection
-        // on every live<->fallback flap (multiple times per minute), making the
-        // relayed stream choppy. We now leave the push running; if it ever truly
-        // dies, the per-tick PushService::ensureRunning() watchdog revives it.
-        $this->stopHlsRelay($channel);
-        $this->startHlsRelay($channel);
+        // Both the external push and the HLS relay read output.m3u8, which is
+        // a symlink that the playout module swaps atomically between
+        // live.m3u8 and playout_a.m3u8.  ffmpeg's HLS demuxer re-resolves
+        // that symlink on every playlist reload, so both processes follow the
+        // transition automatically WITHOUT a restart.
+        //
+        // Previously, killing and restarting the HLS relay on every
+        // live<->fallback transition (multiple times per minute) caused
+        // constant i/o timeouts on the MediaMTX static path, wasted CPU on
+        // reconnection overhead, and made the browser preview flaky.
+        //
+        // We now leave both processes running.  If they ever truly die, the
+        // per-tick watchdogs (PushService::ensureRunning for external push,
+        // isHlsRelayRunning for the relay) will revive them.
     }
 
     /**

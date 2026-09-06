@@ -19,6 +19,11 @@ class SettingsSeeder extends Seeder
             ['key' => 'default_segment_duration','value' => '2',       'type' => 'integer', 'group' => 'dvr',     'label' => 'Default Segment Duration (sec)'],
             ['key' => 'log_retention_days',     'value' => '30',       'type' => 'integer', 'group' => 'system',  'label' => 'Log Retention (days)'],
             ['key' => 'app_name',               'value' => 'SkyMedia', 'type' => 'string',  'group' => 'general', 'label' => 'Application Name'],
+
+            // ── YouTube ─────────────────────────────────────────────────
+            ['key' => 'youtube_api_key',         'value' => '',         'type' => 'string',  'group' => 'youtube', 'label' => 'YouTube Data API v3 Key'],
+            ['key' => 'youtube_proxy',           'value' => '',         'type' => 'string',  'group' => 'youtube', 'label' => 'Residential Proxy URL (optional)'],
+            ['key' => 'youtube_player_client',   'value' => 'tv',       'type' => 'string',  'group' => 'youtube', 'label' => 'yt-dlp Player Client (tv/web/ios/android)'],
         ];
 
         foreach ($defaults as $s) {

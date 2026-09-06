@@ -189,16 +189,35 @@ class PushService
             return true;
         }
 
-        // Auth failure: do not retry automatically
-        $lastError = $channel->last_error ?? '';
-        if (str_contains(strtolower($lastError), 'authfailed')
-            || str_contains(strtolower($lastError), 'accessmanager')
-            || str_contains(strtolower($lastError), 'authentication failed')
-            || str_contains(strtolower($lastError), 'unauthorized')
-            || str_contains(strtolower($lastError), 'incorrect key')
-            || str_contains(strtolower($lastError), 'no authority')) {
+        // Auth failure: do not retry automatically.
+        // Check BOTH the DB last_error field AND the push log directly,
+        // because last_error is cleared to null on each successful start
+        // but the log retains fatal auth errors from the current session.
+        $lastError = strtolower($channel->last_error ?? '');
+        if ($lastError === '' || ! str_contains($lastError, 'auth')) {
+            // Also inspect the push log for the current ffmpeg session.
+            $logTail = strtolower($this->ffmpeg->readLogTail(
+                $this->ffmpeg->logFile($channel, 'push'), 40
+            ));
+            foreach (['authfailed', 'accessmanager', 'incorrect username/password'] as $pattern) {
+                if (str_contains($logTail, $pattern)) {
+                    $lastError = $pattern;
+                    break;
+                }
+            }
+        }
+
+        $isAuthFailure = str_contains($lastError, 'authfailed')
+            || str_contains($lastError, 'accessmanager')
+            || str_contains($lastError, 'authentication failed')
+            || str_contains($lastError, 'unauthorized')
+            || str_contains($lastError, 'incorrect key')
+            || str_contains($lastError, 'incorrect username/password')
+            || str_contains($lastError, 'no authority');
+
+        if ($isAuthFailure) {
             if ($channel->push_status !== 'error') {
-                $channel->update(['push_status' => 'error']);
+                $channel->update(['push_status' => 'error', 'last_error' => 'Auth rejected — check push credentials']);
                 Log::error("[Push] {$channel->name}: auth rejected — fix credentials to resume");
             }
 
