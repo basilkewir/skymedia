@@ -99,6 +99,7 @@ class PreFetchYouTubeStream implements ShouldQueue
                 '--format', 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 '--no-playlist',
                 '--extractor-args', "youtube:player_client={$client}",
+                '--js-runtimes', 'node',
             ];
 
             if ($cookiePath !== null) {

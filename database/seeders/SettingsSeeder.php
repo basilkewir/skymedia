@@ -24,6 +24,7 @@ class SettingsSeeder extends Seeder
             ['key' => 'youtube_api_key',         'value' => '',         'type' => 'string',  'group' => 'youtube', 'label' => 'YouTube Data API v3 Key'],
             ['key' => 'youtube_proxy',           'value' => '',         'type' => 'string',  'group' => 'youtube', 'label' => 'Residential Proxy URL (optional)'],
             ['key' => 'youtube_player_client',   'value' => 'tv',       'type' => 'string',  'group' => 'youtube', 'label' => 'yt-dlp Player Client (tv/web/ios/android)'],
+            ['key' => 'youtube_cookies',         'value' => '',         'type' => 'string',  'group' => 'youtube', 'label' => 'YouTube Cookies (Netscape format, paste contents)'],
         ];
 
         foreach ($defaults as $s) {

@@ -16,7 +16,10 @@
                                 <span class="text-slate-600 font-mono ml-1">({{ s.key }})</span>
                             </label>
                             <div class="flex items-center gap-2">
-                                <input v-if="s.type !== 'boolean'" v-model="form[s.key]"
+                                <textarea v-if="s.key === 'youtube_cookies'" v-model="form[s.key]"
+                                          rows="5" placeholder="Paste Netscape-format cookies here (exported from browser extension)…"
+                                          class="form-input flex-1 font-mono text-xs" />
+                                <input v-else-if="s.type !== 'boolean'" v-model="form[s.key]"
                                        :type="s.type === 'integer' || s.type === 'float' ? 'number' : 'text'"
                                        class="form-input flex-1" />
                                 <select v-else v-model="form[s.key]" class="form-input flex-1">
