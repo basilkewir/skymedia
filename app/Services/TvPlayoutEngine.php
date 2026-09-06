@@ -328,6 +328,7 @@ class TvPlayoutEngine
             '-stream_loop', '-1',
             '-re',
             '-safe', '0',
+            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
             '-f', 'concat',
             '-i', $concatFile,
         ];
