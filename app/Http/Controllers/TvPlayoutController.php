@@ -257,7 +257,7 @@ class TvPlayoutController extends Controller
             $this->engine->rebuild($channel);
         }
 
-        return back()->with('success', 'Item removed');
+        return response()->json(['success' => true, 'message' => 'Item removed']);
     }
 
     /**

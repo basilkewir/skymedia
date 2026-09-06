@@ -84,10 +84,11 @@ class TvPlayoutControllerTest extends TestCase
         Setting::updateOrCreate(['key' => 'youtube_api_key'], ['value' => 'test-key']);
 
         $this->actingAs($this->admin)
-            ->post(route('channels.playout.youtube', $this->channel), [
+            ->postJson(route('channels.playout.youtube', $this->channel), [
                 'youtube_url' => 'https://vimeo.com/12345',
             ])
-            ->assertSessionHasErrors(['youtube_url']);
+            ->assertStatus(422)
+            ->assertJson(['success' => false]);
     }
 
     /** @test */
@@ -110,11 +111,11 @@ class TvPlayoutControllerTest extends TestCase
         ]);
 
         $this->actingAs($this->admin)
-            ->post(route('channels.playout.youtube', $this->channel), [
+            ->postJson(route('channels.playout.youtube', $this->channel), [
                 'youtube_url' => 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
             ])
-            ->assertRedirect()
-            ->assertSessionHas('success');
+            ->assertOk()
+            ->assertJson(['success' => true]);
 
         $this->assertDatabaseHas('playlist_items', [
             'channel_id' => $this->channel->id,
@@ -143,10 +144,11 @@ class TvPlayoutControllerTest extends TestCase
         ]);
 
         $this->actingAs($this->admin)
-            ->post(route('channels.playout.youtube', $this->channel), [
+            ->postJson(route('channels.playout.youtube', $this->channel), [
                 'youtube_url' => 'https://youtu.be/abc12345678',
             ])
-            ->assertRedirect();
+            ->assertOk()
+            ->assertJson(['success' => true]);
 
         $this->assertDatabaseHas('playlist_items', [
             'filepath' => 'youtube:abc12345678',
@@ -159,8 +161,9 @@ class TvPlayoutControllerTest extends TestCase
         $item = PlaylistItem::factory()->create(['channel_id' => $this->channel->id]);
 
         $this->actingAs($this->admin)
-            ->delete(route('channels.playout.items.destroy', [$this->channel, $item]))
-            ->assertRedirect();
+            ->deleteJson(route('channels.playout.items.destroy', [$this->channel, $item]))
+            ->assertOk()
+            ->assertJson(['success' => true]);
 
         $this->assertDatabaseMissing('playlist_items', ['id' => $item->id]);
     }
