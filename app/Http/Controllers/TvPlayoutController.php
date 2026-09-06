@@ -39,12 +39,12 @@ class TvPlayoutController extends Controller
         $summary = $this->engine->recalculateSchedule($channel);
         $isRunning = $this->engine->isRunning($channel);
 
-        // Preview URL: MediaMTX serves live.m3u8
+        // Preview URL: nginx serves HLS directly from DVR directory
         $host = config('skymedia.server_ip');
         if ($host === 'localhost') {
             $host = parse_url((string) config('app.url'), PHP_URL_HOST) ?: 'localhost';
         }
-        $previewUrl = "http://{$host}:8081/hls-static/{$channel->slug}/live.m3u8";
+        $previewUrl = "http://{$host}/hls/{$channel->slug}/live.m3u8";
 
         return Inertia::render('Channels/TvPlayout', [
             'channel' => $channel,
