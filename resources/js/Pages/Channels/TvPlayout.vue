@@ -29,11 +29,10 @@
                         <p class="text-xs text-slate-500 font-mono mt-1">{{ channel.slug }} — Local VPS playout, no ingest, no push</p>
                     </div>
                     <div class="flex items-center gap-2">
-                        <Link :href="route('channels.playout', channel.id)" method="post" as="button"
-                              v-if="!isRunning" @click.prevent="startPlayout"
-                              class="px-4 py-1.5 text-xs font-semibold bg-green-600/20 text-green-400 border border-green-500/30 rounded-lg hover:bg-green-600/30 transition-colors">
+                        <button v-if="!isRunning" @click="startPlayout"
+                                class="px-4 py-1.5 text-xs font-semibold bg-green-600/20 text-green-400 border border-green-500/30 rounded-lg hover:bg-green-600/30 transition-colors">
                             ▶ Start Playout
-                        </Link>
+                        </button>
                         <button v-else @click="stopPlayout"
                                 class="px-4 py-1.5 text-xs font-semibold bg-red-600/20 text-red-400 border border-red-500/30 rounded-lg hover:bg-red-600/30 transition-colors">
                             ■ Stop Playout
