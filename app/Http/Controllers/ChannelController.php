@@ -87,8 +87,8 @@ class ChannelController extends Controller
 
         $data['slug'] = $data['slug'] ?? Str::slug($data['name']);
         $data['dvr_path'] = config('skymedia.dvr_base_path', storage_path('app/dvr')) . '/' . $data['slug'];
-        $data['is_active'] = false;
-        $data['stream_status'] = 'idle';
+        $data['is_active'] = true;
+        $data['stream_status'] = 'starting';
         $data['user_id'] = auth()->id();
 
         if (($data['ingest_mode'] ?? 'pull') === 'push') {
@@ -123,20 +123,33 @@ class ChannelController extends Controller
 
         $channel = Channel::create($data);
 
-        // Managed channels must immediately listen for OBS/vMix publishers.
-        // A stopped listener presents as "Failed to connect to server".
-        if ($channel->fresh()->isPushIngest()) {
-            try {
-                $started = $this->manager->startChannel($channel->fresh());
-            } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::error("[Channel {$channel->id}] store startChannel: {$e->getMessage()}");
-                $started = false;
+        // Auto-start the channel's pipeline so it begins playout immediately.
+        // - Push channels: start the ingest listener (always has a source URL).
+        // - TV playout: only attempt start if playlist items exist; otherwise
+        //   the activate-all command will start it once items are added.
+        // - Regular pull channels (HLS, UDP, YouTube, etc.): start ingest + playout.
+        $started = true;
+        if ($channel->fresh()->isTvPlayout()) {
+            $hasItems = $channel->fresh()->playlistItems()
+                ->where('is_active', true)
+                ->exists();
+            if (! $hasItems) {
+                // No playlist items yet — mark active but skip engine start.
+                // The activate-all command will start it when items are added.
+                goto created;
             }
+        }
+        try {
+            $started = $this->manager->startChannel($channel->fresh());
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error("[Channel {$channel->id}] store startChannel: {$e->getMessage()}");
+            $started = false;
+        }
 
-            if (! $started) {
-                return redirect()->route('channels.show', $channel)
-                    ->with('error', 'Channel created but the ingest listener failed to start. Check the channel status for details.');
-            }
+        created:
+        if (! $started) {
+            return redirect()->route('channels.show', $channel)
+                ->with('error', 'Channel created but the playout pipeline failed to start. Check the channel status for details.');
         }
 
         return redirect()->route('channels.show', $channel)->with('success', 'Channel created');
@@ -651,8 +664,8 @@ class ChannelController extends Controller
             'excluded_recordings.*' => 'integer',
             'rtmp_input_key' => 'nullable|string|max:255',
             'push_protocol' => 'required|in:rtmp,srt,hls',
-            'push_url' => 'required|string|max:500',
-            'push_stream_key' => 'required|string|max:255',
+            'push_url' => 'nullable|string|max:500',
+            'push_stream_key' => 'nullable|string|max:255',
             'push_username' => 'nullable|string|max:255',
             'push_password' => 'nullable|string|max:255',
             // Video
