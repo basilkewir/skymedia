@@ -120,7 +120,7 @@ class TvPlayoutController extends Controller
     /**
      * Add a media file to the playlist.
      */
-    public function addItem(Request $request, Channel $channel): RedirectResponse
+    public function addItem(Request $request, Channel $channel): JsonResponse
     {
         abort_unless($channel->source_type === 'tv_playout', 404);
         $this->ensureAccess($channel);
@@ -143,7 +143,7 @@ class TvPlayoutController extends Controller
         $duration = $this->probeDuration($filepath);
         if ($duration <= 0) {
             @unlink($filepath);
-            return back()->withErrors(['media' => 'Could not read media duration. File may be corrupt or unsupported.']);
+            return response()->json(['success' => false, 'error' => 'Could not read media duration. File may be corrupt or unsupported.'], 422);
         }
 
         $maxOrder = PlaylistItem::where('channel_id', $channel->id)->max('sort_order') ?? 0;
@@ -164,7 +164,10 @@ class TvPlayoutController extends Controller
             $this->engine->rebuild($channel);
         }
 
-        return back()->with('success', "Added: {$file->getClientOriginalName()} ({$this->formatDuration($duration)})");
+        return response()->json([
+            'success' => true,
+            'message' => "Added: {$file->getClientOriginalName()} ({$this->formatDuration($duration)})",
+        ]);
     }
 
     /**
@@ -172,7 +175,7 @@ class TvPlayoutController extends Controller
      * Uses YouTube Data API v3 for metadata (no bot detection).
      * The actual stream URL is extracted by yt-dlp when the item is about to air.
      */
-    public function addYouTube(Request $request, Channel $channel): RedirectResponse
+    public function addYouTube(Request $request, Channel $channel): JsonResponse
     {
         abort_unless($channel->source_type === 'tv_playout', 404);
         $this->ensureAccess($channel);
@@ -185,7 +188,7 @@ class TvPlayoutController extends Controller
         $videoId = YouTubeMetadataService::extractVideoId($url);
 
         if ($videoId === null) {
-            return back()->withErrors(['youtube_url' => 'Invalid YouTube URL. Please provide a valid youtube.com/watch?v= or youtu.be/ link.']);
+            return response()->json(['success' => false, 'error' => 'Invalid YouTube URL. Please provide a valid youtube.com/watch?v= or youtu.be/ link.'], 422);
         }
 
         // Check for duplicates in this channel
@@ -194,18 +197,18 @@ class TvPlayoutController extends Controller
             ->exists();
 
         if ($exists) {
-            return back()->withErrors(['youtube_url' => 'This YouTube video is already in the playlist.']);
+            return response()->json(['success' => false, 'error' => 'This YouTube video is already in the playlist.'], 422);
         }
 
         // Fetch metadata via YouTube Data API v3
         try {
             $meta = app(YouTubeMetadataService::class)->getVideoDetails($videoId);
         } catch (\Throwable $e) {
-            return back()->withErrors(['youtube_url' => "Could not fetch video details: {$e->getMessage()}"]);
+            return response()->json(['success' => false, 'error' => "Could not fetch video details: {$e->getMessage()}"], 422);
         }
 
         if ($meta['duration'] <= 0) {
-            return back()->withErrors(['youtube_url' => 'Could not determine video duration. The video may be live-only or unavailable.']);
+            return response()->json(['success' => false, 'error' => 'Could not determine video duration. The video may be live-only or unavailable.'], 422);
         }
 
         $maxOrder = PlaylistItem::where('channel_id', $channel->id)->max('sort_order') ?? 0;
@@ -220,13 +223,16 @@ class TvPlayoutController extends Controller
 
         $summary = $this->engine->recalculateSchedule($channel);
 
-        return back()->with('success', "Added YouTube: {$meta['title']} ({$this->formatDuration($meta['duration'])})");
+        return response()->json([
+            'success' => true,
+            'message' => "Added YouTube: {$meta['title']} ({$this->formatDuration($meta['duration'])})",
+        ]);
     }
 
     /**
      * Remove a playlist item.
      */
-    public function destroyItem(Channel $channel, PlaylistItem $item): RedirectResponse
+    public function destroyItem(Channel $channel, PlaylistItem $item): JsonResponse
     {
         abort_unless($channel->source_type === 'tv_playout', 404);
         $this->ensureAccess($channel);

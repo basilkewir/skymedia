@@ -145,6 +145,12 @@ class ChannelController extends Controller
     public function show(Channel $channel): Response
     {
         $this->ensureChannelAccess($channel);
+
+        // TV playout channels go straight to their master control page
+        if ($channel->source_type === 'tv_playout') {
+            return redirect()->route('channels.playout', $channel);
+        }
+
         $isAdmin = (bool) (auth()->user()->is_admin ?? false);
         $channel->append(['published_ingest_url', 'published_ingest_server']);
         $channel->load([

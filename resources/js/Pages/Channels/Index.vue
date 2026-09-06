@@ -30,7 +30,7 @@
                     <tbody class="divide-y divide-slate-800/50">
                         <tr v-for="ch in channels.data" :key="ch.id" class="hover:bg-slate-800/20 transition-colors">
                             <td class="px-6 py-4">
-                                <Link :href="route('channels.show', ch.id)"
+                                <Link :href="ch.source_type === 'tv_playout' ? route('channels.playout', ch.id) : route('channels.show', ch.id)"
                                       class="text-sm font-medium text-indigo-400 hover:text-indigo-300 transition-colors">
                                     {{ ch.name }}
                                 </Link>
@@ -55,7 +55,7 @@
                             <td v-if="isAdmin" class="px-6 py-4 text-sm text-slate-400">{{ ch.dvr_segments_count ?? 0 }}</td>
                             <td class="px-6 py-4">
                                 <div class="flex items-center justify-end gap-3">
-                                    <Link :href="route('channels.show', ch.id)"
+                                    <Link :href="ch.source_type === 'tv_playout' ? route('channels.playout', ch.id) : route('channels.show', ch.id)"
                                           class="text-xs text-slate-400 hover:text-white transition-colors">Manage</Link>
                                     <Link v-if="isAdmin || ch.ingest_mode !== 'push'" :href="route('channels.edit', ch.id)"
                                           class="text-xs text-slate-400 hover:text-white transition-colors">Edit</Link>
