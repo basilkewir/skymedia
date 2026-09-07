@@ -62,9 +62,14 @@ class TvPlayoutEngine
         }
 
         // Build and start the FFmpeg command
-        $cmd = $this->buildCommand($channel, $concatFile);
+        $resumeOffset = (int) ($channel->playout_resume_offset ?? 0);
+        $cmd = $this->buildCommand($channel, $concatFile, $resumeOffset);
         $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
         $logFile = $this->ffmpeg->logFile($channel, 'tv_playout');
+
+        // Prepend TZ env so FFmpeg localtime() in drawtext uses the channel's timezone
+        $timezone = $channel->timezone ?? config('app.timezone', 'UTC');
+        array_unshift($cmd, 'env', "TZ={$timezone}");
 
         try {
             $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 6);
@@ -80,10 +85,15 @@ class TvPlayoutEngine
             'playout_status' => 'live',
             'playout_pid' => $pid,
             'source_live' => true,
-            'last_live_at' => now(),
+            'last_live_at' => now()->subSeconds($resumeOffset), // keep schedule anchor correct
+            'playout_resume_offset' => null,
         ]);
 
-        Log::info("[TvPlayout] {$channel->name} started — PID {$pid}");
+        if ($resumeOffset > 0) {
+            Log::info("[TvPlayout] {$channel->name} started — PID {$pid} (resumed at {$resumeOffset}s)");
+        } else {
+            Log::info("[TvPlayout] {$channel->name} started — PID {$pid}");
+        }
 
         // Start external push if configured
         if (! empty($channel->push_url)) {
@@ -115,9 +125,63 @@ class TvPlayoutEngine
             'push_pid' => null,
             'push_status' => 'stopped',
             'source_live' => false,
+            'playout_resume_offset' => null,
         ]);
 
         Log::info("[TvPlayout] {$channel->name} stopped");
+    }
+
+    /**
+     * Calculate the current playback offset (seconds into the looping playlist)
+     * based on elapsed wall-clock time since last_live_at, modulo total duration.
+     * Saves the result into playout_resume_offset so start() can seek to it.
+     */
+    private function captureOffset(Channel $channel): void
+    {
+        if (! $channel->last_live_at) {
+            return;
+        }
+
+        $totalDuration = (float) PlaylistItem::where('channel_id', $channel->id)
+            ->where('is_active', true)
+            ->sum('duration');
+
+        if ($totalDuration <= 0) {
+            return;
+        }
+
+        $elapsed = (float) $channel->last_live_at->diffInSeconds(now(), true);
+        // Modulo so we land in the correct position within the current loop cycle
+        $offset = (int) fmod($elapsed, $totalDuration);
+
+        $channel->update(['playout_resume_offset' => $offset]);
+        Log::info("[TvPlayout] {$channel->name} captured resume offset {$offset}s (elapsed {$elapsed}s, total {$totalDuration}s)");
+    }
+
+    /**
+     * Stop → capture offset → restart at the same position in the playlist.
+     * Used by all overlay-settings updates so the playlist time is preserved.
+     * The push process is also restarted so it picks up the new HLS output.
+     */
+    private function restartWithResume(Channel $channel): void
+    {
+        if (! $this->isRunning($channel)) {
+            return;
+        }
+
+        // 1. Capture where we are before killing the process
+        $this->captureOffset($channel);
+
+        // 2. Stop only the playout ffmpeg (not the push — push will be restarted by startPush)
+        $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
+        $pid = $this->ffmpeg->readPid($pidFile);
+        if ($pid > 0) {
+            $this->ffmpeg->stopProcess($pid);
+        }
+        $this->ffmpeg->clearPid($pidFile);
+
+        // 3. Restart — start() will read playout_resume_offset and pass -ss to ffmpeg
+        $this->start($channel->fresh());
     }
 
     /**
@@ -257,8 +321,7 @@ class TvPlayoutEngine
     {
         $channel->update(['logo_position' => $position]);
         if ($this->isRunning($channel)) {
-            $this->stop($channel);
-            $this->start($channel->fresh());
+            $this->restartWithResume($channel);
         }
     }
 
@@ -311,8 +374,7 @@ class TvPlayoutEngine
     {
         $channel->update(['logo_scale' => max(1, min(50, $scale))]);
         if ($this->isRunning($channel)) {
-            $this->stop($channel);
-            $this->start($channel->fresh());
+            $this->restartWithResume($channel);
         }
     }
 
@@ -323,8 +385,7 @@ class TvPlayoutEngine
     {
         $channel->update(['logo_enabled' => ! ($channel->logo_enabled ?? true)]);
         if ($this->isRunning($channel)) {
-            $this->stop($channel);
-            $this->start($channel->fresh());
+            $this->restartWithResume($channel);
         }
     }
 
@@ -337,12 +398,12 @@ class TvPlayoutEngine
             'clock_position' => $settings['position'] ?? null,
             'clock_fontsize' => isset($settings['fontsize']) ? max(12, min(72, (int) $settings['fontsize'])) : null,
             'clock_color' => $settings['color'] ?? null,
+            'clock_format' => $settings['format'] ?? null,
             'clock_enabled' => isset($settings['enabled']) ? (bool) $settings['enabled'] : null,
         ], fn ($v) => $v !== null));
 
         if ($this->isRunning($channel)) {
-            $this->stop($channel);
-            $this->start($channel->fresh());
+            $this->restartWithResume($channel);
         }
     }
 
@@ -361,8 +422,7 @@ class TvPlayoutEngine
         ], fn ($v) => $v !== null));
 
         if ($this->isRunning($channel)) {
-            $this->stop($channel);
-            $this->start($channel->fresh());
+            $this->restartWithResume($channel);
         }
     }
 
@@ -373,8 +433,7 @@ class TvPlayoutEngine
     {
         $channel->update(['output_resolution' => $resolution]);
         if ($this->isRunning($channel)) {
-            $this->stop($channel);
-            $this->start($channel->fresh());
+            $this->restartWithResume($channel);
         }
     }
 
@@ -403,8 +462,7 @@ class TvPlayoutEngine
         $channel->update($update);
 
         if ($this->isRunning($channel)) {
-            $this->stop($channel);
-            $this->start($channel->fresh());
+            $this->restartWithResume($channel);
         }
     }
 
@@ -649,7 +707,7 @@ class TvPlayoutEngine
         return max(1, (int) round($value * $scale));
     }
 
-    private function buildCommand(Channel $channel, string $concatFile): array
+    private function buildCommand(Channel $channel, string $concatFile, int $resumeOffset = 0): array
     {
         $dvrDir = $channel->dvr_directory;
         $segPattern = "{$dvrDir}/tv_seg_%010d.ts";
@@ -659,7 +717,7 @@ class TvPlayoutEngine
         // Scale factor for all overlay pixel values relative to 1080p baseline
         $s = $this->overlayScale($channel);
 
-        // Base command
+        // Base command — -ss before -i seeks into the concat at the resume point
         $cmd = [
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
@@ -670,8 +728,17 @@ class TvPlayoutEngine
             '-safe', '0',
             '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
             '-f', 'concat',
-            '-i', $concatFile,
         ];
+
+        if ($resumeOffset > 0) {
+            // -ss placed after -f concat but before -i so it seeks within the
+            // demuxer (fast, no re-encode needed for the seek itself)
+            $cmd[] = '-ss';
+            $cmd[] = (string) $resumeOffset;
+        }
+
+        $cmd[] = '-i';
+        $cmd[] = $concatFile;
 
         // Logo overlay — only include when logo_enabled is true.
         $this->ensureLogoBlank($channel);
@@ -773,6 +840,16 @@ class TvPlayoutEngine
             $clockMargin   = $this->px(15, $s);
             $clockBorderW  = $this->px(6, $s);
 
+            // Clock format: custom strftime-style string, default HH:MM:SS real time.
+            // Colons must be escaped as \: in FFmpeg drawtext filter expressions.
+            $rawFormat = $channel->clock_format ?? '%H\:%M\:%S';
+            // Ensure colons are escaped for FFmpeg filter syntax
+            $clockFormat = str_replace(':', '\:', str_replace('\:', ':', $rawFormat));
+
+            // Use localtime=1 so the clock shows real wall-clock time in the
+            // channel's configured timezone (or server local time if not set).
+            $timezone = $channel->timezone ?? config('app.timezone', 'UTC');
+
             $clockPosExpr = match ($clockPos) {
                 'top-right'    => "x=w-tw-{$clockMargin}:y={$clockMargin}",
                 'bottom-left'  => "x={$clockMargin}:y=h-th-{$clockMargin}",
@@ -780,7 +857,9 @@ class TvPlayoutEngine
                 default        => "x={$clockMargin}:y={$clockMargin}",
             };
 
-            $filterParts[] = "[{$lastLabel}]drawtext=text='%{pts\:hms}':{$clockPosExpr}:fontcolor={$clockColor}:fontsize={$clockFontsize}:box=1:boxcolor=black@0.5:boxborderw={$clockBorderW}[clock_out]";
+            // TZ env var is set per-process via the command wrapper so FFmpeg
+            // localtime() picks up the correct timezone without a system change.
+            $filterParts[] = "[{$lastLabel}]drawtext=text='{$clockFormat}':localtime=1:{$clockPosExpr}:fontcolor={$clockColor}:fontsize={$clockFontsize}:box=1:boxcolor=black@0.5:boxborderw={$clockBorderW}[clock_out]";
             $lastLabel = 'clock_out';
         }
 

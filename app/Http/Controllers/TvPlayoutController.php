@@ -715,6 +715,7 @@ class TvPlayoutController extends Controller
             'position' => 'required|string|in:top-left,top-right,bottom-left,bottom-right',
             'fontsize' => 'required|integer|min:12|max:72',
             'color' => 'required|string|max:30',
+            'format' => 'nullable|string|max:50',
             'enabled' => 'nullable|boolean',
         ]);
 

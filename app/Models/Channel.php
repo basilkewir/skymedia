@@ -30,7 +30,7 @@ class Channel extends Model
         'dvr_duration', 'segment_duration', 'dvr_enabled', 'dvr_path',
         'logo_media_id', 'logo_position', 'logo_scale', 'logo_enabled', 'ticker_enabled', 'ticker_text', 'playlist_loop',
         'ticker_bg_color', 'ticker_bg_opacity', 'ticker_font_size', 'ticker_font_color', 'ticker_speed', 'ticker_position',
-        'clock_position', 'clock_fontsize', 'clock_color', 'clock_enabled', 'output_resolution',
+        'clock_position', 'clock_fontsize', 'clock_color', 'clock_format', 'clock_enabled', 'output_resolution',
         'lowerthird_position', 'lowerthird_x', 'lowerthird_y', 'lowerthird_fontsize', 'lowerthird_font_color', 'lowerthird_bg_color', 'lowerthird_bg_opacity', 'lowerthird_enabled',
         'ticker_items', 'ticker_label', 'ticker_label_color', 'ticker_label_bg',
         // Storage quota
@@ -43,7 +43,7 @@ class Channel extends Model
         'schedule_start', 'schedule_stop', 'schedule_days',
         // Runtime state
         'is_active', 'stream_status', 'playout_status', 'push_status', 'dvr_status', 'record_status', 'source_live',
-        'pid', 'playout_pid', 'push_pid', 'record_pid', 'relay_pid',
+        'pid', 'playout_pid', 'push_pid', 'record_pid', 'relay_pid', 'playout_resume_offset',
         'retry_count', 'last_error',
         'last_live_at', 'last_check_at',
         'check_interval', 'max_retries',
@@ -83,6 +83,7 @@ class Channel extends Model
         'retry_count' => 'integer',
         'pid' => 'integer',
         'playout_pid' => 'integer',
+        'playout_resume_offset' => 'integer',
         'push_pid' => 'integer',
         'record_pid' => 'integer',
         'relay_pid' => 'integer',

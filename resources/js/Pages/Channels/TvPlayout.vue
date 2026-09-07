@@ -528,6 +528,30 @@
                                 </div>
                             </div>
                             <div>
+                                <label class="text-xs text-slate-500 mb-2 block">
+                                    Format
+                                    <span class="text-slate-600 ml-1 normal-case font-normal">— timezone: {{ channel.timezone || 'server local' }}</span>
+                                </label>
+                                <div class="flex flex-wrap gap-1.5 mb-2">
+                                    <button v-for="fp in clockFormatPresets" :key="fp.value" type="button"
+                                            @click="clockFormat = fp.value; saveClockSettings()"
+                                            :class="['px-2 py-1 text-xs rounded-lg border transition-colors',
+                                                     clockFormat === fp.value
+                                                         ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
+                                                         : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700']">
+                                        {{ fp.label }}
+                                    </button>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <input v-model="clockFormat" type="text"
+                                           placeholder="%H\:%M\:%S"
+                                           class="flex-1 form-input text-xs font-mono"
+                                           @change="saveClockSettings()" />
+                                    <span class="text-[10px] text-slate-600 whitespace-nowrap">strftime</span>
+                                </div>
+                                <p class="text-[10px] text-slate-600 mt-1">%H=hour %M=min %S=sec %I=12h %p=AM/PM %d=day %m=month %Y=year</p>
+                            </div>
+                            <div>
                                 <label class="text-xs text-slate-500 mb-1 block">Font Size: {{ clockFontsize }}px</label>
                                 <input v-model.number="clockFontsize" type="range" min="12" max="72" step="2"
                                        @change="saveClockSettings()"
@@ -746,12 +770,22 @@ const clockPosition = ref(props.channel.clock_position || 'top-left')
 const clockFontsize = ref(props.channel.clock_fontsize || 28)
 const clockColor = ref(props.channel.clock_color || 'white')
 const clockEnabled = ref(props.channel.clock_enabled !== false)
+const clockFormat = ref(props.channel.clock_format || '%H\:%M\:%S')
 const clockMessage = ref('')
 const clockPositions = [
     { value: 'top-left', icon: '↖', label: 'Top Left' },
     { value: 'top-right', icon: '↗', label: 'Top Right' },
     { value: 'bottom-left', icon: '↙', label: 'Bottom Left' },
     { value: 'bottom-right', icon: '↘', label: 'Bottom Right' },
+]
+const clockFormatPresets = [
+    { label: 'HH:mm:ss', value: '%H\:%M\:%S' },
+    { label: 'HH:mm', value: '%H\:%M' },
+    { label: 'hh:mm:ss AM/PM', value: '%I\:%M\:%S %p' },
+    { label: 'hh:mm AM/PM', value: '%I\:%M %p' },
+    { label: 'DD/MM HH:mm', value: '%d/%m %H\:%M' },
+    { label: 'MM/DD HH:mm', value: '%m/%d %H\:%M' },
+    { label: 'Full Date+Time', value: '%d/%m/%Y %H\:%M\:%S' },
 ]
 
 // Lowerthird / NOW PLAYING settings
@@ -1331,6 +1365,7 @@ async function saveClockSettings() {
                 position: clockPosition.value,
                 fontsize: clockFontsize.value,
                 color: clockColor.value,
+                format: clockFormat.value,
                 enabled: clockEnabled.value,
             }),
         })

@@ -595,13 +595,21 @@ class StreamManager
         if ($channel->isTvPlayout()) {
             $engine = app(\App\Services\TvPlayoutEngine::class);
             if (! $engine->isRunning($channel)) {
+                Log::warning("[Monitor] {$channel->name}: TV playout died — auto-restarting");
                 $channel->update([
                     'stream_status' => 'error',
                     'playout_status' => 'error',
                     'source_live' => false,
-                    'last_error' => 'TV playout FFmpeg process died',
+                    'last_error' => 'TV playout FFmpeg process died — auto-restarting',
                 ]);
-                $this->log($channel, 'error', 'tv_playout_died', 'TV playout FFmpeg process died — restart required');
+                $this->log($channel, 'warning', 'tv_playout_died', 'TV playout FFmpeg process died — auto-restarting');
+                // Restart only this channel — other channels are unaffected
+                try {
+                    $engine->start($channel->fresh());
+                } catch (\Throwable $e) {
+                    Log::error("[Monitor] {$channel->name}: TV playout restart failed: {$e->getMessage()}");
+                    $this->log($channel, 'error', 'tv_playout_restart_failed', $e->getMessage());
+                }
             } else {
                 if ($channel->stream_status !== 'live') {
                     $channel->update(['stream_status' => 'live', 'playout_status' => 'live', 'source_live' => true]);

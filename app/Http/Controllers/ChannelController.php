@@ -691,6 +691,12 @@ class ChannelController extends Controller
             // Locale
             'timezone' => 'nullable|string|max:50',
             'locale' => 'nullable|string|max:10',
+            // Clock overlay (tv_playout only)
+            'clock_enabled'   => 'nullable|boolean',
+            'clock_position'  => 'nullable|string|in:top-left,top-right,bottom-left,bottom-right',
+            'clock_fontsize'  => 'nullable|integer|min:12|max:72',
+            'clock_color'     => 'nullable|string|max:30',
+            'clock_format'    => 'nullable|string|max:50',
             // Behaviour
             'check_interval' => 'required|integer|min:1|max:60',
             'max_retries' => 'required|integer|min:0|max:20',

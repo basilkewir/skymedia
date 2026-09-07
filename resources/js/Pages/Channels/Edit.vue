@@ -356,7 +356,7 @@
                             <input v-model.number="form.max_retries" type="number"
                                    min="0" max="20" required class="form-input" />
                         </FormField>
-                        <FormField label="Channel Timezone" :error="form.errors.timezone">
+                        <FormField v-if="form.source_type !== 'tv_playout'" label="Channel Timezone" :error="form.errors.timezone">
                             <select v-model="form.timezone" class="form-input font-mono text-sm">
                                 <option value="UTC">UTC</option>
                                 <option value="America/New_York">America/New York</option>
@@ -376,6 +376,126 @@
                                 <option value="Australia/Sydney">Australia/Sydney</option>
                                 <option value="Africa/Cairo">Africa/Cairo</option>
                             </select>
+                        </FormField>
+                    </div>
+                </Section>
+
+                <!-- Clock & Timezone (tv_playout only) -->
+                <Section v-if="form.source_type === 'tv_playout'" title="Clock &amp; Timezone">
+                    <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                        <FormField label="Channel Timezone" :error="form.errors.timezone" class-name="sm:col-span-2">
+                            <select v-model="form.timezone" class="form-input font-mono text-sm">
+                                <optgroup label="Universal">
+                                    <option value="UTC">UTC</option>
+                                </optgroup>
+                                <optgroup label="Americas">
+                                    <option value="America/New_York">America/New_York (ET)</option>
+                                    <option value="America/Chicago">America/Chicago (CT)</option>
+                                    <option value="America/Denver">America/Denver (MT)</option>
+                                    <option value="America/Los_Angeles">America/Los_Angeles (PT)</option>
+                                    <option value="America/Sao_Paulo">America/Sao_Paulo (BRT)</option>
+                                    <option value="America/Argentina/Buenos_Aires">America/Buenos_Aires (ART)</option>
+                                    <option value="America/Mexico_City">America/Mexico_City (CST)</option>
+                                    <option value="America/Toronto">America/Toronto (ET)</option>
+                                    <option value="America/Vancouver">America/Vancouver (PT)</option>
+                                </optgroup>
+                                <optgroup label="Europe">
+                                    <option value="Europe/London">Europe/London (GMT/BST)</option>
+                                    <option value="Europe/Paris">Europe/Paris (CET)</option>
+                                    <option value="Europe/Berlin">Europe/Berlin (CET)</option>
+                                    <option value="Europe/Madrid">Europe/Madrid (CET)</option>
+                                    <option value="Europe/Rome">Europe/Rome (CET)</option>
+                                    <option value="Europe/Amsterdam">Europe/Amsterdam (CET)</option>
+                                    <option value="Europe/Moscow">Europe/Moscow (MSK)</option>
+                                    <option value="Europe/Istanbul">Europe/Istanbul (TRT)</option>
+                                    <option value="Europe/Kiev">Europe/Kiev (EET)</option>
+                                    <option value="Europe/Athens">Europe/Athens (EET)</option>
+                                </optgroup>
+                                <optgroup label="Middle East &amp; Africa">
+                                    <option value="Asia/Dubai">Asia/Dubai (GST)</option>
+                                    <option value="Asia/Riyadh">Asia/Riyadh (AST)</option>
+                                    <option value="Asia/Baghdad">Asia/Baghdad (AST)</option>
+                                    <option value="Asia/Tehran">Asia/Tehran (IRST)</option>
+                                    <option value="Africa/Cairo">Africa/Cairo (EET)</option>
+                                    <option value="Africa/Nairobi">Africa/Nairobi (EAT)</option>
+                                    <option value="Africa/Lagos">Africa/Lagos (WAT)</option>
+                                    <option value="Africa/Johannesburg">Africa/Johannesburg (SAST)</option>
+                                </optgroup>
+                                <optgroup label="Asia">
+                                    <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
+                                    <option value="Asia/Karachi">Asia/Karachi (PKT)</option>
+                                    <option value="Asia/Dhaka">Asia/Dhaka (BST)</option>
+                                    <option value="Asia/Bangkok">Asia/Bangkok (ICT)</option>
+                                    <option value="Asia/Singapore">Asia/Singapore (SGT)</option>
+                                    <option value="Asia/Shanghai">Asia/Shanghai (CST)</option>
+                                    <option value="Asia/Hong_Kong">Asia/Hong_Kong (HKT)</option>
+                                    <option value="Asia/Tokyo">Asia/Tokyo (JST)</option>
+                                    <option value="Asia/Seoul">Asia/Seoul (KST)</option>
+                                    <option value="Asia/Taipei">Asia/Taipei (CST)</option>
+                                </optgroup>
+                                <optgroup label="Pacific">
+                                    <option value="Australia/Sydney">Australia/Sydney (AEST)</option>
+                                    <option value="Australia/Melbourne">Australia/Melbourne (AEST)</option>
+                                    <option value="Australia/Perth">Australia/Perth (AWST)</option>
+                                    <option value="Pacific/Auckland">Pacific/Auckland (NZST)</option>
+                                    <option value="Pacific/Honolulu">Pacific/Honolulu (HST)</option>
+                                </optgroup>
+                            </select>
+                            <p class="mt-1 text-xs text-slate-500">The clock overlay will show real time in this timezone.</p>
+                        </FormField>
+
+                        <FormField label="Clock Enabled">
+                            <label class="inline-flex items-center gap-2 mt-2">
+                                <input v-model="form.clock_enabled" type="checkbox" class="form-checkbox rounded" />
+                                <span class="text-sm text-slate-300">Show clock overlay on stream</span>
+                            </label>
+                        </FormField>
+
+                        <FormField label="Clock Position" :error="form.errors.clock_position">
+                            <select v-model="form.clock_position" class="form-input" :disabled="!form.clock_enabled">
+                                <option value="top-left">↖ Top Left</option>
+                                <option value="top-right">↗ Top Right</option>
+                                <option value="bottom-left">↙ Bottom Left</option>
+                                <option value="bottom-right">↘ Bottom Right</option>
+                            </select>
+                        </FormField>
+
+                        <FormField label="Clock Format" :error="form.errors.clock_format" class-name="sm:col-span-2">
+                            <div class="flex flex-wrap gap-1.5 mb-2">
+                                <button v-for="fp in clockFormatPresets" :key="fp.value" type="button"
+                                        @click="form.clock_format = fp.value"
+                                        :class="['px-2.5 py-1 text-xs rounded-lg border transition-colors',
+                                                 form.clock_format === fp.value
+                                                     ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
+                                                     : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700']"
+                                        :disabled="!form.clock_enabled">
+                                    {{ fp.label }}
+                                </button>
+                            </div>
+                            <input v-model="form.clock_format" type="text"
+                                   placeholder="%H\:%M\:%S"
+                                   class="form-input font-mono text-sm"
+                                   :disabled="!form.clock_enabled" />
+                            <p class="mt-1 text-xs text-slate-500">strftime format — %H=hour(24) %I=hour(12) %M=min %S=sec %p=AM/PM %d=day %m=month %Y=year</p>
+                        </FormField>
+
+                        <FormField label="Font Size (px)" :error="form.errors.clock_fontsize">
+                            <div class="flex items-center gap-3">
+                                <input v-model.number="form.clock_fontsize" type="range" min="12" max="72" step="2"
+                                       class="flex-1 accent-indigo-500" :disabled="!form.clock_enabled" />
+                                <span class="text-sm font-mono text-slate-300 w-10 text-right">{{ form.clock_fontsize }}px</span>
+                            </div>
+                        </FormField>
+
+                        <FormField label="Font Color" :error="form.errors.clock_color">
+                            <div class="flex items-center gap-2">
+                                <input v-model="form.clock_color" type="color"
+                                       class="w-9 h-9 rounded cursor-pointer border border-slate-600 bg-transparent"
+                                       :disabled="!form.clock_enabled" />
+                                <input v-model="form.clock_color" type="text"
+                                       class="flex-1 form-input font-mono text-sm"
+                                       :disabled="!form.clock_enabled" />
+                            </div>
                         </FormField>
                     </div>
                 </Section>
@@ -484,12 +604,27 @@ const form = useForm({
     keep_recordings:        props.channel.keep_recordings     ?? 3,
     timezone:               props.channel.timezone            ?? 'UTC',
     locale:                 props.channel.locale              ?? 'en',
+    clock_enabled:          props.channel.clock_enabled       ?? true,
+    clock_position:         props.channel.clock_position      ?? 'top-left',
+    clock_fontsize:         props.channel.clock_fontsize      ?? 28,
+    clock_color:            props.channel.clock_color         ?? 'white',
+    clock_format:           props.channel.clock_format        ?? '%H\:%M\:%S',
     check_interval:         props.channel.check_interval,
     max_retries:            props.channel.max_retries,
     excluded_recordings:    props.channel.excluded_recordings ?? [],
 })
 
 const fallbackForm = useForm({ fallback_vod: null })
+
+const clockFormatPresets = [
+    { label: 'HH:mm:ss', value: '%H\:%M\:%S' },
+    { label: 'HH:mm',    value: '%H\:%M' },
+    { label: 'hh:mm:ss AM/PM', value: '%I\:%M\:%S %p' },
+    { label: 'hh:mm AM/PM',   value: '%I\:%M %p' },
+    { label: 'DD/MM HH:mm',   value: '%d/%m %H\:%M' },
+    { label: 'MM/DD HH:mm',   value: '%m/%d %H\:%M' },
+    { label: 'Full Date+Time', value: '%d/%m/%Y %H\:%M\:%S' },
+]
 
 const pushTarget = computed(() => {
     if (!form.push_url) return '—'
