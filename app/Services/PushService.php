@@ -503,7 +503,11 @@ class PushService
         if ($dest->username || $dest->password) {
             $user = urlencode($dest->username ?? '');
             $pass = urlencode($dest->password ?? '');
-            $target = preg_replace('#^(rtmps?://)#', "$1{$user}:{$pass}@", $target);
+            $target = preg_replace_callback(
+                '#^(rtmps?://)#',
+                fn ($m) => $m[1] . $user . ':' . $pass . '@',
+                $target
+            );
         }
 
         return $target;

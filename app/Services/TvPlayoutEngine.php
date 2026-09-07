@@ -237,7 +237,7 @@ class TvPlayoutEngine
             $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
             $pid = $this->ffmpeg->readPid($pidFile);
             if ($pid > 0) {
-                posix_kill($pid, SIGUSR1);
+                posix_kill($pid, 10); // SIGUSR1 — signal 10 on Linux
                 Log::info("[TvPlayout] {$channel->name} sent SIGUSR1 to PID {$pid} — concat reloaded seamlessly");
                 return true;
             }
@@ -259,6 +259,17 @@ class TvPlayoutEngine
         if ($this->isRunning($channel)) {
             $this->stop($channel);
             $this->start($channel->fresh());
+        }
+    }
+
+    /**
+     * Update playlist loop count — 0 = auto-fill 24h, N = repeat N times.
+     */
+    public function updatePlaylistLoop(Channel $channel, int $count): void
+    {
+        $channel->update(['playlist_loop' => max(0, $count)]);
+        if ($this->isRunning($channel)) {
+            $this->rebuild($channel);
         }
     }
 
@@ -306,12 +317,85 @@ class TvPlayoutEngine
     }
 
     /**
-     * Toggle logo overlay on/off — swaps symlink to blank PNG, no restart needed.
+     * Toggle logo overlay on/off — requires restart (logo input conditionally included in filter chain).
      */
     public function toggleLogoEnabled(Channel $channel): void
     {
         $channel->update(['logo_enabled' => ! ($channel->logo_enabled ?? true)]);
-        $this->updateLogoSymlink($channel->fresh());
+        if ($this->isRunning($channel)) {
+            $this->stop($channel);
+            $this->start($channel->fresh());
+        }
+    }
+
+    /**
+     * Update clock settings (position, size, color) — requires restart.
+     */
+    public function updateClockSettings(Channel $channel, array $settings): void
+    {
+        $channel->update(array_filter([
+            'clock_position' => $settings['position'] ?? null,
+            'clock_fontsize' => isset($settings['fontsize']) ? max(12, min(72, (int) $settings['fontsize'])) : null,
+            'clock_color' => $settings['color'] ?? null,
+            'clock_enabled' => isset($settings['enabled']) ? (bool) $settings['enabled'] : null,
+        ], fn ($v) => $v !== null));
+
+        if ($this->isRunning($channel)) {
+            $this->stop($channel);
+            $this->start($channel->fresh());
+        }
+    }
+
+    /**
+     * Update ticker settings — requires restart (baked into filter_complex).
+     */
+    public function updateTickerSettings(Channel $channel, array $settings): void
+    {
+        $channel->update(array_filter([
+            'ticker_bg_color' => $settings['bg_color'] ?? null,
+            'ticker_bg_opacity' => isset($settings['bg_opacity']) ? max(0, min(100, (int) $settings['bg_opacity'])) : null,
+            'ticker_font_size' => isset($settings['font_size']) ? max(10, min(72, (int) $settings['font_size'])) : null,
+            'ticker_font_color' => $settings['font_color'] ?? null,
+            'ticker_speed' => isset($settings['speed']) ? max(10, min(500, (int) $settings['speed'])) : null,
+            'ticker_position' => $settings['position'] ?? null,
+        ], fn ($v) => $v !== null));
+
+        if ($this->isRunning($channel)) {
+            $this->stop($channel);
+            $this->start($channel->fresh());
+        }
+    }
+
+    /**
+     * Update output resolution — requires restart.
+     */
+    public function updateResolution(Channel $channel, string $resolution): void
+    {
+        $channel->update(['output_resolution' => $resolution]);
+        if ($this->isRunning($channel)) {
+            $this->stop($channel);
+            $this->start($channel->fresh());
+        }
+    }
+
+    /**
+     * Update NOW PLAYING / lowerthird overlay settings — requires restart.
+     */
+    public function updateLowerthirdSettings(Channel $channel, array $settings): void
+    {
+        $channel->update(array_filter([
+            'lowerthird_position' => $settings['position'] ?? null,
+            'lowerthird_fontsize' => isset($settings['fontsize']) ? max(10, min(72, (int) $settings['fontsize'])) : null,
+            'lowerthird_font_color' => $settings['font_color'] ?? null,
+            'lowerthird_bg_color' => $settings['bg_color'] ?? null,
+            'lowerthird_bg_opacity' => isset($settings['bg_opacity']) ? max(0, min(100, (int) $settings['bg_opacity'])) : null,
+            'lowerthird_enabled' => isset($settings['enabled']) ? (bool) $settings['enabled'] : null,
+        ], fn ($v) => $v !== null));
+
+        if ($this->isRunning($channel)) {
+            $this->stop($channel);
+            $this->start($channel->fresh());
+        }
     }
 
     /**
@@ -324,7 +408,14 @@ class TvPlayoutEngine
             ->orderBy('sort_order')
             ->get();
 
-        $currentTimeTracker = $anchorStartTime ? Carbon::parse($anchorStartTime) : Carbon::now();
+        // Use provided anchor, or playout start time if running, or now
+        if ($anchorStartTime) {
+            $currentTimeTracker = Carbon::parse($anchorStartTime);
+        } elseif ($channel->last_live_at && $this->isRunning($channel)) {
+            $currentTimeTracker = $channel->last_live_at->copy();
+        } else {
+            $currentTimeTracker = Carbon::now();
+        }
         $totalDuration = 0.0;
 
         foreach ($items as $item) {
@@ -398,7 +489,9 @@ class TvPlayoutEngine
         }
 
         $totalDuration = $items->sum('duration');
-        $repeat = $totalDuration > 0 ? max(10, min((int) ceil(86400 / $totalDuration), 500)) : 50;
+        $repeat = ($channel->playlist_loop ?? 0) > 0
+            ? $channel->playlist_loop
+            : ($totalDuration > 0 ? max(10, min((int) ceil(86400 / $totalDuration), 500)) : 50);
 
         $concatPath = $this->concatFilePath($channel);
         $lines = [];
@@ -463,6 +556,55 @@ class TvPlayoutEngine
         Log::info("[TvPlayout] Dispatched YouTube prefetch for item {$item->id}");
     }
 
+    /**
+     * Refresh all YouTube stream URLs for a channel that are missing or expiring soon.
+     * Called periodically by the scheduler to prevent stream interruptions.
+     */
+    public function refreshYouTubeUrls(Channel $channel): void
+    {
+        $items = PlaylistItem::where('channel_id', $channel->id)
+            ->where('is_active', true)
+            ->get()
+            ->filter(fn ($item) => str_starts_with($item->filepath, 'youtube:'));
+
+        if ($items->isEmpty()) {
+            return;
+        }
+
+        $needsRebuild = false;
+        foreach ($items as $item) {
+            $cacheKey = "yt_stream_url_{$item->id}";
+            $ttl = Cache::store('array')->getStore()->ttl ?? 0;
+
+            // Check if URL exists in cache and has < 30 min remaining
+            // Cache::has doesn't give TTL, so we check if the key exists and dispatch refresh
+            if (Cache::has($cacheKey)) {
+                // Schedule refresh — the job will overwrite with fresh URL
+                $prefetchKey = "yt_prefetch_scheduled_{$item->id}";
+                if (! Cache::has($prefetchKey)) {
+                    \App\Jobs\PreFetchYouTubeStream::dispatch($item);
+                    Cache::put($prefetchKey, true, now()->addMinutes(5));
+                    $needsRebuild = true;
+                    Log::info("[TvPlayout] Scheduled YouTube URL refresh for item {$item->id}");
+                }
+            } else {
+                // No cached URL — dispatch prefetch
+                $this->scheduleYouTubePrefetch($item);
+                $needsRebuild = true;
+            }
+        }
+
+        // Rebuild concat after a short delay to allow prefetch jobs to complete
+        if ($needsRebuild) {
+            \Illuminate\Support\Facades\Cache::put(
+                "yt_refresh_rebuild_{$channel->id}",
+                true,
+                now()->addSeconds(35)
+            );
+            Log::info("[TvPlayout] Scheduled concat rebuild for {$channel->name} in 35s");
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     //  FFMPEG COMMAND BUILDER
     // ═══════════════════════════════════════════════════════════════════
@@ -497,11 +639,12 @@ class TvPlayoutEngine
             '-i', $concatFile,
         ];
 
-        // Logo overlay — always include via movie filter using fixed symlink path.
-        // Symlink points to actual logo or blank PNG; swapping it updates overlay without restart.
+        // Logo overlay — only include when logo_enabled is true.
+        // When disabled, skip the logo input entirely for a lighter filter chain.
         $this->ensureLogoBlank($channel);
         $logoActivePath = $this->logoActivePath($channel);
         $scalePct = max(1, min(50, (int) ($channel->logo_scale ?? 12)));
+        $logoEnabled = $channel->logo_enabled ?? true;
 
         // logo_position stored as "x:y" pixels; negative = from right/bottom edge.
         $position = $channel->logo_position ?? '20:20';
@@ -523,25 +666,104 @@ class TvPlayoutEngine
         // Build filter_complex
         $filterParts = [];
         $lastLabel = '0:v';
+        $inputIndex = 1; // 0 is concat input
 
-        // movie filter re-reads the file on each loop — symlink swap takes effect immediately.
-        $escapedLogoPath = str_replace("'", "'\\''", $logoActivePath);
-        $filterParts[] = "movie='{$escapedLogoPath}':loop=0,scale=iw*{$scalePct}/100:-1[logo_scaled]";
-        $filterParts[] = "[{$lastLabel}][logo_scaled]overlay={$overlayPos}[with_logo]";
-        $lastLabel = 'with_logo';
+        // Output resolution scaling (applied first so overlays render at target size)
+        $resolution = $channel->output_resolution ?? '1920x1080';
+        if ($resolution !== 'auto' && preg_match('/^(\d+)[x:](\d+)$/', $resolution, $rm)) {
+            $filterParts[] = "[{$lastLabel}]scale={$rm[1]}:{$rm[2]}:flags=lanczos,setsar=1[resolved]";
+            $lastLabel = 'resolved';
+        }
 
-        // Ticker (scrolling text)
+        if ($logoEnabled) {
+            // Add logo as separate -loop 1 input (avoids movie filter deadlock with -re + -stream_loop).
+            $cmd = array_merge($cmd, ['-loop', '1', '-i', $logoActivePath]);
+            $filterParts[] = "[{$inputIndex}:v]scale=iw*{$scalePct}/100:-1[logo_scaled]";
+            $filterParts[] = "[{$lastLabel}][logo_scaled]overlay={$overlayPos}[with_logo]";
+            $lastLabel = 'with_logo';
+            $inputIndex++;
+        }
+
+        // Ticker (scrolling text) — fully customizable
         $tickerText = trim((string) $channel->ticker_text);
         if ($channel->ticker_enabled && $tickerText !== '') {
             $tickerFile = $this->tickerFilePath($channel);
             $escapedTickerFile = str_replace("'", "'\\''", $tickerFile);
-            $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedTickerFile}':reload=1:y=h-line_h-10:x=w-mod(max(t*80\\,0)\\,w+tw):fontcolor=white:fontsize=24:box=1:boxcolor=black@0.65:boxborderw=8[with_ticker]";
+
+            $tickerSpeed = max(10, min(500, (int) ($channel->ticker_speed ?? 80)));
+            $tickerFontSize = max(10, min(72, (int) ($channel->ticker_font_size ?? 24)));
+            $tickerFontColor = $channel->ticker_font_color ?? 'white';
+            $tickerBgColor = $channel->ticker_bg_color ?? '#000000';
+            $tickerBgOpacity = max(0, min(100, (int) ($channel->ticker_bg_opacity ?? 65)));
+            $tickerBgOpacityFp = number_format($tickerBgOpacity / 100, 2, '.', '');
+            $tickerPos = $channel->ticker_position ?? 'bottom';
+
+            // Convert hex color to 0xRRGGBB for FFmpeg
+            $bgHex = ltrim($tickerBgColor, '#');
+            if (strlen($bgHex) === 3) {
+                $bgHex = $bgHex[0] . $bgHex[0] . $bgHex[1] . $bgHex[1] . $bgHex[2] . $bgHex[2];
+            }
+            $ffBgColor = '0x' . strtoupper($bgHex);
+
+            $tickerY = match ($tickerPos) {
+                'top'    => '10',
+                'center' => '(h-line_h)/2',
+                default  => 'h-line_h-10',
+            };
+
+            // x scrolls right-to-left at tickerSpeed pixels/sec
+            $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedTickerFile}':reload=1:y={$tickerY}:x=w-mod(max(t*{$tickerSpeed}\\,0)\\,w+tw):fontcolor={$tickerFontColor}:fontsize={$tickerFontSize}:box=1:boxcolor={$ffBgColor}@{$tickerBgOpacityFp}:boxborderw=8[with_ticker]";
             $lastLabel = 'with_ticker';
         }
 
-        // Clock overlay
-        $filterParts[] = "[{$lastLabel}]drawtext=text='%{localtime\:%H\:%M\:%S}':x=15:y=15:fontcolor=white:fontsize=28:box=1:boxcolor=black@0.5:boxborderw=6[final_video]";
-        $lastLabel = 'final_video';
+        // Clock overlay — uses system local time (only when enabled)
+        $clockEnabled = $channel->clock_enabled ?? true;
+        if ($clockEnabled) {
+            $clockPos = $channel->clock_position ?? 'top-left';
+            $clockFontsize = max(12, min(72, (int) ($channel->clock_fontsize ?? 28)));
+            $clockColor = $channel->clock_color ?? 'white';
+
+            $clockPosExpr = match ($clockPos) {
+                'top-right'    => 'x=w-tw-15:y=15',
+                'bottom-left'  => 'x=15:y=h-th-15',
+                'bottom-right' => 'x=w-tw-15:y=h-th-15',
+                default        => 'x=15:y=15',
+            };
+
+            $filterParts[] = "[{$lastLabel}]drawtext=text='%{pts\:hms}':{$clockPosExpr}:fontcolor={$clockColor}:fontsize={$clockFontsize}:box=1:boxcolor=black@0.5:boxborderw=6[clock_out]";
+            $lastLabel = 'clock_out';
+        }
+
+        // NOW PLAYING overlay — reads from disk, reload=1 for live updates
+        $lowerthirdEnabled = $channel->lowerthird_enabled ?? true;
+        if ($lowerthirdEnabled) {
+            $metaFile = $this->metaFilePath($channel);
+            $escapedMetaFile = str_replace("'", "'\\''", $metaFile);
+
+            $ltPos = $channel->lowerthird_position ?? 'bottom-left';
+            $ltFontsize = max(10, min(72, (int) ($channel->lowerthird_fontsize ?? 20)));
+            $ltFontColor = $channel->lowerthird_font_color ?? '#ffffff';
+            $ltBgColor = $channel->lowerthird_bg_color ?? '#334155';
+            $ltBgOpacity = max(0, min(100, (int) ($channel->lowerthird_bg_opacity ?? 80)));
+            $ltBgOpacityFp = number_format($ltBgOpacity / 100, 2, '.', '');
+
+            // Convert hex to 0xRRGGBB
+            $ltBgHex = ltrim($ltBgColor, '#');
+            if (strlen($ltBgHex) === 3) {
+                $ltBgHex = $ltBgHex[0] . $ltBgHex[0] . $ltBgHex[1] . $ltBgHex[1] . $ltBgHex[2] . $ltBgHex[2];
+            }
+            $ffLtBgColor = '0x' . strtoupper($ltBgHex);
+
+            $ltPosExpr = match ($ltPos) {
+                'top-left'     => 'x=15:y=15',
+                'top-right'    => 'x=w-tw-15:y=15',
+                'bottom-right' => 'x=w-tw-15:y=h-th-15',
+                default        => 'x=15:y=h-th-15',
+            };
+
+            $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedMetaFile}':reload=1:{$ltPosExpr}:fontcolor={$ltFontColor}:fontsize={$ltFontsize}:box=1:boxcolor={$ffLtBgColor}@{$ltBgOpacityFp}:boxborderw=4[final_video]";
+            $lastLabel = 'final_video';
+        }
 
         // Video encoding
         $fps = max(1, (int) ($channel->push_framerate ?? 25));
@@ -609,18 +831,31 @@ class TvPlayoutEngine
     }
 
     /**
-     * Write the current playing metadata file.
+     * Write the current playing metadata file for on-screen overlay.
+     * Shows the display title of the currently-airing item (by scheduled_start),
+     * falling back to the first item if no schedule has been calculated yet.
      */
     public function writeMetaFile(Channel $channel): void
     {
+        $now = now();
+
+        // Find the item that is currently airing (started but not yet ended)
         $item = PlaylistItem::where('channel_id', $channel->id)
             ->where('is_active', true)
-            ->orderBy('sort_order')
+            ->where('scheduled_start', '<=', $now)
+            ->where('scheduled_end', '>', $now)
+            ->orderBy('scheduled_start')
             ->first();
 
-        $meta = $item
-            ? "NOW PLAYING: {$item->title}\nLENGTH: {$item->formatted_duration}"
-            : 'NO PLAYLIST ITEMS';
+        // Fall back to first item if schedule not yet calculated
+        if (! $item) {
+            $item = PlaylistItem::where('channel_id', $channel->id)
+                ->where('is_active', true)
+                ->orderBy('sort_order')
+                ->first();
+        }
+
+        $meta = $item ? $item->display_title : 'NO PLAYLIST ITEMS';
 
         file_put_contents($this->metaFilePath($channel), $meta);
     }
@@ -678,9 +913,7 @@ class TvPlayoutEngine
 
         // Atomic symlink swap
         $tmp = $active . '.tmp';
-        if (is_link($tmp) || file_exists($tmp)) {
-            unlink($tmp);
-        }
+        @unlink($tmp);
         symlink($target, $tmp);
         rename($tmp, $active);
     }

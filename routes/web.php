@@ -69,6 +69,8 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('channels/{channel}/playout/items', [TvPlayoutController::class, 'addItem'])->name('channels.playout.items.store');
     Route::post('channels/{channel}/playout/youtube', [TvPlayoutController::class, 'addYouTube'])->name('channels.playout.youtube');
     Route::delete('channels/{channel}/playout/items/{item}', [TvPlayoutController::class, 'destroyItem'])->name('channels.playout.items.destroy');
+    Route::put('channels/{channel}/playout/items/{item}/title', [TvPlayoutController::class, 'updateItemTitle'])->name('channels.playout.items.title');
+    Route::post('channels/{channel}/playout/items/{item}/download-youtube', [TvPlayoutController::class, 'downloadYouTube'])->name('channels.playout.items.download-youtube');
     Route::post('channels/{channel}/playout/reorder', [TvPlayoutController::class, 'reorder'])->name('channels.playout.reorder');
     Route::post('channels/{channel}/playout/recalculate', [TvPlayoutController::class, 'recalculate'])->name('channels.playout.recalculate');
     Route::post('channels/{channel}/playout/ticker', [TvPlayoutController::class, 'updateTicker'])->name('channels.playout.ticker');
@@ -78,7 +80,12 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('channels/{channel}/playout/logo-scale', [TvPlayoutController::class, 'updateLogoScale'])->name('channels.playout.logo-scale');
     Route::post('channels/{channel}/playout/logo-toggle', [TvPlayoutController::class, 'toggleLogo'])->name('channels.playout.logo-toggle');
     Route::post('channels/{channel}/playout/logo-position', [TvPlayoutController::class, 'updateLogoPosition'])->name('channels.playout.logo-position');
+    Route::post('channels/{channel}/playout/loop', [TvPlayoutController::class, 'updateLoop'])->name('channels.playout.loop');
     Route::post('channels/{channel}/playout/toggle-ticker', [TvPlayoutController::class, 'toggleTicker'])->name('channels.playout.toggle-ticker');
+    Route::post('channels/{channel}/playout/clock', [TvPlayoutController::class, 'updateClockSettings'])->name('channels.playout.clock');
+    Route::post('channels/{channel}/playout/ticker-settings', [TvPlayoutController::class, 'updateTickerSettings'])->name('channels.playout.ticker-settings');
+    Route::post('channels/{channel}/playout/resolution', [TvPlayoutController::class, 'updateResolution'])->name('channels.playout.resolution');
+    Route::post('channels/{channel}/playout/lowerthird', [TvPlayoutController::class, 'updateLowerthirdSettings'])->name('channels.playout.lowerthird');
 
     // ── Channels CRUD resource ────────────────────────────────────────────────
     Route::resource('channels', ChannelController::class);

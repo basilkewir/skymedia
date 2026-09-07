@@ -231,6 +231,121 @@ class TvPlayoutController extends Controller
     }
 
     /**
+     * Update a playlist item's custom title (for lower-third overlay).
+     */
+    public function updateItemTitle(Request $request, Channel $channel, PlaylistItem $item): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $data = $request->validate([
+            'custom_title' => 'nullable|string|max:500',
+        ]);
+
+        $item->update(['custom_title' => $data['custom_title'] ?: null]);
+
+        // Update the meta file on disk so overlay picks it up
+        $this->engine->writeMetaFile($channel);
+
+        return response()->json(['success' => true, 'display_title' => $item->display_title]);
+    }
+
+    /**
+     * Download a YouTube video to local disk so it plays reliably.
+     * Converts the item from youtube:ID to a local filepath.
+     */
+    public function downloadYouTube(Channel $channel, PlaylistItem $item): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        if (! $item->isYouTube()) {
+            return response()->json(['success' => false, 'error' => 'Not a YouTube item'], 422);
+        }
+
+        $videoId = $item->youtube_id;
+        $youtubeUrl = "https://www.youtube.com/watch?v={$videoId}";
+
+        $directory = $channel->dvr_directory . '/tv_media';
+        if (! is_dir($directory)) {
+            mkdir($directory, 0755, true);
+        }
+
+        $outputFile = $directory . '/' . $videoId . '.mp4';
+
+        // Check if already downloaded
+        if (file_exists($outputFile) && filesize($outputFile) > 1024) {
+            $item->update(['filepath' => $outputFile]);
+            $this->engine->recalculateSchedule($channel);
+            if ($this->engine->isRunning($channel)) {
+                $this->engine->rebuild($channel);
+            }
+            return response()->json(['success' => true, 'message' => 'Video already on disk — converted to local file']);
+        }
+
+        // Try yt-dlp download with multiple clients
+        $ytdlp = $this->findYtdlp();
+        if ($ytdlp === null) {
+            return response()->json(['success' => false, 'error' => 'yt-dlp not found on server'], 500);
+        }
+
+        $cookiePath = storage_path('app/youtube_cookies.txt');
+        $proxy = \App\Models\Setting::get('youtube_proxy', '') ?: '';
+        $clients = ['tv', 'tv_embedded', 'web_creator', 'ios', 'android'];
+
+        foreach ($clients as $client) {
+            $cmd = [
+                $ytdlp,
+                '--no-warnings',
+                '-f', 'best[ext=mp4]/best',
+                '--no-playlist',
+                '--extractor-args', "youtube:player_client={$client}",
+                '--js-runtimes', 'node',
+                '-o', $outputFile,
+            ];
+
+            if (file_exists($cookiePath)) {
+                $cmd[] = '--cookies';
+                $cmd[] = $cookiePath;
+            }
+
+            if ($proxy !== '') {
+                $cmd[] = '--proxy';
+                $cmd[] = $proxy;
+            }
+
+            $cmd[] = $youtubeUrl;
+
+            $proc = new \Symfony\Component\Process\Process($cmd);
+            $proc->setTimeout(300);
+            $proc->run();
+
+            if ($proc->isSuccessful() && file_exists($outputFile) && filesize($outputFile) > 1024) {
+                // Probe duration
+                $duration = $this->probeDuration($outputFile);
+                if ($duration > 0) {
+                    $item->update([
+                        'filepath' => $outputFile,
+                        'duration' => $duration,
+                    ]);
+                    $this->engine->recalculateSchedule($channel);
+                    if ($this->engine->isRunning($channel)) {
+                        $this->engine->rebuild($channel);
+                    }
+                    return response()->json(['success' => true, 'message' => "Downloaded to disk — {$item->title}"]);
+                }
+            }
+
+            @unlink($outputFile); // Clean up failed attempt
+        }
+
+        return response()->json([
+            'success' => false,
+            'error' => 'YouTube bot detection blocked the download. Download the video on your local machine and upload it as a media file instead.',
+        ], 422);
+    }
+
+    /**
      * Remove a playlist item.
      */
     public function destroyItem(Channel $channel, PlaylistItem $item): JsonResponse
@@ -297,6 +412,23 @@ class TvPlayoutController extends Controller
             'items' => $freshItems,
             'summary' => $summary,
         ]);
+    }
+
+    /**
+     * Update playlist loop count.
+     */
+    public function updateLoop(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $data = $request->validate([
+            'playlist_loop' => 'required|integer|min:0|max:10000',
+        ]);
+
+        $this->engine->updatePlaylistLoop($channel, $data['playlist_loop']);
+
+        return response()->json(['success' => true, 'playlist_loop' => $channel->fresh()->playlist_loop]);
     }
 
     /**
@@ -396,6 +528,7 @@ class TvPlayoutController extends Controller
 
         $ext = strtolower($file->getClientOriginalExtension() ?: 'png');
         $filepath = $directory . '/logo.' . $ext;
+        $mimeType = $file->getMimeType();
         $file->move($directory, 'logo.' . $ext);
 
         // Create a ChannelMedia entry (updateLogo() will clean up old ones)
@@ -404,7 +537,7 @@ class TvPlayoutController extends Controller
             'type' => 'vod',
             'name' => 'Logo',
             'filepath' => $filepath,
-            'mime_type' => $file->getMimeType(),
+            'mime_type' => $mimeType,
             'filesize' => filesize($filepath),
             'sort_order' => 0,
             'is_active' => true,
@@ -518,6 +651,18 @@ class TvPlayoutController extends Controller
     //  HELPERS
     // ═══════════════════════════════════════════════════════════════════
 
+    private function findYtdlp(): ?string
+    {
+        foreach (['/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp'] as $path) {
+            if (is_executable($path)) {
+                return $path;
+            }
+        }
+        $found = trim((string) shell_exec('which yt-dlp 2>/dev/null'));
+
+        return $found !== '' ? $found : null;
+    }
+
     private function probeDuration(string $filepath): float
     {
         try {
@@ -548,6 +693,87 @@ class TvPlayoutController extends Controller
         $m = floor(($seconds / 60) % 60);
         $s = floor($seconds % 60);
         return $h > 0 ? "{$h}h {$m}m {$s}s" : ($m > 0 ? "{$m}m {$s}s" : "{$s}s");
+    }
+
+    /**
+     * Update clock settings (position, size, color).
+     */
+    public function updateClockSettings(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $data = $request->validate([
+            'position' => 'required|string|in:top-left,top-right,bottom-left,bottom-right',
+            'fontsize' => 'required|integer|min:12|max:72',
+            'color' => 'required|string|max:30',
+            'enabled' => 'nullable|boolean',
+        ]);
+
+        $this->engine->updateClockSettings($channel, $data);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Update ticker settings (bg color, opacity, font size, font color, speed, position).
+     */
+    public function updateTickerSettings(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $data = $request->validate([
+            'bg_color' => 'nullable|string|max:30',
+            'bg_opacity' => 'nullable|integer|min:0|max:100',
+            'font_size' => 'nullable|integer|min:10|max:72',
+            'font_color' => 'nullable|string|max:30',
+            'speed' => 'nullable|integer|min:10|max:500',
+            'position' => 'nullable|string|in:top,center,bottom',
+        ]);
+
+        $this->engine->updateTickerSettings($channel, $data);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Update output resolution.
+     */
+    public function updateResolution(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $data = $request->validate([
+            'resolution' => 'required|string|max:20',
+        ]);
+
+        $this->engine->updateResolution($channel, $data['resolution']);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Update NOW PLAYING / lowerthird overlay settings.
+     */
+    public function updateLowerthirdSettings(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $data = $request->validate([
+            'position' => 'nullable|string|in:top-left,top-right,bottom-left,bottom-right',
+            'fontsize' => 'nullable|integer|min:10|max:72',
+            'font_color' => 'nullable|string|max:30',
+            'bg_color' => 'nullable|string|max:30',
+            'bg_opacity' => 'nullable|integer|min:0|max:100',
+            'enabled' => 'nullable|boolean',
+        ]);
+
+        $this->engine->updateLowerthirdSettings($channel, $data);
+
+        return response()->json(['success' => true]);
     }
 
     private function ensureAccess(Channel $channel): void

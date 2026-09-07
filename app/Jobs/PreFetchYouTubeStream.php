@@ -57,6 +57,18 @@ class PreFetchYouTubeStream implements ShouldQueue
             // Cache for 4 hours (YouTube URLs typically expire in ~6h)
             Cache::put($cacheKey, $directUrl, now()->addHours(4));
             Log::info("[YouTubePreFetch] Stream URL cached for item {$this->item->id}");
+
+            // Rebuild concat file so the playout picks up this URL immediately
+            try {
+                $channel = $this->item->channel;
+                $engine = app(\App\Services\TvPlayoutEngine::class);
+                if ($engine->isRunning($channel)) {
+                    $engine->rebuild($channel);
+                    Log::info("[YouTubePreFetch] Rebuilt concat for channel {$channel->id}");
+                }
+            } catch (\Throwable $e) {
+                Log::warning("[YouTubePreFetch] Rebuild failed: {$e->getMessage()}");
+            }
         } else {
             // Fallback: cache the local filler asset path
             $filler = storage_path('app/media/branding_filler.mp4');
@@ -96,7 +108,8 @@ class PreFetchYouTubeStream implements ShouldQueue
                 $ytdlp,
                 '--no-warnings',
                 '-g',
-                '--format', 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                // Single-stream format: concat demuxer needs one URL, not video+audio separately
+                '--format', 'best[ext=mp4][height<=1080]/best[ext=mp4]/best',
                 '--no-playlist',
                 '--extractor-args', "youtube:player_client={$client}",
                 '--js-runtimes', 'node',
@@ -120,9 +133,9 @@ class PreFetchYouTubeStream implements ShouldQueue
 
             if ($proc->isSuccessful()) {
                 $output = trim($proc->getOutput());
-                // yt-dlp -g outputs one URL per line (video + audio if separate)
-                $lines = array_filter(explode("\n", $output));
-                $url = trim($lines[0] ?? '');
+                // -g with a single-stream format outputs exactly one URL
+                $lines = array_filter(array_map('trim', explode("\n", $output)));
+                $url = $lines[0] ?? '';
 
                 if (str_starts_with($url, 'http://') || str_starts_with($url, 'https://')) {
                     return $url;
@@ -150,19 +163,19 @@ class PreFetchYouTubeStream implements ShouldQueue
 
     private function getCookiePath(): ?string
     {
-        // Check channel-level cookies first
+        // Prefer global cookie file (always kept in sync from Settings)
+        $globalPath = storage_path('app/youtube_cookies.txt');
+        if (file_exists($globalPath) && filesize($globalPath) > 50) {
+            return $globalPath;
+        }
+
+        // Fall back to channel-level cookies
         $channelCookies = $this->item->channel->youtube_cookies ?? '';
-        if (! empty($channelCookies)) {
+        if (! empty($channelCookies) && strlen($channelCookies) > 50) {
             $cookieFile = sys_get_temp_dir() . '/yt_cookies_' . $this->item->channel_id . '.txt';
             file_put_contents($cookieFile, trim($channelCookies));
 
             return $cookieFile;
-        }
-
-        // Fall back to global cookie file
-        $globalPath = storage_path('app/youtube_cookies.txt');
-        if (file_exists($globalPath)) {
-            return $globalPath;
         }
 
         return null;

@@ -136,50 +136,83 @@
                             </form>
                             <p v-if="youtubeError" class="mt-1 text-xs text-red-400">{{ youtubeError }}</p>
                             <p v-if="youtubeSuccess" class="mt-1 text-xs text-green-400">{{ youtubeSuccess }}</p>
+                            <!-- Loop control -->
+                            <div class="flex items-center gap-3 mt-3 pt-3 border-t border-slate-800">
+                                <label class="text-xs text-slate-500">Loop</label>
+                                <div class="flex items-center gap-1.5">
+                                    <button v-for="opt in loopOptions" :key="opt.value" type="button"
+                                            @click="setLoop(opt.value)"
+                                            :class="['px-2.5 py-1 text-xs rounded-lg border transition-colors',
+                                                     playlistLoop === opt.value
+                                                         ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
+                                                         : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700']">
+                                        {{ opt.label }}
+                                    </button>
+                                    <div class="flex items-center gap-1 ml-1">
+                                        <input v-model.number="customLoopValue" type="number" min="1" max="10000"
+                                               placeholder="N"
+                                               class="w-16 form-input text-xs font-mono text-center"
+                                               :disabled="playlistLoop !== 0"
+                                               @change="setLoop(customLoopValue || 0)" />
+                                        <span class="text-[10px] text-slate-600">×</span>
+                                    </div>
+                                </div>
+                                <span class="text-[10px] text-slate-600 ml-1">{{ loopDescription }}</span>
+                            </div>
                         </div>
 
                         <!-- Table header -->
                         <div class="grid grid-cols-12 gap-2 bg-slate-800/50 px-6 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider">
                             <div class="col-span-1 text-center">#</div>
-                            <div class="col-span-4">Title</div>
+                            <div class="col-span-4">Title (lower-third)</div>
                             <div class="col-span-2 font-mono">Duration</div>
                             <div class="col-span-2 font-mono">Air Start</div>
-                            <div class="col-span-2 font-mono">Air End</div>
-                            <div class="col-span-1"></div>
+                            <div class="col-span-3 text-right">Actions</div>
                         </div>
 
                         <!-- Playlist items -->
                         <div class="divide-y divide-slate-800/50">
                             <div v-for="(item, index) in items" :key="item.id"
-                                 class="grid grid-cols-12 gap-2 px-6 py-3 items-center hover:bg-slate-800/20 transition-colors"
+                                 class="px-6 py-3 hover:bg-slate-800/20 transition-colors"
                                  draggable="true"
                                  @dragstart="dragStart(index, $event)"
                                  @dragover.prevent="dragOver(index)"
                                  @drop="drop(index)"
                                  @dragend="dragEnd">
-                                <div class="col-span-1 flex items-center justify-center">
-                                    <span class="text-xs font-mono text-slate-500">{{ index + 1 }}</span>
-                                </div>
-                                <div class="col-span-4 truncate text-sm text-slate-200 font-medium">
-                                    <span v-if="item.filepath?.startsWith('youtube:')"
-                                          class="inline-block px-1.5 py-0.5 bg-red-500/20 text-red-400 text-xs rounded mr-1.5 font-mono">YT</span>
-                                    {{ item.title }}
-                                </div>
-                                <div class="col-span-2 font-mono text-xs text-cyan-400">
-                                    {{ item.formatted_duration }}
-                                </div>
-                                <div class="col-span-2 font-mono text-xs text-emerald-400">
-                                    {{ formatTime(item.scheduled_start) }}
-                                </div>
-                                <div class="col-span-2 font-mono text-xs text-rose-400">
-                                    {{ formatTime(item.scheduled_end) }}
-                                </div>
-                                <div class="col-span-1 flex items-center justify-end gap-1">
-                                    <button v-if="index > 0" @click="moveUp(index)"
-                                            class="p-1 text-slate-500 hover:text-white transition-colors" title="Move up">↑</button>
-                                    <button v-if="index < items.length - 1" @click="moveDown(index)"
-                                            class="p-1 text-slate-500 hover:text-white transition-colors" title="Move down">↓</button>
-                                    <button @click="removeItem(item)" class="p-1 text-slate-500 hover:text-red-400 transition-colors" title="Remove">✕</button>
+                                <div class="grid grid-cols-12 gap-2 items-center">
+                                    <div class="col-span-1 flex items-center justify-center">
+                                        <span class="text-xs font-mono text-slate-500">{{ index + 1 }}</span>
+                                    </div>
+                                    <div class="col-span-4 text-sm text-slate-200 font-medium min-w-0">
+                                        <div class="flex items-center gap-1.5">
+                                            <span v-if="item.filepath?.startsWith('youtube:')"
+                                                  class="inline-block px-1.5 py-0.5 bg-red-500/20 text-red-400 text-xs rounded font-mono flex-shrink-0">YT</span>
+                                            <span class="truncate">{{ item.custom_title || item.title }}</span>
+                                        </div>
+                                        <div v-if="item.custom_title && item.custom_title !== item.title" class="text-[10px] text-slate-600 truncate mt-0.5">
+                                            Original: {{ item.title }}
+                                        </div>
+                                    </div>
+                                    <div class="col-span-2 font-mono text-xs text-cyan-400">
+                                        {{ item.formatted_duration }}
+                                    </div>
+                                    <div class="col-span-2 font-mono text-xs text-emerald-400">
+                                        {{ formatTime(item.scheduled_start) }}
+                                    </div>
+                                    <div class="col-span-3 flex items-center justify-end gap-1">
+                                        <button @click="editItemTitle(item)"
+                                                class="px-1.5 py-1 text-xs text-slate-500 hover:text-indigo-400 transition-colors" title="Edit display title">✎</button>
+                                        <button v-if="item.filepath?.startsWith('youtube:')" @click="downloadYouTubeItem(item)"
+                                                :disabled="item._downloading"
+                                                class="px-1.5 py-1 text-xs transition-colors"
+                                                :class="item._downloading ? 'text-amber-400 animate-pulse' : 'text-slate-500 hover:text-green-400'"
+                                                title="Download to disk for reliable playback">⬇</button>
+                                        <button v-if="index > 0" @click="moveUp(index)"
+                                                class="p-1 text-slate-500 hover:text-white transition-colors" title="Move up">↑</button>
+                                        <button v-if="index < items.length - 1" @click="moveDown(index)"
+                                                class="p-1 text-slate-500 hover:text-white transition-colors" title="Move down">↓</button>
+                                        <button @click="removeItem(item)" class="p-1 text-slate-500 hover:text-red-400 transition-colors" title="Remove">✕</button>
+                                    </div>
                                 </div>
                             </div>
                             <div v-if="items.length === 0" class="px-6 py-16 text-center text-slate-500 text-sm">
@@ -276,17 +309,25 @@
                                 </div>
                             </div>
 
-                            <!-- X / Y fine-tune -->
+                            <!-- X / Y fine-tune with sliders -->
                             <div class="grid grid-cols-2 gap-2">
                                 <div>
                                     <label class="text-[10px] text-slate-500">X <span class="text-slate-600">(neg = from right)</span></label>
-                                    <input v-model.number="logoX" type="number" min="-3840" max="3840"
-                                           @change="clampLogoX" class="form-input text-xs mt-1 font-mono" />
+                                    <div class="flex items-center gap-2 mt-1">
+                                        <input v-model.number="logoX" type="range" :min="logoXRange.min" :max="logoXRange.max" step="1"
+                                               class="flex-1 accent-indigo-500" />
+                                        <input v-model.number="logoX" type="number" :min="logoXRange.min" :max="logoXRange.max"
+                                               class="w-20 form-input text-xs font-mono text-center" />
+                                    </div>
                                 </div>
                                 <div>
                                     <label class="text-[10px] text-slate-500">Y <span class="text-slate-600">(neg = from bottom)</span></label>
-                                    <input v-model.number="logoY" type="number" min="-2160" max="2160"
-                                           @change="clampLogoY" class="form-input text-xs mt-1 font-mono" />
+                                    <div class="flex items-center gap-2 mt-1">
+                                        <input v-model.number="logoY" type="range" :min="logoYRange.min" :max="logoYRange.max" step="1"
+                                               class="flex-1 accent-indigo-500" />
+                                        <input v-model.number="logoY" type="number" :min="logoYRange.min" :max="logoYRange.max"
+                                               class="w-20 form-input text-xs font-mono text-center" />
+                                    </div>
                                 </div>
                             </div>
 
@@ -330,18 +371,196 @@
                                   :disabled="!channel.ticker_enabled" />
                         <button @click="pushTicker" :disabled="!channel.ticker_enabled"
                                 class="mt-2 px-4 py-2 bg-blue-600 text-white text-xs rounded-lg disabled:opacity-50 w-full">
-                            Push to Air
+                            Push Text to Air
                         </button>
                         <p v-if="tickerMessage" class="mt-1 text-xs text-green-400">{{ tickerMessage }}</p>
+
+                        <!-- Ticker Style Settings -->
+                        <div class="mt-4 pt-4 border-t border-slate-800 space-y-3">
+                            <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Ticker Style</h3>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="text-xs text-slate-500 mb-1 block">Font Size: {{ tickerFontSize }}px</label>
+                                    <input v-model.number="tickerFontSize" type="range" min="10" max="72" step="1"
+                                           @change="saveTickerSettings()"
+                                           class="w-full accent-indigo-500" />
+                                </div>
+                                <div>
+                                    <label class="text-xs text-slate-500 mb-1 block">Speed: {{ tickerSpeed }}px/s</label>
+                                    <input v-model.number="tickerSpeed" type="range" min="10" max="500" step="5"
+                                           @change="saveTickerSettings()"
+                                           class="w-full accent-indigo-500" />
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="text-xs text-slate-500 mb-1 block">Font Color</label>
+                                    <div class="flex items-center gap-2">
+                                        <input v-model="tickerFontColor" type="color"
+                                               class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
+                                        <input v-model="tickerFontColor" type="text"
+                                               class="flex-1 form-input text-xs font-mono"
+                                               @change="saveTickerSettings()" />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="text-xs text-slate-500 mb-1 block">Background</label>
+                                    <div class="flex items-center gap-2">
+                                        <input v-model="tickerBgColor" type="color"
+                                               class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
+                                        <input v-model="tickerBgColor" type="text"
+                                               class="flex-1 form-input text-xs font-mono"
+                                               @change="saveTickerSettings()" />
+                                    </div>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="text-xs text-slate-500 mb-1 block">Background Opacity: {{ tickerBgOpacity }}%</label>
+                                <input v-model.number="tickerBgOpacity" type="range" min="0" max="100" step="5"
+                                       @change="saveTickerSettings()"
+                                       class="w-full accent-indigo-500" />
+                            </div>
+                            <div>
+                                <label class="text-xs text-slate-500 mb-1 block">Position</label>
+                                <div class="flex gap-2">
+                                    <button v-for="tp in tickerPositions" :key="tp.value" type="button"
+                                            @click="tickerPosition = tp.value; saveTickerSettings()"
+                                            :class="['px-3 py-1 text-xs rounded-lg border transition-colors flex-1 text-center',
+                                                     tickerPosition === tp.value
+                                                         ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
+                                                         : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700']">
+                                        {{ tp.label }}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Clock Settings -->
+                    <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+                        <div class="flex items-center justify-between mb-3">
+                            <h2 class="text-sm font-semibold text-white">Clock Overlay</h2>
+                            <button @click="clockEnabled = !clockEnabled; saveClockSettings()"
+                                    :class="['px-2 py-1 text-xs rounded-lg transition-colors border',
+                                             clockEnabled ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-slate-700 text-slate-400 border-slate-600']">
+                                {{ clockEnabled ? 'ON' : 'OFF' }}
+                            </button>
+                        </div>
+                        <div class="space-y-3" :class="{ 'opacity-50 pointer-events-none': !clockEnabled }">
+                            <div>
+                                <label class="text-xs text-slate-500 mb-1 block">Position</label>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <button v-for="cp in clockPositions" :key="cp.value" type="button"
+                                            @click="clockPosition = cp.value; saveClockSettings()"
+                                            :class="['px-3 py-1.5 text-xs rounded-lg border transition-colors text-left',
+                                                     clockPosition === cp.value
+                                                         ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
+                                                         : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700']">
+                                        {{ cp.icon }} {{ cp.label }}
+                                    </button>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="text-xs text-slate-500 mb-1 block">Font Size: {{ clockFontsize }}px</label>
+                                <input v-model.number="clockFontsize" type="range" min="12" max="72" step="2"
+                                       @change="saveClockSettings()"
+                                       class="w-full accent-indigo-500" />
+                            </div>
+                            <div>
+                                <label class="text-xs text-slate-500 mb-1 block">Color</label>
+                                <div class="flex items-center gap-2">
+                                    <input v-model="clockColor" type="color" class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
+                                    <input v-model="clockColor" type="text" class="flex-1 form-input text-xs font-mono"
+                                           @change="saveClockSettings()" />
+                                </div>
+                            </div>
+                        </div>
+                        <p v-if="clockMessage" class="mt-1 text-xs text-green-400">{{ clockMessage }}</p>
+                    </div>
+
+                    <!-- NOW PLAYING / Lowerthird Settings -->
+                    <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+                        <div class="flex items-center justify-between mb-3">
+                            <h2 class="text-sm font-semibold text-white">NOW PLAYING Overlay</h2>
+                            <button @click="lowerthirdEnabled = !lowerthirdEnabled; saveLowerthirdSettings()"
+                                    :class="['px-2 py-1 text-xs rounded-lg transition-colors border',
+                                             lowerthirdEnabled ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-slate-700 text-slate-400 border-slate-600']">
+                                {{ lowerthirdEnabled ? 'ON' : 'OFF' }}
+                            </button>
+                        </div>
+                        <div class="space-y-3" :class="{ 'opacity-50 pointer-events-none': !lowerthirdEnabled }">
+                            <div>
+                                <label class="text-xs text-slate-500 mb-1 block">Position</label>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <button v-for="lp in lowerthirdPositions" :key="lp.value" type="button"
+                                            @click="lowerthirdPosition = lp.value; saveLowerthirdSettings()"
+                                            :class="['px-3 py-1.5 text-xs rounded-lg border transition-colors text-left',
+                                                     lowerthirdPosition === lp.value
+                                                         ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
+                                                         : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700']">
+                                        {{ lp.icon }} {{ lp.label }}
+                                    </button>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="text-xs text-slate-500 mb-1 block">Font Size: {{ lowerthirdFontsize }}px</label>
+                                <input v-model.number="lowerthirdFontsize" type="range" min="10" max="72" step="2"
+                                       @change="saveLowerthirdSettings()"
+                                       class="w-full accent-indigo-500" />
+                            </div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="text-xs text-slate-500 mb-1 block">Font Color</label>
+                                    <div class="flex items-center gap-2">
+                                        <input v-model="lowerthirdFontColor" type="color"
+                                               class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
+                                        <input v-model="lowerthirdFontColor" type="text"
+                                               class="flex-1 form-input text-xs font-mono"
+                                               @change="saveLowerthirdSettings()" />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="text-xs text-slate-500 mb-1 block">Background</label>
+                                    <div class="flex items-center gap-2">
+                                        <input v-model="lowerthirdBgColor" type="color"
+                                               class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
+                                        <input v-model="lowerthirdBgColor" type="text"
+                                               class="flex-1 form-input text-xs font-mono"
+                                               @change="saveLowerthirdSettings()" />
+                                    </div>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="text-xs text-slate-500 mb-1 block">Background Opacity: {{ lowerthirdBgOpacity }}%</label>
+                                <input v-model.number="lowerthirdBgOpacity" type="range" min="0" max="100" step="5"
+                                       @change="saveLowerthirdSettings()"
+                                       class="w-full accent-indigo-500" />
+                            </div>
+                        </div>
+                        <p v-if="lowerthirdMessage" class="mt-1 text-xs text-green-400">{{ lowerthirdMessage }}</p>
                     </div>
 
                     <!-- Encoding Settings -->
                     <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
-                        <h2 class="text-sm font-semibold text-white mb-3">Output Encoding</h2>
+                        <h2 class="text-sm font-semibold text-white mb-3">Output Settings</h2>
                         <div class="space-y-3">
                             <div>
+                                <label class="text-xs text-slate-500 mb-1 block">Output Resolution</label>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <button v-for="res in resolutions" :key="res.value" type="button"
+                                            @click="outputResolution = res.value; saveResolution()"
+                                            :class="['px-3 py-1.5 text-xs rounded-lg border transition-colors text-left font-mono',
+                                                     outputResolution === res.value
+                                                         ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
+                                                         : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700']">
+                                        {{ res.label }}
+                                    </button>
+                                </div>
+                                <p v-if="resolutionMessage" class="mt-1 text-xs text-green-400">{{ resolutionMessage }}</p>
+                            </div>
+                            <div>
                                 <div class="text-xs text-slate-500">Video</div>
-                                <div class="text-sm font-mono text-slate-300">H.264 · {{ channel.push_video_bitrate || 3000 }} kbps</div>
+                                <div class="text-sm font-mono text-slate-300">H.264 · {{ channel.push_video_bitrate || 3000 }} kbps · {{ channel.push_framerate || 25 }} fps</div>
                             </div>
                             <div>
                                 <div class="text-xs text-slate-500">Audio</div>
@@ -393,13 +612,65 @@ const pushRunning = ref(props.channel.push_status === 'live')
 const tickerText = ref(props.channel.ticker_text || '')
 const tickerMessage = ref('')
 
+// Ticker style settings
+const tickerFontSize = ref(props.channel.ticker_font_size ?? 24)
+const tickerSpeed = ref(props.channel.ticker_speed ?? 80)
+const tickerFontColor = ref(props.channel.ticker_font_color ?? 'white')
+const tickerBgColor = ref(props.channel.ticker_bg_color ?? '#000000')
+const tickerBgOpacity = ref(props.channel.ticker_bg_opacity ?? 65)
+const tickerPosition = ref(props.channel.ticker_position ?? 'bottom')
+const tickerPositions = [
+    { value: 'top', label: 'Top' },
+    { value: 'center', label: 'Center' },
+    { value: 'bottom', label: 'Bottom' },
+]
+
+// Resolution settings
+const outputResolution = ref(props.channel.output_resolution ?? '1920x1080')
+const resolutionMessage = ref('')
+const resolutions = [
+    { value: '1920x1080', label: '1920×1080 (Full HD)' },
+    { value: '1280x720', label: '1280×720 (HD)' },
+    { value: '854x480', label: '854×480 (SD)' },
+    { value: '640x360', label: '640×360 (Low)' },
+    { value: 'auto', label: 'Auto (no scale)' },
+]
+
+// Clock settings
+const clockPosition = ref(props.channel.clock_position || 'top-left')
+const clockFontsize = ref(props.channel.clock_fontsize || 28)
+const clockColor = ref(props.channel.clock_color || 'white')
+const clockEnabled = ref(props.channel.clock_enabled !== false)
+const clockMessage = ref('')
+const clockPositions = [
+    { value: 'top-left', icon: '↖', label: 'Top Left' },
+    { value: 'top-right', icon: '↗', label: 'Top Right' },
+    { value: 'bottom-left', icon: '↙', label: 'Bottom Left' },
+    { value: 'bottom-right', icon: '↘', label: 'Bottom Right' },
+]
+
+// Lowerthird / NOW PLAYING settings
+const lowerthirdPosition = ref(props.channel.lowerthird_position ?? 'bottom-left')
+const lowerthirdFontsize = ref(props.channel.lowerthird_fontsize ?? 20)
+const lowerthirdFontColor = ref(props.channel.lowerthird_font_color ?? '#ffffff')
+const lowerthirdBgColor = ref(props.channel.lowerthird_bg_color ?? '#334155')
+const lowerthirdBgOpacity = ref(props.channel.lowerthird_bg_opacity ?? 80)
+const lowerthirdEnabled = ref(props.channel.lowerthird_enabled !== false)
+const lowerthirdMessage = ref('')
+const lowerthirdPositions = [
+    { value: 'top-left', icon: '↖', label: 'Top Left' },
+    { value: 'top-right', icon: '↗', label: 'Top Right' },
+    { value: 'bottom-left', icon: '↙', label: 'Bottom Left' },
+    { value: 'bottom-right', icon: '↘', label: 'Bottom Right' },
+]
+
 // Parse stored "x:y" or named preset into x/y numbers
 function parseLogoPosition(pos) {
     if (!pos) return { x: 20, y: 20 }
     const match = pos.match(/^(-?\d+):(-?\d+)$/)
     if (match) return { x: parseInt(match[1]), y: parseInt(match[2]) }
     const _presets = { 'top-left': [20,20], 'top-right': [-20,20], 'bottom-left': [20,-20], 'bottom-right': [-20,-20] }
-    const [x, y] = presets[pos] || [20, 20]
+    const [x, y] = _presets[pos] || [20, 20]
     return { x, y }
 }
 const parsedPos = parseLogoPosition(props.channel.logo_position)
@@ -436,6 +707,44 @@ const recalcMessage = ref('')
 const recalcError = ref('')
 let hlsPlayer = null
 let statusTimer = null
+
+// Playlist loop
+const playlistLoop = ref(props.channel.playlist_loop ?? 0)
+const customLoopValue = ref(props.channel.playlist_loop > 0 ? props.channel.playlist_loop : 10)
+const loopOptions = [
+    { value: 0, label: 'Auto 24h' },
+    { value: 1, label: '1×' },
+    { value: 2, label: '2×' },
+    { value: 5, label: '5×' },
+    { value: 10, label: '10×' },
+]
+const loopDescription = computed(() => {
+    if (playlistLoop.value === 0) return 'Fills 24 hours automatically'
+    return `Play playlist ${playlistLoop.value}× then stop`
+})
+
+async function setLoop(val) {
+    playlistLoop.value = val
+    if (val === 0) {
+        customLoopValue.value = 10
+    } else {
+        customLoopValue.value = val
+    }
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        await fetch(route('channels.playout.loop', props.channel.id), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+            body: JSON.stringify({ playlist_loop: val }),
+        })
+    } catch (e) {
+        console.error('Loop update failed', e)
+    }
+}
 
 // Drag and drop
 const dragIndex = ref(null)
@@ -593,13 +902,72 @@ async function addYouTube() {
     }
 }
 
-function removeItem(item) {
-    if (!confirm(`Remove "${item.title}" from playlist?`)) return
-    router.delete(route('channels.playout.items.destroy', [props.channel.id, item.id]), {
-        onSuccess: () => {
-            items.value = items.value.filter(i => i.id !== item.id)
+function editItemTitle(item) {
+    const current = item.custom_title || ''
+    const newTitle = prompt('Set display title for overlay (leave empty to use original):', current)
+    if (newTitle === null) return // cancelled
+
+    const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+    fetch(route('channels.playout.items.title', [props.channel.id, item.id]), {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
         },
+        body: JSON.stringify({ custom_title: newTitle || null }),
     })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            item.custom_title = data.display_title !== item.title ? data.display_title : null
+        }
+    })
+}
+
+async function downloadYouTubeItem(item) {
+    if (!confirm(`Download this video to disk?\n\n"${item.title}"\n\nThis may take several minutes.`)) return
+    item._downloading = true
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.playout.items.download-youtube', [props.channel.id, item.id]), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+        })
+        const data = await res.json()
+        if (data.success) {
+            // Refresh the page to get updated item data
+            router.reload({ only: ['items', 'summary'] })
+        } else {
+            alert(data.error || 'Download failed')
+        }
+    } catch (e) {
+        alert('Network error: ' + e.message)
+    } finally {
+        item._downloading = false
+    }
+}
+
+async function removeItem(item) {
+    if (!confirm(`Remove "${item.custom_title || item.title}" from playlist?`)) return
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        await fetch(route('channels.playout.items.destroy', [props.channel.id, item.id]), {
+            method: 'DELETE',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+        })
+        items.value = items.value.filter(i => i.id !== item.id)
+        router.reload({ only: ['summary'] })
+    } catch (e) {
+        console.error('Remove failed', e)
+    }
 }
 
 async function startPlayout() {
@@ -694,6 +1062,108 @@ async function toggleTicker() {
     }
 }
 
+async function saveClockSettings() {
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.playout.clock', props.channel.id), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+            body: JSON.stringify({
+                position: clockPosition.value,
+                fontsize: clockFontsize.value,
+                color: clockColor.value,
+                enabled: clockEnabled.value,
+            }),
+        })
+        const data = await res.json()
+        if (data.success) {
+            clockMessage.value = 'Clock updated — playout will restart'
+            setTimeout(() => clockMessage.value = '', 4000)
+        }
+    } catch (e) {
+        clockMessage.value = 'Error: ' + e.message
+    }
+}
+
+async function saveTickerSettings() {
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        await fetch(route('channels.playout.ticker-settings', props.channel.id), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+            body: JSON.stringify({
+                bg_color: tickerBgColor.value,
+                bg_opacity: tickerBgOpacity.value,
+                font_size: tickerFontSize.value,
+                font_color: tickerFontColor.value,
+                speed: tickerSpeed.value,
+                position: tickerPosition.value,
+            }),
+        })
+    } catch (e) {
+        console.error('Ticker settings save failed', e)
+    }
+}
+
+async function saveResolution() {
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.playout.resolution', props.channel.id), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+            body: JSON.stringify({ resolution: outputResolution.value }),
+        })
+        const data = await res.json()
+        if (data.success) {
+            resolutionMessage.value = 'Resolution updated — playout will restart'
+            setTimeout(() => resolutionMessage.value = '', 4000)
+        }
+    } catch (e) {
+        resolutionMessage.value = 'Error: ' + e.message
+    }
+}
+
+async function saveLowerthirdSettings() {
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.playout.lowerthird', props.channel.id), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+            body: JSON.stringify({
+                position: lowerthirdPosition.value,
+                fontsize: lowerthirdFontsize.value,
+                font_color: lowerthirdFontColor.value,
+                bg_color: lowerthirdBgColor.value,
+                bg_opacity: lowerthirdBgOpacity.value,
+                enabled: lowerthirdEnabled.value,
+            }),
+        })
+        const data = await res.json()
+        if (data.success) {
+            lowerthirdMessage.value = 'NOW PLAYING updated — playout will restart'
+            setTimeout(() => lowerthirdMessage.value = '', 4000)
+        }
+    } catch (e) {
+        lowerthirdMessage.value = 'Error: ' + e.message
+    }
+}
+
 const posCanvas = ref(null)
 const canvasHover = ref(null)
 const presetMargin = ref(20)
@@ -727,6 +1197,10 @@ const logoMarkerStyle = computed(() => {
 
 const logoMarkerLabel = computed(() => `${logoX.value}, ${logoY.value}`)
 
+// Dynamic slider ranges based on canvas dimensions
+const logoXRange = computed(() => ({ min: -CANVAS_W, max: CANVAS_W }))
+const logoYRange = computed(() => ({ min: -CANVAS_H, max: CANVAS_H }))
+
 function onCanvasClick(e) {
     const rect = posCanvas.value.getBoundingClientRect()
     const pctX = (e.clientX - rect.left) / rect.width
@@ -753,9 +1227,6 @@ function onCanvasHover(e) {
     if (pctY > 1 - snapThreshold) y = -(CANVAS_H - y)
     canvasHover.value = { pct: { x: pctX, y: pctY }, label: `${x}, ${y}` }
 }
-
-function clampLogoX() { logoX.value = Math.max(-3840, Math.min(3840, logoX.value || 0)) }
-function clampLogoY() { logoY.value = Math.max(-2160, Math.min(2160, logoY.value || 0)) }
 
 function applyPreset(corner) {
     const m = presetMargin.value

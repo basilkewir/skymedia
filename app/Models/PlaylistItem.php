@@ -15,6 +15,7 @@ class PlaylistItem extends Model
     protected $fillable = [
         'channel_id',
         'title',
+        'custom_title',
         'filepath',
         'duration',
         'sort_order',
@@ -34,6 +35,16 @@ class PlaylistItem extends Model
     public function channel(): BelongsTo
     {
         return $this->belongsTo(Channel::class);
+    }
+
+    /**
+     * Get the display title — custom_title if set, otherwise the original title.
+     */
+    public function getDisplayTitleAttribute(): string
+    {
+        return $this->custom_title !== null && $this->custom_title !== ''
+            ? $this->custom_title
+            : $this->title;
     }
 
     /**

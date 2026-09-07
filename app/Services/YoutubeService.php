@@ -79,7 +79,7 @@ class YoutubeService
                 }
 
                 $cmd = [$ytdlp, '--js-runtimes', 'node', '--no-warnings', '-g',
-                        '--format', 'best[protocol=m3u8_native]/best',
+                        '--format', 'best[protocol=m3u8_native]/best[ext=mp4]/best',
                         '--no-playlist',
                         '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
                         '--extractor-args', $ytArgs];

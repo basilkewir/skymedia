@@ -28,7 +28,10 @@ class Channel extends Model
         'push_audio_codec', 'push_audio_bitrate', 'push_audio_samplerate', 'push_audio_channels',
         // DVR
         'dvr_duration', 'segment_duration', 'dvr_enabled', 'dvr_path',
-        'logo_media_id', 'logo_position', 'logo_scale', 'logo_enabled', 'ticker_enabled', 'ticker_text',
+        'logo_media_id', 'logo_position', 'logo_scale', 'logo_enabled', 'ticker_enabled', 'ticker_text', 'playlist_loop',
+        'ticker_bg_color', 'ticker_bg_opacity', 'ticker_font_size', 'ticker_font_color', 'ticker_speed', 'ticker_position',
+        'clock_position', 'clock_fontsize', 'clock_color', 'clock_enabled', 'output_resolution',
+        'lowerthird_position', 'lowerthird_fontsize', 'lowerthird_font_color', 'lowerthird_bg_color', 'lowerthird_bg_opacity', 'lowerthird_enabled',
         // Storage quota
         'storage_quota_bytes', 'storage_used_bytes',
         // Locale
@@ -59,6 +62,15 @@ class Channel extends Model
         'logo_scale' => 'integer',
         'logo_enabled' => 'boolean',
         'ticker_enabled' => 'boolean',
+        'playlist_loop' => 'integer',
+        'clock_fontsize' => 'integer',
+        'ticker_bg_opacity' => 'integer',
+        'ticker_font_size' => 'integer',
+        'ticker_speed' => 'integer',
+        'lowerthird_fontsize' => 'integer',
+        'lowerthird_bg_opacity' => 'integer',
+        'lowerthird_enabled' => 'boolean',
+        'clock_enabled' => 'boolean',
         'record_duration' => 'integer',
         'keep_recordings' => 'integer',
         'recording_burn_timestamp' => 'boolean',

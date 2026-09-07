@@ -1753,7 +1753,11 @@ class FFmpegService
         if ($dest->username || $dest->password) {
             $user = $dest->username ?? '';
             $pass = $dest->password ?? '';
-            $target = preg_replace('#^(rtmps?://)#', "$1{$user}:{$pass}@", $target);
+            $target = preg_replace_callback(
+                '#^(rtmps?://)#',
+                fn ($m) => $m[1] . $user . ':' . $pass . '@',
+                $target
+            );
         }
 
         return $target;
@@ -1802,9 +1806,9 @@ class FFmpegService
         if ($channel->push_username || $channel->push_password) {
             $user = $channel->push_username ?? '';
             $pass = $channel->push_password ?? '';
-            $target = preg_replace(
+            $target = preg_replace_callback(
                 '#^(rtmps?://)#',
-                "$1{$user}:{$pass}@",
+                fn ($m) => $m[1] . $user . ':' . $pass . '@',
                 $target
             );
         }
