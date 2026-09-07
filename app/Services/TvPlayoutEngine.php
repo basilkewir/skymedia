@@ -780,16 +780,20 @@ class TvPlayoutEngine
 
     private function getYouTubeCookiePath(PlaylistItem $item): ?string
     {
-        $global = storage_path('app/youtube_cookies.txt');
-        if (file_exists($global) && filesize($global) > 50) {
-            return $global;
-        }
+        // Prefer channel-level cookies if they contain auth fields
         $cookies = $item->channel->youtube_cookies ?? '';
-        if (strlen($cookies) > 50) {
+        if (strlen($cookies) > 50 && str_contains($cookies, 'LOGIN_INFO')) {
             $tmp = sys_get_temp_dir() . '/yt_cookies_' . $item->channel_id . '.txt';
             file_put_contents($tmp, trim($cookies));
             return $tmp;
         }
+
+        // Fallback to global file
+        $global = storage_path('app/youtube_cookies.txt');
+        if (file_exists($global) && filesize($global) > 50) {
+            return $global;
+        }
+
         return null;
     }
 
