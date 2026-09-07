@@ -62,7 +62,20 @@ class TvPlayoutEngine
         }
 
         // Build and start the FFmpeg command
+        // If an explicit resume offset was saved (e.g. from restartWithResume), use it.
+        // Otherwise, if last_live_at is set and in the past, compute where we should
+        // be in the playlist right now so playback starts at the correct position
+        // (e.g. a video scheduled at 12:11 that is started at 12:50 seeks to 12:50-12:11=39min in).
         $resumeOffset = (int) ($channel->playout_resume_offset ?? 0);
+        if ($resumeOffset === 0 && $channel->last_live_at && $channel->last_live_at->isPast()) {
+            $totalDuration = (float) PlaylistItem::where('channel_id', $channel->id)
+                ->where('is_active', true)
+                ->sum('duration');
+            if ($totalDuration > 0) {
+                $elapsed = (float) $channel->last_live_at->diffInSeconds(now(), true);
+                $resumeOffset = (int) fmod($elapsed, $totalDuration);
+            }
+        }
         $cmd = $this->buildCommand($channel, $concatFile, $resumeOffset);
         $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
         $logFile = $this->ffmpeg->logFile($channel, 'tv_playout');
