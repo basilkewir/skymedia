@@ -690,8 +690,8 @@ class TvPlayoutEngine
         $url        = "https://www.youtube.com/watch?v={$videoId}";
         $path       = '/usr/local/bin:/usr/bin:/bin';
 
-        // Player clients to try in order
-        $clients = ['tv', 'tv_embedded', 'web_safari', 'ios'];
+        // Player clients to try in order (web works best without valid cookies)
+        $clients = ['web', 'web_safari', 'ios'];
 
         // Build a shell script that tries each client with timeout
         $cookieArg = ($cookiePath !== null) ? '--cookies ' . escapeshellarg($cookiePath) : '';
@@ -700,7 +700,7 @@ class TvPlayoutEngine
         $clientAttempts = '';
         foreach ($clients as $i => $client) {
             $attemptCmd = $ytdlp
-                . ' --no-warnings --socket-timeout 20'
+                . ' --js-runtimes node --no-warnings --socket-timeout 20'
                 . ' --retries 1'
                 . ' --format "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"'
                 . ' --merge-output-format mp4'

@@ -54,7 +54,7 @@ class YoutubeService
         $url   = $channel->source_url;
 
         // Player clients, ordered best-chance-first for bot evasion.
-        $playerClients = ['tv', 'tv_embedded', 'web', 'web_safari', 'ios', 'android'];
+        $playerClients = ['web', 'web_safari', 'ios'];
 
         $cookieFile = null;
         if (!empty($channel->youtube_cookies)) {
