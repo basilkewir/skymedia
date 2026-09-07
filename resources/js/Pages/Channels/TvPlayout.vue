@@ -514,40 +514,69 @@
                             </button>
                         </div>
                         <div class="space-y-3" :class="{ 'opacity-50 pointer-events-none': !clockEnabled }">
+                            <!-- Timezone selector -->
                             <div>
-                                <label class="text-xs text-slate-500 mb-1 block">Position</label>
-                                <div class="grid grid-cols-2 gap-2">
-                                    <button v-for="cp in clockPositions" :key="cp.value" type="button"
-                                            @click="clockPosition = cp.value; clockX = null; clockY = null; saveClockSettings()"
-                                            :class="['px-3 py-1.5 text-xs rounded-lg border transition-colors text-left',
-                                                     clockPosition === cp.value && clockX === null
-                                                         ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
-                                                         : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700']">
-                                        {{ cp.icon }} {{ cp.label }}
-                                    </button>
+                                <label class="text-xs text-slate-500 mb-1 block">Timezone</label>
+                                <select v-model="clockTimezone" @change="saveClockSettings()"
+                                        class="w-full form-input text-xs font-mono">
+                                    <option v-for="tz in timezones" :key="tz.value" :value="tz.value">{{ tz.label }}</option>
+                                </select>
+                            </div>
+                            <!-- Canvas position picker -->
+                            <p class="text-[10px] text-slate-500 uppercase tracking-wider">Position <span class="text-slate-600 normal-case">(click canvas or use sliders)</span></p>
+                            <div ref="clockCanvas"
+                                 @click="onClockCanvasClick"
+                                 @mousemove="onClockCanvasHover"
+                                 @mouseleave="clockCanvasHover = null"
+                                 class="relative w-full aspect-video bg-slate-950 border border-slate-700 rounded-lg cursor-crosshair overflow-hidden select-none">
+                                <div class="absolute inset-0 pointer-events-none">
+                                    <div class="absolute left-1/3 top-0 bottom-0 border-l border-slate-800/60"></div>
+                                    <div class="absolute left-2/3 top-0 bottom-0 border-l border-slate-800/60"></div>
+                                    <div class="absolute top-1/3 left-0 right-0 border-t border-slate-800/60"></div>
+                                    <div class="absolute top-2/3 left-0 right-0 border-t border-slate-800/60"></div>
                                 </div>
-                                <div class="mt-2">
-                                    <label class="text-xs text-slate-500 mb-1 block">Custom X / Y position (pixels, overrides preset)</label>
-                                    <div class="flex gap-2">
-                                        <input v-model.number="clockX" type="number" placeholder="X"
-                                               class="w-full form-input text-xs font-mono"
-                                               @change="saveClockSettings()" />
-                                        <input v-model.number="clockY" type="number" placeholder="Y"
-                                               class="w-full form-input text-xs font-mono"
-                                               @change="saveClockSettings()" />
-                                        <button v-if="clockX !== null || clockY !== null" type="button"
-                                                @click="clockX = null; clockY = null; saveClockSettings()"
-                                                class="px-2 py-1 text-xs rounded-lg border bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700 whitespace-nowrap">
-                                            Reset
-                                        </button>
+                                <div v-if="clockCanvasHover" class="absolute pointer-events-none"
+                                     :style="{ left: clockCanvasHover.pct.x*100+'%', top: clockCanvasHover.pct.y*100+'%', transform:'translate(-50%,-50%)' }">
+                                    <div class="w-2.5 h-2.5 border border-amber-400/70 rounded-full"></div>
+                                </div>
+                                <div v-if="clockCanvasHover" class="absolute bottom-1 left-1/2 -translate-x-1/2 text-[8px] font-mono text-amber-400 pointer-events-none bg-slate-950/80 px-1 rounded">
+                                    {{ clockCanvasHover.label }}
+                                </div>
+                                <!-- Current marker -->
+                                <div class="absolute pointer-events-none" :style="clockMarkerStyle">
+                                    <div class="w-3.5 h-3.5 bg-amber-500 border-2 border-white rounded-full shadow-lg -translate-x-1/2 -translate-y-1/2"></div>
+                                    <div class="absolute top-4 left-1/2 -translate-x-1/2 whitespace-nowrap text-[8px] font-mono text-white bg-amber-600/90 px-1 rounded">
+                                        {{ clockMarkerLabel }}
                                     </div>
                                 </div>
                             </div>
+                            <!-- X/Y sliders -->
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label class="text-[10px] text-slate-500">X <span class="text-slate-600">(neg=from right)</span></label>
+                                    <div class="flex items-center gap-1 mt-1">
+                                        <input v-model.number="clockX" type="range" :min="-CANVAS_W" :max="CANVAS_W" step="1" class="flex-1 accent-amber-500" />
+                                        <input v-model.number="clockX" type="number" :min="-CANVAS_W" :max="CANVAS_W" class="w-16 form-input text-xs font-mono text-center" />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="text-[10px] text-slate-500">Y <span class="text-slate-600">(neg=from bottom)</span></label>
+                                    <div class="flex items-center gap-1 mt-1">
+                                        <input v-model.number="clockY" type="range" :min="-CANVAS_H" :max="CANVAS_H" step="1" class="flex-1 accent-amber-500" />
+                                        <input v-model.number="clockY" type="number" :min="-CANVAS_H" :max="CANVAS_H" class="w-16 form-input text-xs font-mono text-center" />
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Corner presets -->
+                            <div class="grid grid-cols-2 gap-1.5">
+                                <button v-for="p in clockPresets" :key="p.key" type="button" @click="applyClockPreset(p.key)"
+                                        :class="['px-2 py-1 text-xs rounded-lg border transition-colors flex items-center gap-1',
+                                                 activeClockPreset === p.key ? 'bg-amber-600/30 border-amber-500/50 text-amber-300' : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700']">
+                                    {{ p.icon }} {{ p.label }}
+                                </button>
+                            </div>
                             <div>
-                                <label class="text-xs text-slate-500 mb-2 block">
-                                    Format
-                                    <span class="text-slate-600 ml-1 normal-case font-normal">— timezone: {{ channel.timezone || 'server local' }}</span>
-                                </label>
+                                <label class="text-xs text-slate-500 mb-2 block">Format</label>
                                 <div class="flex flex-wrap gap-1.5 mb-2">
                                     <button v-for="fp in clockFormatPresets" :key="fp.value" type="button"
                                             @click="clockFormat = fp.value; saveClockSettings()"
@@ -581,6 +610,10 @@
                                            @change="saveClockSettings()" />
                                 </div>
                             </div>
+                            <button @click="saveClockSettings()"
+                                    class="w-full px-3 py-1.5 text-xs bg-amber-600/20 text-amber-400 border border-amber-500/30 rounded-lg hover:bg-amber-600/30 transition-colors">
+                                ✓ Apply Clock Settings
+                            </button>
                         </div>
                         <p v-if="clockMessage" class="mt-1 text-xs text-green-400">{{ clockMessage }}</p>
                     </div>
@@ -788,6 +821,7 @@ const clockColor = ref(props.channel.clock_color || 'white')
 const clockEnabled = ref(props.channel.clock_enabled !== false)
 const clockFormat = ref(props.channel.clock_format || '%H\:%M\:%S')
 const clockMessage = ref('')
+const clockTimezone = ref(props.channel.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone)
 const clockX = ref(props.channel.clock_x ?? null)
 const clockY = ref(props.channel.clock_y ?? null)
 const clockPositions = [
@@ -805,6 +839,101 @@ const clockFormatPresets = [
     { label: 'MM/DD HH:mm', value: '%m/%d %H\:%M' },
     { label: 'Full Date+Time', value: '%d/%m/%Y %H\:%M\:%S' },
 ]
+const timezones = [
+    { value: 'UTC', label: 'UTC (Coordinated Universal Time)' },
+    { value: 'America/New_York', label: 'Eastern Time (ET)' },
+    { value: 'America/Chicago', label: 'Central Time (CT)' },
+    { value: 'America/Denver', label: 'Mountain Time (MT)' },
+    { value: 'America/Los_Angeles', label: 'Pacific Time (PT)' },
+    { value: 'America/Anchorage', label: 'Alaska Time (AKT)' },
+    { value: 'Pacific/Honolulu', label: 'Hawaii Time (HT)' },
+    { value: 'America/Toronto', label: 'Eastern Time (Canada)' },
+    { value: 'America/Vancouver', label: 'Pacific Time (Canada)' },
+    { value: 'Europe/London', label: 'GMT / London' },
+    { value: 'Europe/Paris', label: 'Central European Time (CET)' },
+    { value: 'Europe/Berlin', label: 'Central European Time (Germany)' },
+    { value: 'Europe/Moscow', label: 'Moscow Time (MSK)' },
+    { value: 'Asia/Dubai', label: 'Gulf Standard Time (GST)' },
+    { value: 'Asia/Kolkata', label: 'India Standard Time (IST)' },
+    { value: 'Asia/Shanghai', label: 'China Standard Time (CST)' },
+    { value: 'Asia/Tokyo', label: 'Japan Standard Time (JST)' },
+    { value: 'Asia/Seoul', label: 'Korea Standard Time (KST)' },
+    { value: 'Asia/Singapore', label: 'Singapore Time (SGT)' },
+    { value: 'Asia/Dubai', label: 'Gulf Standard Time (UAE)' },
+    { value: 'Africa/Lagos', label: 'West Africa Time (WAT)' },
+    { value: 'Africa/Nairobi', label: 'East Africa Time (EAT)' },
+    { value: 'Africa/Cairo', label: 'Eastern European Time (EET)' },
+    { value: 'Africa/Johannesburg', label: 'South Africa Standard Time (SAST)' },
+    { value: 'Australia/Sydney', label: 'Australian Eastern Time (AET)' },
+    { value: 'Australia/Perth', label: 'Australian Western Time (AWT)' },
+    { value: 'Pacific/Auckland', label: 'New Zealand Time (NZST)' },
+]
+const clockCanvas = ref(null)
+const clockCanvasHover = ref(null)
+const activeClockPreset = ref(null)
+const clockPresets = [
+    { key: 'tl', icon: '↖', label: 'Top Left' },
+    { key: 'tr', icon: '↗', label: 'Top Right' },
+    { key: 'bl', icon: '↙', label: 'Bottom Left' },
+    { key: 'br', icon: '↘', label: 'Bottom Right' },
+]
+
+function parseClockPosition() {
+    const x = props.channel.clock_x
+    const y = props.channel.clock_y
+    if (x !== null && x !== undefined && y !== null && y !== undefined) return { x, y }
+    const pos = props.channel.clock_position ?? 'top-left'
+    const m = 15
+    const map = { 'top-left': [m,m], 'top-right': [-m,m], 'bottom-left': [m,-m], 'bottom-right': [-m,-m] }
+    const [px, py] = map[pos] || [m, m]
+    return { x: px, y: py }
+}
+const parsedClock = parseClockPosition()
+clockX.value = parsedClock.x
+clockY.value = parsedClock.y
+
+const clockMarkerStyle = computed(() => {
+    const ax = clockX.value < 0 ? CANVAS_W + clockX.value : clockX.value
+    const ay = clockY.value < 0 ? CANVAS_H + clockY.value : clockY.value
+    return {
+        left: Math.max(0, Math.min(1, ax / CANVAS_W)) * 100 + '%',
+        top:  Math.max(0, Math.min(1, ay / CANVAS_H)) * 100 + '%',
+    }
+})
+const clockMarkerLabel = computed(() => `${clockX.value}, ${clockY.value}`)
+
+function onClockCanvasClick(e) {
+    const rect = clockCanvas.value.getBoundingClientRect()
+    const pctX = (e.clientX - rect.left) / rect.width
+    const pctY = (e.clientY - rect.top) / rect.height
+    let x = Math.round(pctX * CANVAS_W)
+    let y = Math.round(pctY * CANVAS_H)
+    if (pctX > 0.85) x = -(CANVAS_W - x)
+    if (pctY > 0.85) y = -(CANVAS_H - y)
+    clockX.value = x
+    clockY.value = y
+    activeClockPreset.value = null
+}
+
+function onClockCanvasHover(e) {
+    const rect = clockCanvas.value.getBoundingClientRect()
+    const pctX = (e.clientX - rect.left) / rect.width
+    const pctY = (e.clientY - rect.top) / rect.height
+    let x = Math.round(pctX * CANVAS_W)
+    let y = Math.round(pctY * CANVAS_H)
+    if (pctX > 0.85) x = -(CANVAS_W - x)
+    if (pctY > 0.85) y = -(CANVAS_H - y)
+    clockCanvasHover.value = { pct: { x: pctX, y: pctY }, label: `${x}, ${y}` }
+}
+
+function applyClockPreset(key) {
+    const m = 15
+    const map = { tl: [m,m], tr: [-m,m], bl: [m,-m], br: [-m,-m] }
+    const [x, y] = map[key]
+    clockX.value = x
+    clockY.value = y
+    activeClockPreset.value = key
+}
 
 // Lowerthird / NOW PLAYING settings
 const lowerthirdPosition = ref(props.channel.lowerthird_position ?? 'bottom-left')
@@ -1387,6 +1516,7 @@ async function saveClockSettings() {
                 enabled: clockEnabled.value,
                 x: clockX.value,
                 y: clockY.value,
+                timezone: clockTimezone.value,
             }),
         })
         const data = await res.json()

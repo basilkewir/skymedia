@@ -65,6 +65,9 @@ class YoutubeService
 
         $poToken = trim((string) ($channel->youtube_po_token ?? ''));
 
+        // Get working SOCKS5 proxy for bot evasion
+        $proxy = app(\App\Services\ProxyService::class)->getWorkingProxy();
+
         $lastError = '';
         $attempt = 0;
 
@@ -87,6 +90,12 @@ class YoutubeService
                 if ($cookieFile) {
                     $cmd[] = '--cookies';
                     $cmd[] = $cookieFile;
+                }
+
+                // Use SOCKS5 proxy if available
+                if ($proxy) {
+                    $cmd[] = '--proxy';
+                    $cmd[] = $proxy;
                 }
 
                 $cmd[] = $url;
@@ -117,6 +126,12 @@ class YoutubeService
                 }
 
                 Log::warning("[YouTube] Attempt {$attempt} failed for channel {$channel->id}: {$lastError}");
+
+                // If proxy failed, invalidate and try next attempt with fresh proxy
+                if ($proxy && str_contains($outputStr, 'Proxy') || str_contains($outputStr, 'socks')) {
+                    app(\App\Services\ProxyService::class)->invalidate();
+                    $proxy = app(\App\Services\ProxyService::class)->getWorkingProxy();
+                }
 
                 // Small delay between retries to let YouTube cool down
                 if ($attempt < $maxAttempts) {

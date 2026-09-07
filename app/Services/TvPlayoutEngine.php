@@ -399,7 +399,7 @@ class TvPlayoutEngine
     }
 
     /**
-     * Update clock settings (position, size, color) — requires restart.
+     * Update clock settings (position, size, color, timezone) — requires restart.
      */
     public function updateClockSettings(Channel $channel, array $settings): void
     {
@@ -409,6 +409,7 @@ class TvPlayoutEngine
             'clock_color'    => $settings['color'] ?? null,
             'clock_format'   => $settings['format'] ?? null,
             'clock_enabled'  => isset($settings['enabled']) ? (bool) $settings['enabled'] : null,
+            'timezone'       => $settings['timezone'] ?? null,
         ], fn ($v) => $v !== null);
 
         // X/Y can be 0 so filter separately

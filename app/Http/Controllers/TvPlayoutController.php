@@ -704,7 +704,7 @@ class TvPlayoutController extends Controller
     }
 
     /**
-     * Update clock settings (position, size, color).
+     * Update clock settings (position, size, color, timezone).
      */
     public function updateClockSettings(Request $request, Channel $channel): JsonResponse
     {
@@ -719,6 +719,7 @@ class TvPlayoutController extends Controller
             'enabled' => 'nullable|boolean',
             'x' => 'nullable|integer',
             'y' => 'nullable|integer',
+            'timezone' => 'nullable|string|max:50',
         ]);
 
         $this->engine->updateClockSettings($channel, $data);
