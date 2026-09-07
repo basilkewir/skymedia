@@ -8,7 +8,6 @@ use App\Models\Channel;
 use App\Models\PlaylistItem;
 use App\Services\YouTubeMetadataService;
 use Carbon\Carbon;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -586,29 +585,17 @@ class TvPlayoutEngine
 
     /**
      * Resolve a playlist item's filepath to a playable path/URL.
-     * For local files: returns the path if it exists.
-     * For YouTube items: returns the cached stream URL, or schedules a prefetch job.
+     * For YouTube items: returns a locally downloaded .mp4 file (downloading
+     * synchronously if needed). Local files are returned directly.
      */
     private function resolveFilePath(PlaylistItem $item): ?string
     {
         $path = $item->filepath;
 
-        // YouTube item — resolve from cache or trigger prefetch
         if (str_starts_with($path, 'youtube:')) {
-            $cacheKey = "yt_stream_url_{$item->id}";
-            $cached = Cache::get($cacheKey);
-
-            if ($cached !== null) {
-                return $cached;
-            }
-
-            // Not cached yet — dispatch prefetch job and skip this item for now
-            $this->scheduleYouTubePrefetch($item);
-
-            return null;
+            return $this->resolveYouTubeItem($item);
         }
 
-        // Local file — check existence and minimum size
         if (file_exists($path) && filesize($path) > 1024) {
             return $path;
         }
@@ -617,70 +604,136 @@ class TvPlayoutEngine
     }
 
     /**
-     * Schedule a YouTube stream URL prefetch job if one isn't already pending.
+     * Resolve a YouTube playlist item to a local cached .mp4 file.
+     * Downloads synchronously via yt-dlp on first access.
+     * Re-downloads if the cached file is missing or corrupt.
      */
-    private function scheduleYouTubePrefetch(PlaylistItem $item): void
+    private function resolveYouTubeItem(PlaylistItem $item): ?string
     {
-        $cacheKey = "yt_prefetch_scheduled_{$item->id}";
-
-        // Only dispatch once per item per 10 minutes
-        if (Cache::has($cacheKey)) {
-            return;
+        $videoId = PlaylistItem::parseYouTubeId($item->filepath);
+        if ($videoId === null) {
+            return null;
         }
 
-        \App\Jobs\PreFetchYouTubeStream::dispatch($item);
-        Cache::put($cacheKey, true, now()->addMinutes(10));
+        $cacheDir  = storage_path('app/youtube_cache');
+        if (! is_dir($cacheDir)) {
+            mkdir($cacheDir, 0755, true);
+        }
+        $localFile = "{$cacheDir}/{$videoId}.mp4";
 
-        Log::info("[TvPlayout] Dispatched YouTube prefetch for item {$item->id}");
+        // Return existing file if it looks valid (>1 MB)
+        if (file_exists($localFile) && filesize($localFile) > 1_048_576) {
+            return $localFile;
+        }
+
+        // Download synchronously
+        Log::info("[TvPlayout] Downloading YouTube item {$item->id} ({$videoId})");
+        $downloaded = $this->downloadYouTubeVideo($videoId, $localFile, $item);
+
+        if ($downloaded) {
+            // Update item duration from the downloaded file
+            $this->updateItemDurationFromFile($item, $localFile);
+            return $localFile;
+        }
+
+        Log::error("[TvPlayout] Failed to download YouTube item {$item->id} ({$videoId})");
+        return null;
     }
 
     /**
-     * Refresh all YouTube stream URLs for a channel that are missing or expiring soon.
-     * Called periodically by the scheduler to prevent stream interruptions.
+     * Download a YouTube video to a local file via yt-dlp.
+     * Returns true on success.
      */
-    public function refreshYouTubeUrls(Channel $channel): void
+    private function downloadYouTubeVideo(string $videoId, string $outputPath, PlaylistItem $item): bool
     {
-        $items = PlaylistItem::where('channel_id', $channel->id)
-            ->where('is_active', true)
-            ->get()
-            ->filter(fn ($item) => str_starts_with($item->filepath, 'youtube:'));
-
-        if ($items->isEmpty()) {
-            return;
+        $ytdlp = $this->findYtdlp();
+        if ($ytdlp === null) {
+            Log::error('[TvPlayout] yt-dlp not found');
+            return false;
         }
 
-        $needsRebuild = false;
-        foreach ($items as $item) {
-            $cacheKey = "yt_stream_url_{$item->id}";
-            $ttl = Cache::store('array')->getStore()->ttl ?? 0;
+        $youtubeUrl = "https://www.youtube.com/watch?v={$videoId}";
+        $proxy      = app(\App\Services\ProxyService::class)->getWorkingProxy() ?: '';
+        $cookiePath = $this->getYouTubeCookiePath($item);
 
-            // Check if URL exists in cache and has < 30 min remaining
-            // Cache::has doesn't give TTL, so we check if the key exists and dispatch refresh
-            if (Cache::has($cacheKey)) {
-                // Schedule refresh — the job will overwrite with fresh URL
-                $prefetchKey = "yt_prefetch_scheduled_{$item->id}";
-                if (! Cache::has($prefetchKey)) {
-                    \App\Jobs\PreFetchYouTubeStream::dispatch($item);
-                    Cache::put($prefetchKey, true, now()->addMinutes(5));
-                    $needsRebuild = true;
-                    Log::info("[TvPlayout] Scheduled YouTube URL refresh for item {$item->id}");
-                }
-            } else {
-                // No cached URL — dispatch prefetch
-                $this->scheduleYouTubePrefetch($item);
-                $needsRebuild = true;
+        $clients = ['tv', 'tv_embedded', 'web', 'ios', 'android'];
+
+        foreach ($clients as $client) {
+            $tmpFile = $outputPath . '.tmp';
+            @unlink($tmpFile);
+
+            $cmd = [
+                $ytdlp,
+                '--no-warnings',
+                '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                '--merge-output-format', 'mp4',
+                '--no-playlist',
+                '--extractor-args', "youtube:player_client={$client}",
+                '--output', $tmpFile,
+            ];
+
+            if ($cookiePath !== null) {
+                $cmd[] = '--cookies';
+                $cmd[] = $cookiePath;
             }
+
+            if ($proxy !== '') {
+                $cmd[] = '--proxy';
+                $cmd[] = $proxy;
+            }
+
+            $cmd[] = $youtubeUrl;
+
+            $escaped = implode(' ', array_map('escapeshellarg', $cmd));
+            exec($escaped . ' 2>&1', $out, $code);
+
+            if ($code === 0 && file_exists($tmpFile) && filesize($tmpFile) > 1_048_576) {
+                rename($tmpFile, $outputPath);
+                Log::info("[TvPlayout] Downloaded YouTube {$videoId} via client={$client}");
+                return true;
+            }
+
+            @unlink($tmpFile);
+            Log::debug("[TvPlayout] yt-dlp client={$client} failed for {$videoId}: " . implode(' ', $out));
         }
 
-        // Rebuild concat after a short delay to allow prefetch jobs to complete
-        if ($needsRebuild) {
-            \Illuminate\Support\Facades\Cache::put(
-                "yt_refresh_rebuild_{$channel->id}",
-                true,
-                now()->addSeconds(35)
-            );
-            Log::info("[TvPlayout] Scheduled concat rebuild for {$channel->name} in 35s");
+        return false;
+    }
+
+    private function updateItemDurationFromFile(PlaylistItem $item, string $path): void
+    {
+        try {
+            $out = [];
+            exec('ffprobe -v quiet -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ' . escapeshellarg($path) . ' 2>/dev/null', $out);
+            $duration = (float) trim(implode('', $out));
+            if ($duration > 0) {
+                $item->update(['duration' => $duration]);
+            }
+        } catch (\Throwable) {}
+    }
+
+    private function findYtdlp(): ?string
+    {
+        foreach (['/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp'] as $p) {
+            if (is_executable($p)) return $p;
         }
+        $found = trim((string) shell_exec('which yt-dlp 2>/dev/null'));
+        return $found !== '' ? $found : null;
+    }
+
+    private function getYouTubeCookiePath(PlaylistItem $item): ?string
+    {
+        $global = storage_path('app/youtube_cookies.txt');
+        if (file_exists($global) && filesize($global) > 50) {
+            return $global;
+        }
+        $cookies = $item->channel->youtube_cookies ?? '';
+        if (strlen($cookies) > 50) {
+            $tmp = sys_get_temp_dir() . '/yt_cookies_' . $item->channel_id . '.txt';
+            file_put_contents($tmp, trim($cookies));
+            return $tmp;
+        }
+        return null;
     }
 
     // ═══════════════════════════════════════════════════════════════════
