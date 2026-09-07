@@ -605,8 +605,9 @@ class TvPlayoutEngine
 
     /**
      * Resolve a YouTube playlist item to a local cached .mp4 file.
-     * Downloads synchronously via yt-dlp on first access.
-     * Re-downloads if the cached file is missing or corrupt.
+     * If not yet downloaded, starts a background download and returns the
+     * slate as a placeholder so the channel can start immediately.
+     * Once the download completes the concat is rebuilt automatically.
      */
     private function resolveYouTubeItem(PlaylistItem $item): ?string
     {
@@ -619,92 +620,100 @@ class TvPlayoutEngine
         if (! is_dir($cacheDir)) {
             mkdir($cacheDir, 0755, true);
         }
-        $localFile = "{$cacheDir}/{$videoId}.mp4";
+        $localFile  = "{$cacheDir}/{$videoId}.mp4";
+        $lockFile   = "{$cacheDir}/{$videoId}.downloading";
 
-        // Return existing file if it looks valid (>1 MB)
+        // Already downloaded and valid
         if (file_exists($localFile) && filesize($localFile) > 1_048_576) {
             return $localFile;
         }
 
-        // Download synchronously
-        Log::info("[TvPlayout] Downloading YouTube item {$item->id} ({$videoId})");
-        $downloaded = $this->downloadYouTubeVideo($videoId, $localFile, $item);
-
-        if ($downloaded) {
-            // Update item duration from the downloaded file
-            $this->updateItemDurationFromFile($item, $localFile);
-            return $localFile;
+        // Not yet downloaded — kick off a background download if not already running
+        if (! file_exists($lockFile)) {
+            $this->startBackgroundDownload($videoId, $localFile, $lockFile, $item);
         }
 
-        Log::error("[TvPlayout] Failed to download YouTube item {$item->id} ({$videoId})");
+        // Return slate as placeholder while downloading
+        $slate = $item->channel->dvr_directory . '/slate.mp4';
+        if (file_exists($slate) && filesize($slate) > 1024) {
+            Log::info("[TvPlayout] YouTube {$videoId} downloading in background — using slate placeholder");
+            return $slate;
+        }
+
         return null;
+    }
+
+    /**
+     * Start a background shell process that downloads the YouTube video,
+     * then rebuilds the concat file when done.
+     */
+    private function startBackgroundDownload(string $videoId, string $localFile, string $lockFile, PlaylistItem $item): void
+    {
+        $ytdlp = $this->findYtdlp();
+        if ($ytdlp === null) {
+            Log::error('[TvPlayout] yt-dlp not found — cannot download YouTube video');
+            return;
+        }
+
+        $youtubeUrl = 'https://www.youtube.com/watch?v=' . escapeshellarg($videoId);
+        $proxy      = app(\App\Services\ProxyService::class)->getWorkingProxy() ?: '';
+        $cookiePath = $this->getYouTubeCookiePath($item);
+        $tmpBase    = escapeshellarg($localFile . '.tmp');
+        $finalFile  = escapeshellarg($localFile);
+        $lockFileEsc = escapeshellarg($lockFile);
+        $channelId  = $item->channel_id;
+        $itemId     = $item->id;
+        $artisan    = escapeshellarg(base_path('artisan'));
+        $path       = '/usr/local/bin:/usr/bin:/bin';
+
+        // Build yt-dlp command string
+        $ytArgs = escapeshellarg($ytdlp)
+            . ' --no-warnings'
+            . ' --format ' . escapeshellarg('bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best')
+            . ' --merge-output-format mp4'
+            . ' --no-playlist'
+            . ' --extractor-args ' . escapeshellarg('youtube:player_client=tv')
+            . ' --output ' . escapeshellarg($localFile . '.tmp.%(ext)s');
+
+        if ($cookiePath !== null) {
+            $ytArgs .= ' --cookies ' . escapeshellarg($cookiePath);
+        }
+        if ($proxy !== '') {
+            $ytArgs .= ' --proxy ' . escapeshellarg($proxy);
+        }
+        $ytArgs .= ' ' . escapeshellarg("https://www.youtube.com/watch?v={$videoId}");
+
+        // Shell script: create lock, download, move file, remove lock, trigger rebuild
+        $script = implode(' && ', [
+            "export PATH={$path}:\$PATH",
+            "touch {$lockFileEsc}",
+            "{$ytArgs}",
+            // Find the downloaded file (yt-dlp adds extension)
+            "DLFILE=\$(ls {$localFile}.tmp.* 2>/dev/null | head -1)",
+            "[ -n \"\$DLFILE\" ] && mv \"\$DLFILE\" {$finalFile}",
+            "rm -f {$lockFileEsc}",
+            // Trigger concat rebuild via artisan
+            "php {$artisan} tv:rebuild-concat {$channelId} 2>/dev/null || true",
+        ]);
+
+        $shell = "setsid sh -c " . escapeshellarg($script) . " </dev/null >/dev/null 2>&1 &";
+        shell_exec($shell);
+
+        Log::info("[TvPlayout] Started background download for YouTube {$videoId} (item {$itemId})");
     }
 
     /**
      * Download a YouTube video to a local file via yt-dlp.
      * Returns true on success.
      */
-    private function downloadYouTubeVideo(string $videoId, string $outputPath, PlaylistItem $item): bool
-    {
-        $ytdlp = $this->findYtdlp();
-        if ($ytdlp === null) {
-            Log::error('[TvPlayout] yt-dlp not found');
-            return false;
-        }
-
-        $youtubeUrl = "https://www.youtube.com/watch?v={$videoId}";
-        $proxy      = app(\App\Services\ProxyService::class)->getWorkingProxy() ?: '';
-        $cookiePath = $this->getYouTubeCookiePath($item);
-
-        $clients = ['tv', 'tv_embedded', 'web', 'ios', 'android'];
-
-        foreach ($clients as $client) {
-            $tmpFile = $outputPath . '.tmp';
-            @unlink($tmpFile);
-
-            $cmd = [
-                $ytdlp,
-                '--no-warnings',
-                '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                '--merge-output-format', 'mp4',
-                '--no-playlist',
-                '--extractor-args', "youtube:player_client={$client}",
-                '--output', $tmpFile,
-            ];
-
-            if ($cookiePath !== null) {
-                $cmd[] = '--cookies';
-                $cmd[] = $cookiePath;
-            }
-
-            if ($proxy !== '') {
-                $cmd[] = '--proxy';
-                $cmd[] = $proxy;
-            }
-
-            $cmd[] = $youtubeUrl;
-
-            $escaped = implode(' ', array_map('escapeshellarg', $cmd));
-            exec($escaped . ' 2>&1', $out, $code);
-
-            if ($code === 0 && file_exists($tmpFile) && filesize($tmpFile) > 1_048_576) {
-                rename($tmpFile, $outputPath);
-                Log::info("[TvPlayout] Downloaded YouTube {$videoId} via client={$client}");
-                return true;
-            }
-
-            @unlink($tmpFile);
-            Log::debug("[TvPlayout] yt-dlp client={$client} failed for {$videoId}: " . implode(' ', $out));
-        }
-
-        return false;
-    }
 
     private function updateItemDurationFromFile(PlaylistItem $item, string $path): void
     {
         try {
+            $ffprobe = trim((string) shell_exec('export PATH=/usr/local/bin:/usr/bin:/bin:$PATH; which ffprobe 2>/dev/null'));
+            if ($ffprobe === '') $ffprobe = 'ffprobe';
             $out = [];
-            exec('ffprobe -v quiet -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ' . escapeshellarg($path) . ' 2>/dev/null', $out);
+            exec('export PATH=/usr/local/bin:/usr/bin:/bin:$PATH; ' . $ffprobe . ' -v quiet -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ' . escapeshellarg($path) . ' 2>/dev/null', $out);
             $duration = (float) trim(implode('', $out));
             if ($duration > 0) {
                 $item->update(['duration' => $duration]);
@@ -717,7 +726,7 @@ class TvPlayoutEngine
         foreach (['/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp'] as $p) {
             if (is_executable($p)) return $p;
         }
-        $found = trim((string) shell_exec('which yt-dlp 2>/dev/null'));
+        $found = trim((string) shell_exec('export PATH=/usr/local/bin:/usr/bin:/bin:$PATH; which yt-dlp 2>/dev/null'));
         return $found !== '' ? $found : null;
     }
 
