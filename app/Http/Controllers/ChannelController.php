@@ -220,6 +220,11 @@ class ChannelController extends Controller
             ->where('status', 'completed')
             ->orderBy('completed_at', 'asc')
             ->get(['id', 'filename', 'filepath', 'duration', 'filesize', 'completed_at']);
+        $timezones = [];
+        foreach (\DateTimeZone::listIdentifiers() as $tz) {
+            $region = str_contains($tz, '/') ? explode('/', $tz)[0] : 'Other';
+            $timezones[$region][] = $tz;
+        }
         return Inertia::render('Channels/Edit', [
             'channel' => $channel,
             'users' => $users,
@@ -227,6 +232,7 @@ class ChannelController extends Controller
             'sources' => $sources,
             'currentSourceId' => $channel->current_source_id,
             'recordings' => $recordings,
+            'timezones' => $timezones,
         ]);
     }
 

@@ -385,60 +385,8 @@
                     <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
                         <FormField label="Channel Timezone" :error="form.errors.timezone" class-name="sm:col-span-2">
                             <select v-model="form.timezone" class="form-input font-mono text-sm">
-                                <optgroup label="Universal">
-                                    <option value="UTC">UTC</option>
-                                </optgroup>
-                                <optgroup label="Americas">
-                                    <option value="America/New_York">America/New_York (ET)</option>
-                                    <option value="America/Chicago">America/Chicago (CT)</option>
-                                    <option value="America/Denver">America/Denver (MT)</option>
-                                    <option value="America/Los_Angeles">America/Los_Angeles (PT)</option>
-                                    <option value="America/Sao_Paulo">America/Sao_Paulo (BRT)</option>
-                                    <option value="America/Argentina/Buenos_Aires">America/Buenos_Aires (ART)</option>
-                                    <option value="America/Mexico_City">America/Mexico_City (CST)</option>
-                                    <option value="America/Toronto">America/Toronto (ET)</option>
-                                    <option value="America/Vancouver">America/Vancouver (PT)</option>
-                                </optgroup>
-                                <optgroup label="Europe">
-                                    <option value="Europe/London">Europe/London (GMT/BST)</option>
-                                    <option value="Europe/Paris">Europe/Paris (CET)</option>
-                                    <option value="Europe/Berlin">Europe/Berlin (CET)</option>
-                                    <option value="Europe/Madrid">Europe/Madrid (CET)</option>
-                                    <option value="Europe/Rome">Europe/Rome (CET)</option>
-                                    <option value="Europe/Amsterdam">Europe/Amsterdam (CET)</option>
-                                    <option value="Europe/Moscow">Europe/Moscow (MSK)</option>
-                                    <option value="Europe/Istanbul">Europe/Istanbul (TRT)</option>
-                                    <option value="Europe/Kiev">Europe/Kiev (EET)</option>
-                                    <option value="Europe/Athens">Europe/Athens (EET)</option>
-                                </optgroup>
-                                <optgroup label="Middle East &amp; Africa">
-                                    <option value="Asia/Dubai">Asia/Dubai (GST)</option>
-                                    <option value="Asia/Riyadh">Asia/Riyadh (AST)</option>
-                                    <option value="Asia/Baghdad">Asia/Baghdad (AST)</option>
-                                    <option value="Asia/Tehran">Asia/Tehran (IRST)</option>
-                                    <option value="Africa/Cairo">Africa/Cairo (EET)</option>
-                                    <option value="Africa/Nairobi">Africa/Nairobi (EAT)</option>
-                                    <option value="Africa/Lagos">Africa/Lagos (WAT)</option>
-                                    <option value="Africa/Johannesburg">Africa/Johannesburg (SAST)</option>
-                                </optgroup>
-                                <optgroup label="Asia">
-                                    <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
-                                    <option value="Asia/Karachi">Asia/Karachi (PKT)</option>
-                                    <option value="Asia/Dhaka">Asia/Dhaka (BST)</option>
-                                    <option value="Asia/Bangkok">Asia/Bangkok (ICT)</option>
-                                    <option value="Asia/Singapore">Asia/Singapore (SGT)</option>
-                                    <option value="Asia/Shanghai">Asia/Shanghai (CST)</option>
-                                    <option value="Asia/Hong_Kong">Asia/Hong_Kong (HKT)</option>
-                                    <option value="Asia/Tokyo">Asia/Tokyo (JST)</option>
-                                    <option value="Asia/Seoul">Asia/Seoul (KST)</option>
-                                    <option value="Asia/Taipei">Asia/Taipei (CST)</option>
-                                </optgroup>
-                                <optgroup label="Pacific">
-                                    <option value="Australia/Sydney">Australia/Sydney (AEST)</option>
-                                    <option value="Australia/Melbourne">Australia/Melbourne (AEST)</option>
-                                    <option value="Australia/Perth">Australia/Perth (AWST)</option>
-                                    <option value="Pacific/Auckland">Pacific/Auckland (NZST)</option>
-                                    <option value="Pacific/Honolulu">Pacific/Honolulu (HST)</option>
+                                <optgroup v-for="(zones, region) in timezones" :key="region" :label="region">
+                                    <option v-for="tz in zones" :key="tz" :value="tz">{{ tz }}</option>
                                 </optgroup>
                             </select>
                             <p class="mt-1 text-xs text-slate-500">The clock overlay will show real time in this timezone.</p>
@@ -559,7 +507,7 @@ import AppLayout from '@/Layouts/AppLayout.vue'
 import FormField from '@/Components/FormField.vue'
 import Section from '@/Components/Section.vue'
 
-const props = defineProps({ channel: Object, users: Array, isAdmin: Boolean, sources: Array, currentSourceId: Number, recordings: { type: Array, default: () => [] } })
+const props = defineProps({ channel: Object, users: Array, isAdmin: Boolean, sources: Array, currentSourceId: Number, recordings: { type: Array, default: () => [] }, timezones: { type: Object, default: () => ({}) } })
 
 import { ref, onMounted } from 'vue'
 
