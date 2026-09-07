@@ -67,10 +67,6 @@ class TvPlayoutEngine
         $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
         $logFile = $this->ffmpeg->logFile($channel, 'tv_playout');
 
-        // Prepend TZ env so FFmpeg localtime() in drawtext uses the channel's timezone
-        $timezone = $channel->timezone ?? config('app.timezone', 'UTC');
-        array_unshift($cmd, 'env', "TZ={$timezone}");
-
         try {
             $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 6);
         } catch (\Throwable $e) {
@@ -108,6 +104,7 @@ class TvPlayoutEngine
      */
     public function stop(Channel $channel): void
     {
+        $this->stopClockWriter($channel);
         $this->stopPush($channel);
 
         $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
@@ -840,15 +837,9 @@ class TvPlayoutEngine
             $clockMargin   = $this->px(15, $s);
             $clockBorderW  = $this->px(6, $s);
 
-            // Clock format: custom strftime-style string, default HH:MM:SS real time.
-            // Colons must be escaped as \: in FFmpeg drawtext filter expressions.
-            $rawFormat = $channel->clock_format ?? '%H\:%M\:%S';
-            // Ensure colons are escaped for FFmpeg filter syntax
-            $clockFormat = str_replace(':', '\:', str_replace('\:', ':', $rawFormat));
-
-            // Use localtime=1 so the clock shows real wall-clock time in the
-            // channel's configured timezone (or server local time if not set).
-            $timezone = $channel->timezone ?? config('app.timezone', 'UTC');
+            // Write clock time to a file every second (localtime=1 not supported in all FFmpeg builds)
+            $clockFile = $this->startClockWriter($channel);
+            $escapedClockFile = str_replace("'", "'\\''", $clockFile);
 
             $clockPosExpr = match ($clockPos) {
                 'top-right'    => "x=w-tw-{$clockMargin}:y={$clockMargin}",
@@ -857,9 +848,7 @@ class TvPlayoutEngine
                 default        => "x={$clockMargin}:y={$clockMargin}",
             };
 
-            // TZ env var is set per-process via the command wrapper so FFmpeg
-            // localtime() picks up the correct timezone without a system change.
-            $filterParts[] = "[{$lastLabel}]drawtext=text='{$clockFormat}':localtime=1:{$clockPosExpr}:fontcolor={$clockColor}:fontsize={$clockFontsize}:box=1:boxcolor=black@0.5:boxborderw={$clockBorderW}[clock_out]";
+            $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedClockFile}':reload=1:{$clockPosExpr}:fontcolor={$clockColor}:fontsize={$clockFontsize}:box=1:boxcolor=black@0.5:boxborderw={$clockBorderW}[clock_out]";
             $lastLabel = 'clock_out';
         }
 
@@ -956,6 +945,81 @@ class TvPlayoutEngine
         ]);
 
         return $cmd;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  CLOCK WRITER
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Start a background shell loop that writes the current time (formatted
+     * per the channel's clock_format and timezone) to a file every second.
+     * FFmpeg reads this file with textfile=+reload=1 instead of localtime=1,
+     * which is not supported in all FFmpeg builds.
+     * Returns the path to the clock text file.
+     */
+    private function startClockWriter(Channel $channel): string
+    {
+        $clockFile = $this->clockFilePath($channel);
+        $pidFile   = $this->clockWriterPidFile($channel);
+
+        // Kill any existing writer for this channel
+        $oldPid = (int) @file_get_contents($pidFile);
+        if ($oldPid > 0) {
+            exec("kill {$oldPid} 2>/dev/null");
+        }
+
+        $timezone  = $channel->timezone ?? config('app.timezone', 'UTC');
+        // Convert strftime-style format (e.g. %H:%M:%S) to date() format
+        $rawFormat = $channel->clock_format ?? '%H:%M:%S';
+        // Unescape any FFmpeg-escaped colons first, then use as strftime
+        $strftimeFmt = str_replace('\:', ':', $rawFormat);
+        $escapedFmt  = escapeshellarg($strftimeFmt);
+        $escapedFile = escapeshellarg($clockFile);
+        $escapedTz   = escapeshellarg($timezone);
+
+        $shell = "setsid sh -c "
+            . escapeshellarg(
+                "while true; do TZ={$escapedTz} date +{$escapedFmt} > {$escapedFile} 2>/dev/null; sleep 1; done"
+            )
+            . ' </dev/null >/dev/null 2>&1 & echo $!';
+
+        $pid = (int) trim((string) shell_exec($shell));
+        if ($pid > 0) {
+            file_put_contents($pidFile, $pid);
+        }
+
+        // Seed the file immediately so FFmpeg doesn't start with an empty textfile
+        $tz = new \DateTimeZone($timezone);
+        $now = new \DateTime('now', $tz);
+        // Simple strftime-style substitution for the seed write
+        $seed = strtr($strftimeFmt, [
+            '%H' => $now->format('H'),
+            '%M' => $now->format('i'),
+            '%S' => $now->format('s'),
+            '%I' => $now->format('h'),
+            '%p' => $now->format('A'),
+            '%d' => $now->format('d'),
+            '%m' => $now->format('m'),
+            '%Y' => $now->format('Y'),
+            '%y' => $now->format('y'),
+        ]);
+        file_put_contents($clockFile, $seed);
+
+        return $clockFile;
+    }
+
+    /**
+     * Stop the clock writer background process for a channel.
+     */
+    private function stopClockWriter(Channel $channel): void
+    {
+        $pidFile = $this->clockWriterPidFile($channel);
+        $pid = (int) @file_get_contents($pidFile);
+        if ($pid > 0) {
+            exec("kill {$pid} 2>/dev/null");
+        }
+        @unlink($pidFile);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1086,6 +1150,16 @@ class TvPlayoutEngine
     private function concatFilePath(Channel $channel): string
     {
         return $channel->dvr_directory . '/tv_playlist.txt';
+    }
+
+    private function clockFilePath(Channel $channel): string
+    {
+        return $this->cgDirectory($channel) . '/clock.txt';
+    }
+
+    private function clockWriterPidFile(Channel $channel): string
+    {
+        return storage_path('app/pids/clock_writer_' . $channel->id . '.pid');
     }
 
     private function formatDuration(float $seconds): string
