@@ -619,6 +619,7 @@ class TvPlayoutEngine
      * If not yet downloaded, starts a background download and returns the
      * slate as a placeholder so the channel can start immediately.
      * Once the download completes the concat is rebuilt automatically.
+     * Cleans up stale .downloading lock files older than 10 minutes.
      */
     private function resolveYouTubeItem(PlaylistItem $item): ?string
     {
@@ -639,6 +640,19 @@ class TvPlayoutEngine
             return $localFile;
         }
 
+        // Clean up stale .downloading lock files (older than 10 minutes)
+        if (file_exists($lockFile)) {
+            $lockAge = time() - filemtime($lockFile);
+            if ($lockAge > 600) {
+                Log::warning("[TvPlayout] YouTube {$videoId}: stale lock file ({$lockAge}s old) — removing");
+                @unlink($lockFile);
+                // Also clean up any partial downloads
+                foreach (glob("{$cacheDir}/{$videoId}.tmp.*") ?: [] as $tmp) {
+                    @unlink($tmp);
+                }
+            }
+        }
+
         // Not yet downloaded — kick off a background download if not already running
         if (! file_exists($lockFile)) {
             $this->startBackgroundDownload($videoId, $localFile, $lockFile, $item);
@@ -657,6 +671,7 @@ class TvPlayoutEngine
     /**
      * Start a background shell process that downloads the YouTube video,
      * then rebuilds the concat file when done.
+     * Tries multiple player clients and proxies with timeout protection.
      */
     private function startBackgroundDownload(string $videoId, string $localFile, string $lockFile, PlaylistItem $item): void
     {
@@ -666,49 +681,73 @@ class TvPlayoutEngine
             return;
         }
 
-        $proxy     = app(\App\Services\ProxyService::class)->getWorkingProxy() ?: '';
+        $proxy      = app(\App\Services\ProxyService::class)->getWorkingProxy() ?: '';
         $cookiePath = $this->getYouTubeCookiePath($item);
         $channelId  = $item->channel_id;
         $artisan    = base_path('artisan');
         $tmpPattern = $localFile . '.tmp.%(ext)s';
+        $logFile    = storage_path("app/youtube_cache/{$videoId}.log");
+        $url        = "https://www.youtube.com/watch?v={$videoId}";
         $path       = '/usr/local/bin:/usr/bin:/bin';
 
-        // Build yt-dlp args array then escape for shell
-        $args = [
-            $ytdlp,
-            '--no-warnings',
-            '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            '--merge-output-format', 'mp4',
-            '--no-playlist',
-            '--extractor-args', 'youtube:player_client=tv',
-            '--output', $tmpPattern,
-        ];
-        if ($cookiePath !== null) {
-            $args[] = '--cookies';
-            $args[] = $cookiePath;
+        // Player clients to try in order
+        $clients = ['tv', 'tv_embedded', 'web_safari', 'ios'];
+
+        // Build a shell script that tries each client with timeout
+        $cookieArg = ($cookiePath !== null) ? '--cookies ' . escapeshellarg($cookiePath) : '';
+        $proxyArg  = ($proxy !== '') ? '--proxy ' . escapeshellarg($proxy) : '';
+
+        $clientAttempts = '';
+        foreach ($clients as $i => $client) {
+            $attemptCmd = $ytdlp
+                . ' --no-warnings --socket-timeout 20'
+                . ' --retries 1'
+                . ' --format "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"'
+                . ' --merge-output-format mp4'
+                . ' --no-playlist'
+                . " --extractor-args youtube:player_client={$client}"
+                . ' --output ' . escapeshellarg($tmpPattern)
+                . ' ' . $cookieArg
+                . ' ' . $proxyArg
+                . ' ' . escapeshellarg($url);
+
+            if ($i === 0) {
+                $clientAttempts .= "echo \"[yt-dlp] Trying client={$client}\" >> " . escapeshellarg($logFile) . "\n";
+                $clientAttempts .= "{$attemptCmd} >> " . escapeshellarg($logFile) . " 2>&1\n";
+            } else {
+                $clientAttempts .= "if [ ! -f " . escapeshellarg($localFile) . " ]; then\n";
+                $clientAttempts .= "  echo \"[yt-dlp] Trying client={$client}\" >> " . escapeshellarg($logFile) . "\n";
+                $clientAttempts .= "  {$attemptCmd} >> " . escapeshellarg($logFile) . " 2>&1\n";
+                $clientAttempts .= "fi\n";
+            }
         }
-        if ($proxy !== '') {
-            $args[] = '--proxy';
-            $args[] = $proxy;
-        }
-        $args[] = "https://www.youtube.com/watch?v={$videoId}";
 
-        $ytCmd      = implode(' ', array_map('escapeshellarg', $args));
-        $lockEsc    = escapeshellarg($lockFile);
-        $localEsc   = escapeshellarg($localFile);
-        $artisanEsc = escapeshellarg($artisan);
+        // After all attempts, move file and rebuild concat
+        $postDownload = ""
+            . "DLFILE=\$(ls " . escapeshellarg($localFile . '.tmp.*') . " 2>/dev/null | head -1)\n"
+            . "if [ -n \"\$DLFILE\" ] && [ -s \"\$DLFILE\" ]; then\n"
+            . "  mv \"\$DLFILE\" " . escapeshellarg($localFile) . "\n"
+            . "  echo \"[yt-dlp] Download complete: " . escapeshellarg($localFile) . "\" >> " . escapeshellarg($logFile) . "\n"
+            . "else\n"
+            . "  echo \"[yt-dlp] All attempts failed\" >> " . escapeshellarg($logFile) . "\n"
+            . "fi\n"
+            . "rm -f " . escapeshellarg($lockFile) . "\n"
+            . "php " . escapeshellarg($artisan) . " tv:rebuild-concat " . escapeshellarg((string) $channelId) . " 2>/dev/null || true";
 
-        $script = "export PATH={$path}:\$PATH"
-            . "; touch {$lockEsc}"
-            . "; {$ytCmd}"
-            . "; DLFILE=\$(ls " . escapeshellarg($localFile . '.tmp.*') . " 2>/dev/null | head -1)"
-            . "; [ -n \"\$DLFILE\" ] && mv \"\$DLFILE\" {$localEsc} || true"
-            . "; rm -f {$lockEsc}"
-            . "; php {$artisanEsc} tv:rebuild-concat {$channelId} 2>/dev/null || true";
+        $script = "#!/bin/sh\n"
+            . "export PATH={$path}:\$PATH\n"
+            . "echo '[yt-dlp] Starting download for {$videoId}' > " . escapeshellarg($logFile) . "\n"
+            . "touch " . escapeshellarg($lockFile) . "\n"
+            . $clientAttempts
+            . $postDownload;
 
-        shell_exec('setsid sh -c ' . escapeshellarg($script) . ' </dev/null >/dev/null 2>&1 &');
+        $scriptFile = storage_path("app/youtube_cache/{$videoId}.sh");
+        file_put_contents($scriptFile, $script);
+        chmod($scriptFile, 0755);
 
-        Log::info("[TvPlayout] Started background download for YouTube {$videoId} (channel {$channelId})");
+        shell_exec("setsid sh " . escapeshellarg($scriptFile) . " </dev/null >/dev/null 2>&1 &");
+
+        Log::info("[TvPlayout] Started background download for YouTube {$videoId} (channel {$channelId}) — log: {$logFile}");
     }
 
     /**

@@ -55,7 +55,6 @@ class YoutubeService
 
         // Player clients, ordered best-chance-first for bot evasion.
         $playerClients = ['tv', 'tv_embedded', 'web', 'web_safari', 'ios', 'android'];
-        $maxAttempts = count($playerClients) * 2; // 2 attempts per client
 
         $cookieFile = null;
         if (!empty($channel->youtube_cookies)) {
@@ -72,71 +71,71 @@ class YoutubeService
         $attempt = 0;
 
         foreach ($playerClients as $client) {
-            for ($i = 0; $i < 2; $i++) {
-                $attempt++;
-                Log::debug("[YouTube] Attempt {$attempt}: trying player_client={$client} for channel {$channel->id}");
+            $attempt++;
+            Log::debug("[YouTube] Attempt {$attempt}: trying player_client={$client} for channel {$channel->id}");
 
-                $ytArgs = "youtube:player_client={$client}";
-                if ($poToken !== '') {
-                    $ytArgs .= ",po_token={$poToken}";
-                }
+            $ytArgs = "youtube:player_client={$client}";
+            if ($poToken !== '') {
+                $ytArgs .= ",po_token={$poToken}";
+            }
 
-                $cmd = [$ytdlp, '--js-runtimes', 'node', '--no-warnings', '-g',
-                        '--format', 'best[protocol=m3u8_native]/best[ext=mp4]/best',
-                        '--no-playlist',
-                        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                        '--extractor-args', $ytArgs];
+            $cmd = [$ytdlp, '--js-runtimes', 'node', '--no-warnings', '-g',
+                    '--socket-timeout', '15',
+                    '--retries', '1',
+                    '--format', 'best[protocol=m3u8_native]/best[ext=mp4]/best',
+                    '--no-playlist',
+                    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                    '--extractor-args', $ytArgs];
 
-                if ($cookieFile) {
-                    $cmd[] = '--cookies';
-                    $cmd[] = $cookieFile;
-                }
+            if ($cookieFile) {
+                $cmd[] = '--cookies';
+                $cmd[] = $cookieFile;
+            }
 
-                // Use SOCKS5 proxy if available
-                if ($proxy) {
-                    $cmd[] = '--proxy';
-                    $cmd[] = $proxy;
-                }
+            // Use SOCKS5 proxy if available
+            if ($proxy) {
+                $cmd[] = '--proxy';
+                $cmd[] = $proxy;
+            }
 
-                $cmd[] = $url;
+            $cmd[] = $url;
 
-                $escaped = implode(' ', array_map('escapeshellarg', $cmd));
-                $output  = [];
-                $code    = 0;
-                exec($escaped . ' 2>&1', $output, $code);
+            $escaped = implode(' ', array_map('escapeshellarg', $cmd));
+            $output  = [];
+            $code    = 0;
+            exec($escaped . ' 2>&1', $output, $code);
 
-                $outputStr = implode("\n", $output);
+            $outputStr = implode("\n", $output);
 
-                if ($code === 0) {
-                    // Check for valid URL in output
-                    foreach ($output as $line) {
-                        $line = trim($line);
-                        if (str_starts_with($line, 'https://') || str_starts_with($line, 'http://')) {
-                            if ($cookieFile) {
-                                @unlink($cookieFile);
-                            }
-                            Log::debug("[YouTube] Resolved {$url} → {$line} (client={$client}, attempt={$attempt})");
-                            return $line;
+            if ($code === 0) {
+                // Check for valid URL in output
+                foreach ($output as $line) {
+                    $line = trim($line);
+                    if (str_starts_with($line, 'https://') || str_starts_with($line, 'http://')) {
+                        if ($cookieFile) {
+                            @unlink($cookieFile);
                         }
+                        Log::debug("[YouTube] Resolved {$url} → {$line} (client={$client}, attempt={$attempt})");
+                        return $line;
                     }
-                    // Got exit 0 but no URL — treat as failure
-                    $lastError = "yt-dlp returned no URL. Output: {$outputStr}";
-                } else {
-                    $lastError = "yt-dlp failed (exit {$code}): {$outputStr}";
                 }
+                // Got exit 0 but no URL — treat as failure
+                $lastError = "yt-dlp returned no URL. Output: {$outputStr}";
+            } else {
+                $lastError = "yt-dlp failed (exit {$code}): {$outputStr}";
+            }
 
-                Log::warning("[YouTube] Attempt {$attempt} failed for channel {$channel->id}: {$lastError}");
+            Log::warning("[YouTube] Attempt {$attempt} failed for channel {$channel->id}: {$lastError}");
 
-                // If proxy failed, invalidate and try next attempt with fresh proxy
-                if ($proxy && str_contains($outputStr, 'Proxy') || str_contains($outputStr, 'socks')) {
-                    app(\App\Services\ProxyService::class)->invalidate();
-                    $proxy = app(\App\Services\ProxyService::class)->getWorkingProxy();
-                }
+            // If proxy failed, invalidate and try next attempt with fresh proxy
+            if ($proxy && (str_contains($outputStr, 'Proxy') || str_contains($outputStr, 'socks'))) {
+                app(\App\Services\ProxyService::class)->invalidate();
+                $proxy = app(\App\Services\ProxyService::class)->getWorkingProxy();
+            }
 
-                // Small delay between retries to let YouTube cool down
-                if ($attempt < $maxAttempts) {
-                    usleep(500_000); // 500ms
-                }
+            // Small delay between retries to let YouTube cool down
+            if ($attempt < count($playerClients)) {
+                usleep(500_000); // 500ms
             }
         }
 
