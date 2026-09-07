@@ -31,7 +31,8 @@ class Channel extends Model
         'logo_media_id', 'logo_position', 'logo_scale', 'logo_enabled', 'ticker_enabled', 'ticker_text', 'playlist_loop',
         'ticker_bg_color', 'ticker_bg_opacity', 'ticker_font_size', 'ticker_font_color', 'ticker_speed', 'ticker_position',
         'clock_position', 'clock_fontsize', 'clock_color', 'clock_enabled', 'output_resolution',
-        'lowerthird_position', 'lowerthird_fontsize', 'lowerthird_font_color', 'lowerthird_bg_color', 'lowerthird_bg_opacity', 'lowerthird_enabled',
+        'lowerthird_position', 'lowerthird_x', 'lowerthird_y', 'lowerthird_fontsize', 'lowerthird_font_color', 'lowerthird_bg_color', 'lowerthird_bg_opacity', 'lowerthird_enabled',
+        'ticker_items', 'ticker_label', 'ticker_label_color', 'ticker_label_bg',
         // Storage quota
         'storage_quota_bytes', 'storage_used_bytes',
         // Locale
@@ -67,6 +68,9 @@ class Channel extends Model
         'ticker_bg_opacity' => 'integer',
         'ticker_font_size' => 'integer',
         'ticker_speed' => 'integer',
+        'ticker_items' => 'array',
+        'lowerthird_x' => 'integer',
+        'lowerthird_y' => 'integer',
         'lowerthird_fontsize' => 'integer',
         'lowerthird_bg_opacity' => 'integer',
         'lowerthird_enabled' => 'boolean',

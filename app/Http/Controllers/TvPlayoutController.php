@@ -771,17 +771,100 @@ class TvPlayoutController extends Controller
         $this->ensureAccess($channel);
 
         $data = $request->validate([
-            'position' => 'nullable|string|in:top-left,top-right,bottom-left,bottom-right',
-            'fontsize' => 'nullable|integer|min:10|max:72',
+            'position'   => 'nullable|string|in:top-left,top-right,bottom-left,bottom-right',
+            'x'          => 'nullable|integer|min:-3840|max:3840',
+            'y'          => 'nullable|integer|min:-2160|max:2160',
+            'fontsize'   => 'nullable|integer|min:10|max:72',
             'font_color' => 'nullable|string|max:30',
-            'bg_color' => 'nullable|string|max:30',
+            'bg_color'   => 'nullable|string|max:30',
             'bg_opacity' => 'nullable|integer|min:0|max:100',
-            'enabled' => 'nullable|boolean',
+            'enabled'    => 'nullable|boolean',
         ]);
 
         $this->engine->updateLowerthirdSettings($channel, $data);
 
         return response()->json(['success' => true]);
+    }
+
+    /**
+     * Update ticker items (JSON array of {text, color, bg_color}).
+     */
+    public function updateTickerItems(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $data = $request->validate([
+            'items'             => 'required|array|max:200',
+            'items.*.text'      => 'required|string|max:500',
+            'items.*.color'     => 'nullable|string|max:30',
+            'items.*.bg_color'  => 'nullable|string|max:30',
+            'label'             => 'nullable|string|max:200',
+            'label_color'       => 'nullable|string|max:30',
+            'label_bg'          => 'nullable|string|max:30',
+        ]);
+
+        // Build plain ticker_text from items for backward compat
+        $plain = implode('   •   ', array_column($data['items'], 'text'));
+
+        $channel->update(array_filter([
+            'ticker_items'       => $data['items'],
+            'ticker_text'        => $plain,
+            'ticker_label'       => $data['label'] ?? null,
+            'ticker_label_color' => $data['label_color'] ?? null,
+            'ticker_label_bg'    => $data['label_bg'] ?? null,
+        ], fn ($v) => $v !== null));
+
+        $this->engine->writeTickerFile($channel->fresh());
+
+        if ($this->engine->isRunning($channel)) {
+            $this->engine->rebuild($channel);
+        }
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Upload a .txt or .csv file and parse it into ticker items.
+     * Each non-empty line becomes one ticker item.
+     * CSV format: text,color,bg_color (color columns optional).
+     */
+    public function uploadTickerFile(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $request->validate(['file' => 'required|file|max:512|mimes:txt,csv,plain']);
+
+        $content = file_get_contents($request->file('file')->getRealPath());
+        $lines   = preg_split('/\r?\n/', trim($content));
+        $items   = [];
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line === '' || str_starts_with($line, '#')) continue;
+
+            // CSV: text,color,bg_color
+            $parts = str_getcsv($line);
+            $text  = trim($parts[0] ?? '');
+            if ($text === '') continue;
+
+            $items[] = [
+                'text'     => substr($text, 0, 500),
+                'color'    => isset($parts[1]) && trim($parts[1]) !== '' ? trim($parts[1]) : null,
+                'bg_color' => isset($parts[2]) && trim($parts[2]) !== '' ? trim($parts[2]) : null,
+            ];
+        }
+
+        if (empty($items)) {
+            return response()->json(['success' => false, 'error' => 'No valid lines found in file'], 422);
+        }
+
+        $plain = implode('   •   ', array_column($items, 'text'));
+        $channel->update(['ticker_items' => $items, 'ticker_text' => $plain]);
+        $this->engine->writeTickerFile($channel->fresh());
+
+        return response()->json(['success' => true, 'items' => $items, 'count' => count($items)]);
     }
 
     private function ensureAccess(Channel $channel): void

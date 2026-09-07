@@ -383,14 +383,24 @@ class TvPlayoutEngine
      */
     public function updateLowerthirdSettings(Channel $channel, array $settings): void
     {
-        $channel->update(array_filter([
-            'lowerthird_position' => $settings['position'] ?? null,
-            'lowerthird_fontsize' => isset($settings['fontsize']) ? max(10, min(72, (int) $settings['fontsize'])) : null,
+        $update = array_filter([
+            'lowerthird_position'   => $settings['position'] ?? null,
+            'lowerthird_fontsize'   => isset($settings['fontsize']) ? max(10, min(72, (int) $settings['fontsize'])) : null,
             'lowerthird_font_color' => $settings['font_color'] ?? null,
-            'lowerthird_bg_color' => $settings['bg_color'] ?? null,
+            'lowerthird_bg_color'   => $settings['bg_color'] ?? null,
             'lowerthird_bg_opacity' => isset($settings['bg_opacity']) ? max(0, min(100, (int) $settings['bg_opacity'])) : null,
-            'lowerthird_enabled' => isset($settings['enabled']) ? (bool) $settings['enabled'] : null,
-        ], fn ($v) => $v !== null));
+            'lowerthird_enabled'    => isset($settings['enabled']) ? (bool) $settings['enabled'] : null,
+        ], fn ($v) => $v !== null);
+
+        // X/Y can be 0 so filter separately
+        if (array_key_exists('x', $settings)) {
+            $update['lowerthird_x'] = $settings['x'] === null ? null : (int) $settings['x'];
+        }
+        if (array_key_exists('y', $settings)) {
+            $update['lowerthird_y'] = $settings['y'] === null ? null : (int) $settings['y'];
+        }
+
+        $channel->update($update);
 
         if ($this->isRunning($channel)) {
             $this->stop($channel);
@@ -737,6 +747,21 @@ class TvPlayoutEngine
 
             $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedTickerFile}':reload=1:y={$tickerY}:x=w-mod(max(t*{$tickerSpeed}\\,0)\\,w+tw):fontcolor={$tickerFontColor}:fontsize={$tickerFontSize}:box=1:boxcolor={$ffBgColor}@{$tickerBgOpacityFp}:boxborderw={$tickerBorderW}[with_ticker]";
             $lastLabel = 'with_ticker';
+
+            // Optional label prefix (e.g. "BREAKING NEWS") rendered as a separate static drawtext
+            $tickerLabel = trim((string) ($channel->ticker_label ?? ''));
+            if ($tickerLabel !== '') {
+                $labelColor = $channel->ticker_label_color ?? '#ff0000';
+                $labelBgHex = ltrim($channel->ticker_label_bg ?? '#ffffff', '#');
+                if (strlen($labelBgHex) === 3) {
+                    $labelBgHex = $labelBgHex[0].$labelBgHex[0].$labelBgHex[1].$labelBgHex[1].$labelBgHex[2].$labelBgHex[2];
+                }
+                $ffLabelBg = '0x' . strtoupper($labelBgHex);
+                $labelFontSize = $this->px(max(10, min(72, (int) ($channel->ticker_font_size ?? 24))), $s);
+                $escapedLabel = str_replace(['\\', "'", ':', '[', ']'], ['\\\\', "'\\''", '\\:', '\\[', '\\]'], $tickerLabel);
+                $filterParts[] = "[{$lastLabel}]drawtext=text='{$escapedLabel}':y={$tickerY}:x={$tickerMargin}:fontcolor={$labelColor}:fontsize={$labelFontSize}:box=1:boxcolor={$ffLabelBg}@1.0:boxborderw={$tickerBorderW}[with_label]";
+                $lastLabel = 'with_label';
+            }
         }
 
         // Clock overlay
@@ -765,7 +790,6 @@ class TvPlayoutEngine
             $metaFile = $this->metaFilePath($channel);
             $escapedMetaFile = str_replace("'", "'\\''", $metaFile);
 
-            $ltPos       = $channel->lowerthird_position ?? 'bottom-left';
             $ltFontsize  = $this->px(max(10, min(72, (int) ($channel->lowerthird_fontsize ?? 20))), $s);
             $ltMargin    = $this->px(15, $s);
             $ltBorderW   = $this->px(4, $s);
@@ -780,12 +804,24 @@ class TvPlayoutEngine
             }
             $ffLtBgColor = '0x' . strtoupper($ltBgHex);
 
-            $ltPosExpr = match ($ltPos) {
-                'top-left'     => "x={$ltMargin}:y={$ltMargin}",
-                'top-right'    => "x=w-tw-{$ltMargin}:y={$ltMargin}",
-                'bottom-right' => "x=w-tw-{$ltMargin}:y=h-th-{$ltMargin}",
-                default        => "x={$ltMargin}:y=h-th-{$ltMargin}",
-            };
+            // Free X/Y positioning takes priority over named preset
+            $ltX = $channel->lowerthird_x;
+            $ltY = $channel->lowerthird_y;
+            if ($ltX !== null && $ltY !== null) {
+                $scaledX = (int) round($ltX * $s);
+                $scaledY = (int) round($ltY * $s);
+                $ox = $scaledX < 0 ? "W-tw" . $scaledX : (string) $scaledX;
+                $oy = $scaledY < 0 ? "H-th" . $scaledY : (string) $scaledY;
+                $ltPosExpr = "x={$ox}:y={$oy}";
+            } else {
+                $ltPos = $channel->lowerthird_position ?? 'bottom-left';
+                $ltPosExpr = match ($ltPos) {
+                    'top-left'     => "x={$ltMargin}:y={$ltMargin}",
+                    'top-right'    => "x=w-tw-{$ltMargin}:y={$ltMargin}",
+                    'bottom-right' => "x=w-tw-{$ltMargin}:y=h-th-{$ltMargin}",
+                    default        => "x={$ltMargin}:y=h-th-{$ltMargin}",
+                };
+            }
 
             $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedMetaFile}':reload=1:{$ltPosExpr}:fontcolor={$ltFontColor}:fontsize={$ltFontsize}:box=1:boxcolor={$ffLtBgColor}@{$ltBgOpacityFp}:boxborderw={$ltBorderW}[final_video]";
             $lastLabel = 'final_video';
@@ -848,11 +884,19 @@ class TvPlayoutEngine
     // ═══════════════════════════════════════════════════════════════════
 
     /**
-     * Write the ticker text file for FFmpeg drawtext to read.
+     * Write the ticker text file from ticker_items JSON array or fallback to ticker_text.
+     * Items are joined with a separator so they scroll as one continuous line.
      */
     public function writeTickerFile(Channel $channel): void
     {
-        $text = trim((string) $channel->ticker_text);
+        $items = $channel->ticker_items ?? [];
+        if (! empty($items)) {
+            $parts = array_map(fn ($item) => trim((string) ($item['text'] ?? '')), $items);
+            $parts = array_filter($parts);
+            $text = implode('   •   ', $parts);
+        } else {
+            $text = trim((string) $channel->ticker_text);
+        }
         file_put_contents($this->tickerFilePath($channel), $text ?: ' ');
     }
 

@@ -399,59 +399,93 @@
                                 {{ channel.ticker_enabled ? 'ON' : 'OFF' }}
                             </button>
                         </div>
-                        <textarea v-model="tickerText" rows="3" placeholder="Breaking news ticker text…"
-                                  class="form-input text-xs resize-none"
-                                  :disabled="!channel.ticker_enabled" />
-                        <button @click="pushTicker" :disabled="!channel.ticker_enabled"
-                                class="mt-2 px-4 py-2 bg-blue-600 text-white text-xs rounded-lg disabled:opacity-50 w-full">
-                            Push Text to Air
+
+                        <!-- Label prefix -->
+                        <div class="mb-3">
+                            <label class="text-xs text-slate-500 mb-1 block">Label prefix <span class="text-slate-600">(e.g. BREAKING NEWS — shown static before scroll)</span></label>
+                            <div class="flex gap-2">
+                                <input v-model="tickerLabel" type="text" placeholder="BREAKING NEWS"
+                                       class="flex-1 form-input text-xs" maxlength="200" />
+                                <input v-model="tickerLabelColor" type="color" class="w-8 h-8 rounded cursor-pointer border border-slate-600" title="Label text color" />
+                                <input v-model="tickerLabelBg" type="color" class="w-8 h-8 rounded cursor-pointer border border-slate-600" title="Label background color" />
+                            </div>
+                        </div>
+
+                        <!-- Ticker items list -->
+                        <div class="space-y-1.5 mb-3">
+                            <div class="flex items-center justify-between">
+                                <label class="text-xs text-slate-500">Ticker items <span class="text-slate-600">(each scrolls as one line, joined by •)</span></label>
+                                <div class="flex gap-1.5">
+                                    <label class="px-2 py-1 text-[10px] bg-slate-700 text-slate-300 rounded cursor-pointer hover:bg-slate-600 transition-colors" title="Upload .txt or .csv file">
+                                        ↑ Import
+                                        <input type="file" accept=".txt,.csv,text/plain,text/csv" @change="importTickerFile" class="hidden" />
+                                    </label>
+                                    <button @click="addTickerItem" type="button"
+                                            class="px-2 py-1 text-[10px] bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded hover:bg-indigo-600/30 transition-colors">
+                                        + Add
+                                    </button>
+                                </div>
+                            </div>
+                            <p class="text-[10px] text-slate-600">CSV format: text,#fontcolor,#bgcolor — color columns optional</p>
+                            <div v-if="tickerItems.length === 0" class="text-xs text-slate-600 py-2 text-center border border-dashed border-slate-700 rounded-lg">
+                                No items — add lines or import a file
+                            </div>
+                            <div v-for="(item, i) in tickerItems" :key="i"
+                                 class="flex items-center gap-1.5 bg-slate-800/50 rounded-lg px-2 py-1.5">
+                                <span class="text-[10px] text-slate-600 w-4 text-right flex-shrink-0">{{ i+1 }}</span>
+                                <input v-model="item.text" type="text" placeholder="Ticker text…"
+                                       class="flex-1 bg-transparent text-xs text-slate-200 outline-none min-w-0" />
+                                <input v-model="item.color" type="color"
+                                       class="w-6 h-6 rounded cursor-pointer border-0 bg-transparent flex-shrink-0"
+                                       title="Text color" />
+                                <input v-model="item.bg_color" type="color"
+                                       class="w-6 h-6 rounded cursor-pointer border-0 bg-transparent flex-shrink-0"
+                                       title="Background color" />
+                                <button @click="tickerItems.splice(i,1)" class="text-slate-600 hover:text-red-400 text-xs flex-shrink-0">✕</button>
+                            </div>
+                        </div>
+
+                        <button @click="saveTickerItems" :disabled="!channel.ticker_enabled"
+                                class="w-full px-4 py-2 bg-blue-600 text-white text-xs rounded-lg disabled:opacity-50 mb-3">
+                            Push to Air
                         </button>
-                        <p v-if="tickerMessage" class="mt-1 text-xs text-green-400">{{ tickerMessage }}</p>
+                        <p v-if="tickerMessage" class="mb-2 text-xs text-green-400">{{ tickerMessage }}</p>
 
                         <!-- Ticker Style Settings -->
-                        <div class="mt-4 pt-4 border-t border-slate-800 space-y-3">
-                            <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Ticker Style</h3>
+                        <div class="pt-3 border-t border-slate-800 space-y-3">
+                            <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Style</h3>
                             <div class="grid grid-cols-2 gap-3">
                                 <div>
                                     <label class="text-xs text-slate-500 mb-1 block">Font Size: {{ tickerFontSize }}px</label>
                                     <input v-model.number="tickerFontSize" type="range" min="10" max="72" step="1"
-                                           @change="saveTickerSettings()"
-                                           class="w-full accent-indigo-500" />
+                                           @change="saveTickerSettings()" class="w-full accent-indigo-500" />
                                 </div>
                                 <div>
                                     <label class="text-xs text-slate-500 mb-1 block">Speed: {{ tickerSpeed }}px/s</label>
                                     <input v-model.number="tickerSpeed" type="range" min="10" max="500" step="5"
-                                           @change="saveTickerSettings()"
-                                           class="w-full accent-indigo-500" />
+                                           @change="saveTickerSettings()" class="w-full accent-indigo-500" />
                                 </div>
                             </div>
                             <div class="grid grid-cols-2 gap-3">
                                 <div>
                                     <label class="text-xs text-slate-500 mb-1 block">Font Color</label>
                                     <div class="flex items-center gap-2">
-                                        <input v-model="tickerFontColor" type="color"
-                                               class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
-                                        <input v-model="tickerFontColor" type="text"
-                                               class="flex-1 form-input text-xs font-mono"
-                                               @change="saveTickerSettings()" />
+                                        <input v-model="tickerFontColor" type="color" class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
+                                        <input v-model="tickerFontColor" type="text" class="flex-1 form-input text-xs font-mono" @change="saveTickerSettings()" />
                                     </div>
                                 </div>
                                 <div>
                                     <label class="text-xs text-slate-500 mb-1 block">Background</label>
                                     <div class="flex items-center gap-2">
-                                        <input v-model="tickerBgColor" type="color"
-                                               class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
-                                        <input v-model="tickerBgColor" type="text"
-                                               class="flex-1 form-input text-xs font-mono"
-                                               @change="saveTickerSettings()" />
+                                        <input v-model="tickerBgColor" type="color" class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
+                                        <input v-model="tickerBgColor" type="text" class="flex-1 form-input text-xs font-mono" @change="saveTickerSettings()" />
                                     </div>
                                 </div>
                             </div>
                             <div>
                                 <label class="text-xs text-slate-500 mb-1 block">Background Opacity: {{ tickerBgOpacity }}%</label>
                                 <input v-model.number="tickerBgOpacity" type="range" min="0" max="100" step="5"
-                                       @change="saveTickerSettings()"
-                                       class="w-full accent-indigo-500" />
+                                       @change="saveTickerSettings()" class="w-full accent-indigo-500" />
                             </div>
                             <div>
                                 <label class="text-xs text-slate-500 mb-1 block">Position</label>
@@ -522,18 +556,58 @@
                             </button>
                         </div>
                         <div class="space-y-3" :class="{ 'opacity-50 pointer-events-none': !lowerthirdEnabled }">
-                            <div>
-                                <label class="text-xs text-slate-500 mb-1 block">Position</label>
-                                <div class="grid grid-cols-2 gap-2">
-                                    <button v-for="lp in lowerthirdPositions" :key="lp.value" type="button"
-                                            @click="lowerthirdPosition = lp.value; saveLowerthirdSettings()"
-                                            :class="['px-3 py-1.5 text-xs rounded-lg border transition-colors text-left',
-                                                     lowerthirdPosition === lp.value
-                                                         ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
-                                                         : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700']">
-                                        {{ lp.icon }} {{ lp.label }}
-                                    </button>
+                            <!-- Canvas position picker -->
+                            <p class="text-[10px] text-slate-500 uppercase tracking-wider">Position <span class="text-slate-600 normal-case">(click canvas or use sliders)</span></p>
+                            <div ref="ltCanvas"
+                                 @click="onLtCanvasClick"
+                                 @mousemove="onLtCanvasHover"
+                                 @mouseleave="ltCanvasHover = null"
+                                 class="relative w-full aspect-video bg-slate-950 border border-slate-700 rounded-lg cursor-crosshair overflow-hidden select-none">
+                                <div class="absolute inset-0 pointer-events-none">
+                                    <div class="absolute left-1/3 top-0 bottom-0 border-l border-slate-800/60"></div>
+                                    <div class="absolute left-2/3 top-0 bottom-0 border-l border-slate-800/60"></div>
+                                    <div class="absolute top-1/3 left-0 right-0 border-t border-slate-800/60"></div>
+                                    <div class="absolute top-2/3 left-0 right-0 border-t border-slate-800/60"></div>
                                 </div>
+                                <div v-if="ltCanvasHover" class="absolute pointer-events-none"
+                                     :style="{ left: ltCanvasHover.pct.x*100+'%', top: ltCanvasHover.pct.y*100+'%', transform:'translate(-50%,-50%)' }">
+                                    <div class="w-2.5 h-2.5 border border-emerald-400/70 rounded-full"></div>
+                                </div>
+                                <div v-if="ltCanvasHover" class="absolute bottom-1 left-1/2 -translate-x-1/2 text-[8px] font-mono text-emerald-400 pointer-events-none bg-slate-950/80 px-1 rounded">
+                                    {{ ltCanvasHover.label }}
+                                </div>
+                                <!-- Current marker -->
+                                <div class="absolute pointer-events-none" :style="ltMarkerStyle">
+                                    <div class="w-3.5 h-3.5 bg-emerald-500 border-2 border-white rounded-full shadow-lg -translate-x-1/2 -translate-y-1/2"></div>
+                                    <div class="absolute top-4 left-1/2 -translate-x-1/2 whitespace-nowrap text-[8px] font-mono text-white bg-emerald-600/90 px-1 rounded">
+                                        {{ ltMarkerLabel }}
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- X/Y sliders -->
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label class="text-[10px] text-slate-500">X <span class="text-slate-600">(neg=from right)</span></label>
+                                    <div class="flex items-center gap-1 mt-1">
+                                        <input v-model.number="ltX" type="range" :min="-CANVAS_W" :max="CANVAS_W" step="1" class="flex-1 accent-emerald-500" />
+                                        <input v-model.number="ltX" type="number" :min="-CANVAS_W" :max="CANVAS_W" class="w-16 form-input text-xs font-mono text-center" />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="text-[10px] text-slate-500">Y <span class="text-slate-600">(neg=from bottom)</span></label>
+                                    <div class="flex items-center gap-1 mt-1">
+                                        <input v-model.number="ltY" type="range" :min="-CANVAS_H" :max="CANVAS_H" step="1" class="flex-1 accent-emerald-500" />
+                                        <input v-model.number="ltY" type="number" :min="-CANVAS_H" :max="CANVAS_H" class="w-16 form-input text-xs font-mono text-center" />
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Corner presets -->
+                            <div class="grid grid-cols-2 gap-1.5">
+                                <button v-for="p in ltPresets" :key="p.key" type="button" @click="applyLtPreset(p.key)"
+                                        :class="['px-2 py-1 text-xs rounded-lg border transition-colors flex items-center gap-1',
+                                                 activeLtPreset === p.key ? 'bg-emerald-600/30 border-emerald-500/50 text-emerald-300' : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700']">
+                                    {{ p.icon }} {{ p.label }}
+                                </button>
                             </div>
                             <div>
                                 <label class="text-xs text-slate-500 mb-1 block">Font Size: {{ lowerthirdFontsize }}px</label>
@@ -545,21 +619,15 @@
                                 <div>
                                     <label class="text-xs text-slate-500 mb-1 block">Font Color</label>
                                     <div class="flex items-center gap-2">
-                                        <input v-model="lowerthirdFontColor" type="color"
-                                               class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
-                                        <input v-model="lowerthirdFontColor" type="text"
-                                               class="flex-1 form-input text-xs font-mono"
-                                               @change="saveLowerthirdSettings()" />
+                                        <input v-model="lowerthirdFontColor" type="color" class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
+                                        <input v-model="lowerthirdFontColor" type="text" class="flex-1 form-input text-xs font-mono" @change="saveLowerthirdSettings()" />
                                     </div>
                                 </div>
                                 <div>
                                     <label class="text-xs text-slate-500 mb-1 block">Background</label>
                                     <div class="flex items-center gap-2">
-                                        <input v-model="lowerthirdBgColor" type="color"
-                                               class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
-                                        <input v-model="lowerthirdBgColor" type="text"
-                                               class="flex-1 form-input text-xs font-mono"
-                                               @change="saveLowerthirdSettings()" />
+                                        <input v-model="lowerthirdBgColor" type="color" class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
+                                        <input v-model="lowerthirdBgColor" type="text" class="flex-1 form-input text-xs font-mono" @change="saveLowerthirdSettings()" />
                                     </div>
                                 </div>
                             </div>
@@ -569,6 +637,10 @@
                                        @change="saveLowerthirdSettings()"
                                        class="w-full accent-indigo-500" />
                             </div>
+                            <button @click="saveLowerthirdSettings()"
+                                    class="w-full px-3 py-1.5 text-xs bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 rounded-lg hover:bg-emerald-600/30 transition-colors">
+                                ✓ Apply Position &amp; Style
+                            </button>
                         </div>
                         <p v-if="lowerthirdMessage" class="mt-1 text-xs text-green-400">{{ lowerthirdMessage }}</p>
                     </div>
@@ -823,6 +895,133 @@ async function saveItemEdit() {
     } finally {
         editSaving.value = false
     }
+}
+
+// Ticker items
+const tickerItems = ref((props.channel.ticker_items ?? []).map(i => ({ text: i.text ?? '', color: i.color ?? '#ffffff', bg_color: i.bg_color ?? '#000000' })))
+const tickerLabel = ref(props.channel.ticker_label ?? '')
+const tickerLabelColor = ref(props.channel.ticker_label_color ?? '#ff0000')
+const tickerLabelBg = ref(props.channel.ticker_label_bg ?? '#ffffff')
+
+function addTickerItem() {
+    tickerItems.value.push({ text: '', color: '#ffffff', bg_color: '#000000' })
+}
+
+async function importTickerFile(e) {
+    const file = e.target.files[0]
+    if (!file) return
+    const csrfToken = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1]
+    const form = new FormData()
+    form.append('file', file)
+    try {
+        const res = await fetch(route('channels.playout.ticker-upload', props.channel.id), {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '' },
+            body: form,
+        })
+        const data = await res.json()
+        if (data.success) {
+            tickerItems.value = data.items.map(i => ({ text: i.text, color: i.color ?? '#ffffff', bg_color: i.bg_color ?? '#000000' }))
+            tickerMessage.value = `Imported ${data.count} items`
+            setTimeout(() => tickerMessage.value = '', 3000)
+        } else {
+            tickerMessage.value = data.error || 'Import failed'
+        }
+    } catch (err) {
+        tickerMessage.value = 'Import error: ' + err.message
+    }
+    e.target.value = ''
+}
+
+async function saveTickerItems() {
+    try {
+        const csrfToken = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.playout.ticker-items', props.channel.id), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '' },
+            body: JSON.stringify({
+                items: tickerItems.value.filter(i => i.text.trim()),
+                label: tickerLabel.value || null,
+                label_color: tickerLabelColor.value,
+                label_bg: tickerLabelBg.value,
+            }),
+        })
+        const data = await res.json()
+        if (data.success) {
+            tickerMessage.value = 'Ticker pushed to air'
+            setTimeout(() => tickerMessage.value = '', 3000)
+        }
+    } catch (err) {
+        tickerMessage.value = 'Error: ' + err.message
+    }
+}
+
+// Lower-third canvas
+const ltCanvas = ref(null)
+const ltCanvasHover = ref(null)
+const activeLtPreset = ref(null)
+const ltPresets = [
+    { key: 'tl', icon: '↖', label: 'Top Left' },
+    { key: 'tr', icon: '↗', label: 'Top Right' },
+    { key: 'bl', icon: '↙', label: 'Bottom Left' },
+    { key: 'br', icon: '↘', label: 'Bottom Right' },
+]
+
+function parseLtPosition() {
+    const x = props.channel.lowerthird_x
+    const y = props.channel.lowerthird_y
+    if (x !== null && x !== undefined && y !== null && y !== undefined) return { x, y }
+    const pos = props.channel.lowerthird_position ?? 'bottom-left'
+    const m = 15
+    const map = { 'top-left': [m,m], 'top-right': [-m,m], 'bottom-left': [m,-m], 'bottom-right': [-m,-m] }
+    const [px, py] = map[pos] || [m, -m]
+    return { x: px, y: py }
+}
+const parsedLt = parseLtPosition()
+const ltX = ref(parsedLt.x)
+const ltY = ref(parsedLt.y)
+
+const ltMarkerStyle = computed(() => {
+    const ax = ltX.value < 0 ? CANVAS_W + ltX.value : ltX.value
+    const ay = ltY.value < 0 ? CANVAS_H + ltY.value : ltY.value
+    return {
+        left: Math.max(0, Math.min(1, ax / CANVAS_W)) * 100 + '%',
+        top:  Math.max(0, Math.min(1, ay / CANVAS_H)) * 100 + '%',
+    }
+})
+const ltMarkerLabel = computed(() => `${ltX.value}, ${ltY.value}`)
+
+function onLtCanvasClick(e) {
+    const rect = ltCanvas.value.getBoundingClientRect()
+    const pctX = (e.clientX - rect.left) / rect.width
+    const pctY = (e.clientY - rect.top) / rect.height
+    let x = Math.round(pctX * CANVAS_W)
+    let y = Math.round(pctY * CANVAS_H)
+    if (pctX > 0.85) x = -(CANVAS_W - x)
+    if (pctY > 0.85) y = -(CANVAS_H - y)
+    ltX.value = x
+    ltY.value = y
+    activeLtPreset.value = null
+}
+
+function onLtCanvasHover(e) {
+    const rect = ltCanvas.value.getBoundingClientRect()
+    const pctX = (e.clientX - rect.left) / rect.width
+    const pctY = (e.clientY - rect.top) / rect.height
+    let x = Math.round(pctX * CANVAS_W)
+    let y = Math.round(pctY * CANVAS_H)
+    if (pctX > 0.85) x = -(CANVAS_W - x)
+    if (pctY > 0.85) y = -(CANVAS_H - y)
+    ltCanvasHover.value = { pct: { x: pctX, y: pctY }, label: `${x}, ${y}` }
+}
+
+function applyLtPreset(key) {
+    const m = 15
+    const map = { tl: [m,m], tr: [-m,m], bl: [m,-m], br: [-m,-m] }
+    const [x, y] = map[key]
+    ltX.value = x
+    ltY.value = y
+    activeLtPreset.value = key
 }
 
 // Drag and drop
@@ -1196,13 +1395,10 @@ async function saveLowerthirdSettings() {
         const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
         const res = await fetch(route('channels.playout.lowerthird', props.channel.id), {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
-            },
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '' },
             body: JSON.stringify({
-                position: lowerthirdPosition.value,
+                x: ltX.value,
+                y: ltY.value,
                 fontsize: lowerthirdFontsize.value,
                 font_color: lowerthirdFontColor.value,
                 bg_color: lowerthirdBgColor.value,
