@@ -618,12 +618,36 @@ class TvPlayoutEngine
      *   Filter chain: [logo overlay] → [ticker drawtext] → [clock drawtext]
      *   Output: HLS segments → MediaMTX serves them
      */
+    /**
+     * Derive a scale factor relative to 1080p so all overlay pixel values
+     * (font sizes, margins, border widths, speeds) shrink/grow proportionally
+     * with the output resolution. 1920×1080 → 1.0, 1280×720 → 0.667, 854×480 → 0.444.
+     */
+    private function overlayScale(Channel $channel): float
+    {
+        $resolution = $channel->output_resolution ?? '1920x1080';
+        if ($resolution === 'auto' || ! preg_match('/^(\d+)[x:](\d+)$/', $resolution, $m)) {
+            return 1.0;
+        }
+        // Scale by height relative to 1080 (height drives readability more than width)
+        return max(0.1, (int) $m[2] / 1080.0);
+    }
+
+    /** Scale an integer pixel value and return as int (minimum 1). */
+    private function px(int $value, float $scale): int
+    {
+        return max(1, (int) round($value * $scale));
+    }
+
     private function buildCommand(Channel $channel, string $concatFile): array
     {
         $dvrDir = $channel->dvr_directory;
         $segPattern = "{$dvrDir}/tv_seg_%010d.ts";
         $m3u8Out = "{$dvrDir}/live.m3u8";
         $segDur = max(2, (int) ($channel->segment_duration ?? 2));
+
+        // Scale factor for all overlay pixel values relative to 1080p baseline
+        $s = $this->overlayScale($channel);
 
         // Base command
         $cmd = [
@@ -640,26 +664,26 @@ class TvPlayoutEngine
         ];
 
         // Logo overlay — only include when logo_enabled is true.
-        // When disabled, skip the logo input entirely for a lighter filter chain.
         $this->ensureLogoBlank($channel);
         $logoActivePath = $this->logoActivePath($channel);
         $scalePct = max(1, min(50, (int) ($channel->logo_scale ?? 12)));
         $logoEnabled = $channel->logo_enabled ?? true;
 
-        // logo_position stored as "x:y" pixels; negative = from right/bottom edge.
+        // logo_position stored as "x:y" pixels (designed at 1080p) — scale to output.
         $position = $channel->logo_position ?? '20:20';
         if (preg_match('/^(-?\d+):(-?\d+)$/', $position, $m)) {
-            $px = (int) $m[1];
-            $py = (int) $m[2];
+            $px = (int) round((int) $m[1] * $s);
+            $py = (int) round((int) $m[2] * $s);
             $ox = $px < 0 ? "W-w{$px}" : (string) $px;
             $oy = $py < 0 ? "H-h{$py}" : (string) $py;
             $overlayPos = "{$ox}:{$oy}";
         } else {
+            $margin = $this->px(20, $s);
             $overlayPos = match ($position) {
-                'top-left'     => '20:20',
-                'bottom-left'  => '20:H-h-20',
-                'bottom-right' => 'W-w-20:H-h-20',
-                default        => 'W-w-20:20',
+                'top-left'     => "{$margin}:{$margin}",
+                'bottom-left'  => "{$margin}:H-h-{$margin}",
+                'bottom-right' => "W-w-{$margin}:H-h-{$margin}",
+                default        => "W-w-{$margin}:{$margin}",
             };
         }
 
@@ -676,7 +700,6 @@ class TvPlayoutEngine
         }
 
         if ($logoEnabled) {
-            // Add logo as separate -loop 1 input (avoids movie filter deadlock with -re + -stream_loop).
             $cmd = array_merge($cmd, ['-loop', '1', '-i', $logoActivePath]);
             $filterParts[] = "[{$inputIndex}:v]scale=iw*{$scalePct}/100:-1[logo_scaled]";
             $filterParts[] = "[{$lastLabel}][logo_scaled]overlay={$overlayPos}[with_logo]";
@@ -684,84 +707,87 @@ class TvPlayoutEngine
             $inputIndex++;
         }
 
-        // Ticker (scrolling text) — fully customizable
+        // Ticker (scrolling text)
         $tickerText = trim((string) $channel->ticker_text);
         if ($channel->ticker_enabled && $tickerText !== '') {
             $tickerFile = $this->tickerFilePath($channel);
             $escapedTickerFile = str_replace("'", "'\\''", $tickerFile);
 
-            $tickerSpeed = max(10, min(500, (int) ($channel->ticker_speed ?? 80)));
-            $tickerFontSize = max(10, min(72, (int) ($channel->ticker_font_size ?? 24)));
+            $tickerSpeed    = $this->px(max(10, min(500, (int) ($channel->ticker_speed ?? 80))), $s);
+            $tickerFontSize = $this->px(max(10, min(72,  (int) ($channel->ticker_font_size ?? 24))), $s);
+            $tickerBorderW  = $this->px(8, $s);
+            $tickerMargin   = $this->px(10, $s);
             $tickerFontColor = $channel->ticker_font_color ?? 'white';
-            $tickerBgColor = $channel->ticker_bg_color ?? '#000000';
+            $tickerBgColor   = $channel->ticker_bg_color ?? '#000000';
             $tickerBgOpacity = max(0, min(100, (int) ($channel->ticker_bg_opacity ?? 65)));
             $tickerBgOpacityFp = number_format($tickerBgOpacity / 100, 2, '.', '');
             $tickerPos = $channel->ticker_position ?? 'bottom';
 
-            // Convert hex color to 0xRRGGBB for FFmpeg
             $bgHex = ltrim($tickerBgColor, '#');
             if (strlen($bgHex) === 3) {
-                $bgHex = $bgHex[0] . $bgHex[0] . $bgHex[1] . $bgHex[1] . $bgHex[2] . $bgHex[2];
+                $bgHex = $bgHex[0].$bgHex[0].$bgHex[1].$bgHex[1].$bgHex[2].$bgHex[2];
             }
             $ffBgColor = '0x' . strtoupper($bgHex);
 
             $tickerY = match ($tickerPos) {
-                'top'    => '10',
+                'top'    => (string) $tickerMargin,
                 'center' => '(h-line_h)/2',
-                default  => 'h-line_h-10',
+                default  => "h-line_h-{$tickerMargin}",
             };
 
-            // x scrolls right-to-left at tickerSpeed pixels/sec
-            $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedTickerFile}':reload=1:y={$tickerY}:x=w-mod(max(t*{$tickerSpeed}\\,0)\\,w+tw):fontcolor={$tickerFontColor}:fontsize={$tickerFontSize}:box=1:boxcolor={$ffBgColor}@{$tickerBgOpacityFp}:boxborderw=8[with_ticker]";
+            $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedTickerFile}':reload=1:y={$tickerY}:x=w-mod(max(t*{$tickerSpeed}\\,0)\\,w+tw):fontcolor={$tickerFontColor}:fontsize={$tickerFontSize}:box=1:boxcolor={$ffBgColor}@{$tickerBgOpacityFp}:boxborderw={$tickerBorderW}[with_ticker]";
             $lastLabel = 'with_ticker';
         }
 
-        // Clock overlay — uses system local time (only when enabled)
+        // Clock overlay
         $clockEnabled = $channel->clock_enabled ?? true;
         if ($clockEnabled) {
-            $clockPos = $channel->clock_position ?? 'top-left';
-            $clockFontsize = max(12, min(72, (int) ($channel->clock_fontsize ?? 28)));
-            $clockColor = $channel->clock_color ?? 'white';
+            $clockPos      = $channel->clock_position ?? 'top-left';
+            $clockFontsize = $this->px(max(12, min(72, (int) ($channel->clock_fontsize ?? 28))), $s);
+            $clockColor    = $channel->clock_color ?? 'white';
+            $clockMargin   = $this->px(15, $s);
+            $clockBorderW  = $this->px(6, $s);
 
             $clockPosExpr = match ($clockPos) {
-                'top-right'    => 'x=w-tw-15:y=15',
-                'bottom-left'  => 'x=15:y=h-th-15',
-                'bottom-right' => 'x=w-tw-15:y=h-th-15',
-                default        => 'x=15:y=15',
+                'top-right'    => "x=w-tw-{$clockMargin}:y={$clockMargin}",
+                'bottom-left'  => "x={$clockMargin}:y=h-th-{$clockMargin}",
+                'bottom-right' => "x=w-tw-{$clockMargin}:y=h-th-{$clockMargin}",
+                default        => "x={$clockMargin}:y={$clockMargin}",
             };
 
-            $filterParts[] = "[{$lastLabel}]drawtext=text='%{pts\:hms}':{$clockPosExpr}:fontcolor={$clockColor}:fontsize={$clockFontsize}:box=1:boxcolor=black@0.5:boxborderw=6[clock_out]";
+            $filterParts[] = "[{$lastLabel}]drawtext=text='%{pts\:hms}':{$clockPosExpr}:fontcolor={$clockColor}:fontsize={$clockFontsize}:box=1:boxcolor=black@0.5:boxborderw={$clockBorderW}[clock_out]";
             $lastLabel = 'clock_out';
         }
 
-        // NOW PLAYING overlay — reads from disk, reload=1 for live updates
+        // NOW PLAYING overlay
         $lowerthirdEnabled = $channel->lowerthird_enabled ?? true;
         if ($lowerthirdEnabled) {
             $metaFile = $this->metaFilePath($channel);
             $escapedMetaFile = str_replace("'", "'\\''", $metaFile);
 
-            $ltPos = $channel->lowerthird_position ?? 'bottom-left';
-            $ltFontsize = max(10, min(72, (int) ($channel->lowerthird_fontsize ?? 20)));
+            $ltPos       = $channel->lowerthird_position ?? 'bottom-left';
+            $ltFontsize  = $this->px(max(10, min(72, (int) ($channel->lowerthird_fontsize ?? 20))), $s);
+            $ltMargin    = $this->px(15, $s);
+            $ltBorderW   = $this->px(4, $s);
             $ltFontColor = $channel->lowerthird_font_color ?? '#ffffff';
-            $ltBgColor = $channel->lowerthird_bg_color ?? '#334155';
+            $ltBgColor   = $channel->lowerthird_bg_color ?? '#334155';
             $ltBgOpacity = max(0, min(100, (int) ($channel->lowerthird_bg_opacity ?? 80)));
             $ltBgOpacityFp = number_format($ltBgOpacity / 100, 2, '.', '');
 
-            // Convert hex to 0xRRGGBB
             $ltBgHex = ltrim($ltBgColor, '#');
             if (strlen($ltBgHex) === 3) {
-                $ltBgHex = $ltBgHex[0] . $ltBgHex[0] . $ltBgHex[1] . $ltBgHex[1] . $ltBgHex[2] . $ltBgHex[2];
+                $ltBgHex = $ltBgHex[0].$ltBgHex[0].$ltBgHex[1].$ltBgHex[1].$ltBgHex[2].$ltBgHex[2];
             }
             $ffLtBgColor = '0x' . strtoupper($ltBgHex);
 
             $ltPosExpr = match ($ltPos) {
-                'top-left'     => 'x=15:y=15',
-                'top-right'    => 'x=w-tw-15:y=15',
-                'bottom-right' => 'x=w-tw-15:y=h-th-15',
-                default        => 'x=15:y=h-th-15',
+                'top-left'     => "x={$ltMargin}:y={$ltMargin}",
+                'top-right'    => "x=w-tw-{$ltMargin}:y={$ltMargin}",
+                'bottom-right' => "x=w-tw-{$ltMargin}:y=h-th-{$ltMargin}",
+                default        => "x={$ltMargin}:y=h-th-{$ltMargin}",
             };
 
-            $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedMetaFile}':reload=1:{$ltPosExpr}:fontcolor={$ltFontColor}:fontsize={$ltFontsize}:box=1:boxcolor={$ffLtBgColor}@{$ltBgOpacityFp}:boxborderw=4[final_video]";
+            $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedMetaFile}':reload=1:{$ltPosExpr}:fontcolor={$ltFontColor}:fontsize={$ltFontsize}:box=1:boxcolor={$ffLtBgColor}@{$ltBgOpacityFp}:boxborderw={$ltBorderW}[final_video]";
             $lastLabel = 'final_video';
         }
 
