@@ -6,6 +6,7 @@ namespace App\Jobs;
 
 use App\Models\PlaylistItem;
 use App\Models\Setting;
+use App\Services\ProxyService;
 use App\Services\YoutubeService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -100,15 +101,19 @@ class PreFetchYouTubeStream implements ShouldQueue
         $allClients = ['tv', 'tv_embedded', 'web', 'ios', 'android'];
         $playerClients = array_unique(array_merge([$preferredClient], $allClients));
 
-        // Read proxy from settings
-        $proxy = Setting::get('youtube_proxy', '') ?: '';
+        // Get a working proxy from ProxyService (auto-refreshes from proxifly repo)
+        /** @var ProxyService $proxyService */
+        $proxyService = app(ProxyService::class);
+        $proxy = $proxyService->getWorkingProxy()
+            ?: (Setting::get('youtube_proxy', '') ?: '');
+
+        $proxyFailed = false;
 
         foreach ($playerClients as $client) {
             $cmd = [
                 $ytdlp,
                 '--no-warnings',
                 '-g',
-                // Single-stream format: concat demuxer needs one URL, not video+audio separately
                 '--format', 'best[ext=mp4][height<=1080]/best[ext=mp4]/best',
                 '--no-playlist',
                 '--extractor-args', "youtube:player_client={$client}",
@@ -133,7 +138,6 @@ class PreFetchYouTubeStream implements ShouldQueue
 
             if ($proc->isSuccessful()) {
                 $output = trim($proc->getOutput());
-                // -g with a single-stream format outputs exactly one URL
                 $lines = array_filter(array_map('trim', explode("\n", $output)));
                 $url = $lines[0] ?? '';
 
@@ -142,9 +146,27 @@ class PreFetchYouTubeStream implements ShouldQueue
                 }
             }
 
-            Log::debug("[YouTubePreFetch] Client {$client} failed: " . trim($proc->getErrorOutput()));
-            usleep(300_000); // 300ms cooldown between clients
+            $err = strtolower(trim($proc->getErrorOutput()));
+            Log::debug("[YouTubePreFetch] Client {$client} failed: {$err}");
+
+            // If the proxy itself is being rejected, invalidate and try without
+            if ($proxy !== '' && ! $proxyFailed && (
+                str_contains($err, 'proxy') ||
+                str_contains($err, 'connection') ||
+                str_contains($err, 'tunnel') ||
+                str_contains($err, 'timed out')
+            )) {
+                Log::warning("[YouTubePreFetch] Proxy {$proxy} appears dead — invalidating");
+                $proxyService->invalidate();
+                $proxy = Setting::get('youtube_proxy', '') ?: '';
+                $proxyFailed = true;
+            }
+
+            usleep(300_000);
         }
+
+        // All clients failed — force a proxy refresh for next attempt
+        $proxyService->refresh();
 
         return null;
     }
