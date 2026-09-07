@@ -16,6 +16,7 @@ class PlaylistItem extends Model
         'channel_id',
         'title',
         'custom_title',
+        'media_group',
         'filepath',
         'duration',
         'sort_order',
@@ -23,6 +24,14 @@ class PlaylistItem extends Model
         'scheduled_end',
         'is_active',
     ];
+
+    /** Groups that suppress all CG overlays (logo, ticker, clock, lowerthird). */
+    public const CLEAN_GROUPS = ['clean'];
+
+    public function hasOverlays(): bool
+    {
+        return ! in_array($this->media_group ?? 'default', self::CLEAN_GROUPS, true);
+    }
 
     protected $casts = [
         'duration' => 'float',

@@ -173,13 +173,14 @@
                         <!-- Playlist items -->
                         <div class="divide-y divide-slate-800/50">
                             <div v-for="(item, index) in items" :key="item.id"
-                                 class="px-6 py-3 hover:bg-slate-800/20 transition-colors"
+                                 class="hover:bg-slate-800/20 transition-colors"
                                  draggable="true"
                                  @dragstart="dragStart(index, $event)"
                                  @dragover.prevent="dragOver(index)"
                                  @drop="drop(index)"
                                  @dragend="dragEnd">
-                                <div class="grid grid-cols-12 gap-2 items-center">
+                                <!-- Normal row -->
+                                <div v-if="editingItem?.id !== item.id" class="px-6 py-3 grid grid-cols-12 gap-2 items-center">
                                     <div class="col-span-1 flex items-center justify-center">
                                         <span class="text-xs font-mono text-slate-500">{{ index + 1 }}</span>
                                     </div>
@@ -187,6 +188,8 @@
                                         <div class="flex items-center gap-1.5">
                                             <span v-if="item.filepath?.startsWith('youtube:')"
                                                   class="inline-block px-1.5 py-0.5 bg-red-500/20 text-red-400 text-xs rounded font-mono flex-shrink-0">YT</span>
+                                            <span v-if="item.media_group === 'clean'"
+                                                  class="inline-block px-1.5 py-0.5 bg-slate-600/60 text-slate-400 text-[10px] rounded flex-shrink-0" title="No overlays">CLEAN</span>
                                             <span class="truncate">{{ item.custom_title || item.title }}</span>
                                         </div>
                                         <div v-if="item.custom_title && item.custom_title !== item.title" class="text-[10px] text-slate-600 truncate mt-0.5">
@@ -201,7 +204,7 @@
                                     </div>
                                     <div class="col-span-3 flex items-center justify-end gap-1">
                                         <button @click="editItemTitle(item)"
-                                                class="px-1.5 py-1 text-xs text-slate-500 hover:text-indigo-400 transition-colors" title="Edit display title">✎</button>
+                                                class="px-1.5 py-1 text-xs text-slate-500 hover:text-indigo-400 transition-colors" title="Edit title / group">✎</button>
                                         <button v-if="item.filepath?.startsWith('youtube:')" @click="downloadYouTubeItem(item)"
                                                 :disabled="item._downloading"
                                                 class="px-1.5 py-1 text-xs transition-colors"
@@ -212,6 +215,36 @@
                                         <button v-if="index < items.length - 1" @click="moveDown(index)"
                                                 class="p-1 text-slate-500 hover:text-white transition-colors" title="Move down">↓</button>
                                         <button @click="removeItem(item)" class="p-1 text-slate-500 hover:text-red-400 transition-colors" title="Remove">✕</button>
+                                    </div>
+                                </div>
+                                <!-- Inline edit row -->
+                                <div v-else class="px-6 py-3 bg-slate-800/40 border-l-2 border-indigo-500">
+                                    <div class="flex items-center gap-2 mb-2">
+                                        <span class="text-xs text-slate-400 font-medium truncate flex-1">{{ item.title }}</span>
+                                        <button @click="cancelEdit" class="text-xs text-slate-500 hover:text-white">✕ Cancel</button>
+                                    </div>
+                                    <div class="flex items-center gap-2 mb-2">
+                                        <input v-model="editTitle" type="text"
+                                               placeholder="Display title (leave empty to use original)"
+                                               class="flex-1 form-input text-xs"
+                                               @keydown.enter="saveItemEdit"
+                                               @keydown.escape="cancelEdit" />
+                                    </div>
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-xs text-slate-500">Group:</span>
+                                        <button v-for="g in mediaGroups" :key="g.value"
+                                                type="button" @click="editGroup = g.value"
+                                                :class="['px-2.5 py-1 text-xs rounded-lg border transition-colors',
+                                                         editGroup === g.value
+                                                             ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
+                                                             : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700']">
+                                            {{ g.label }}
+                                        </button>
+                                        <span class="text-[10px] text-slate-600 ml-1">{{ mediaGroups.find(g => g.value === editGroup)?.hint }}</span>
+                                        <button @click="saveItemEdit" :disabled="editSaving"
+                                                class="ml-auto px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50 transition-colors">
+                                            {{ editSaving ? 'Saving…' : '✓ Save' }}
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -746,6 +779,52 @@ async function setLoop(val) {
     }
 }
 
+const mediaGroups = [
+    { value: 'default', label: 'Default', hint: 'All overlays shown' },
+    { value: 'clean',   label: 'Clean',   hint: 'No overlays (logo, ticker, clock, lower-third hidden)' },
+]
+
+// Inline item editor
+const editingItem = ref(null)  // item being edited
+const editTitle = ref('')
+const editGroup = ref('default')
+const editSaving = ref(false)
+
+function editItemTitle(item) {
+    editingItem.value = item
+    editTitle.value = item.custom_title || ''
+    editGroup.value = item.media_group || 'default'
+}
+
+function cancelEdit() {
+    editingItem.value = null
+}
+
+async function saveItemEdit() {
+    if (!editingItem.value) return
+    editSaving.value = true
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.playout.items.title', [props.channel.id, editingItem.value.id]), {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+            body: JSON.stringify({ custom_title: editTitle.value || null, media_group: editGroup.value }),
+        })
+        const data = await res.json()
+        if (data.success) {
+            editingItem.value.custom_title = editTitle.value || null
+            editingItem.value.media_group = data.media_group
+            editingItem.value = null
+        }
+    } finally {
+        editSaving.value = false
+    }
+}
+
 // Drag and drop
 const dragIndex = ref(null)
 
@@ -900,29 +979,6 @@ async function addYouTube() {
     } finally {
         addingYouTube.value = false
     }
-}
-
-function editItemTitle(item) {
-    const current = item.custom_title || ''
-    const newTitle = prompt('Set display title for overlay (leave empty to use original):', current)
-    if (newTitle === null) return // cancelled
-
-    const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
-    fetch(route('channels.playout.items.title', [props.channel.id, item.id]), {
-        method: 'PUT',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-Requested-With': 'XMLHttpRequest',
-            'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
-        },
-        body: JSON.stringify({ custom_title: newTitle || null }),
-    })
-    .then(r => r.json())
-    .then(data => {
-        if (data.success) {
-            item.custom_title = data.display_title !== item.title ? data.display_title : null
-        }
-    })
 }
 
 async function downloadYouTubeItem(item) {

@@ -231,7 +231,7 @@ class TvPlayoutController extends Controller
     }
 
     /**
-     * Update a playlist item's custom title (for lower-third overlay).
+     * Update a playlist item's custom title and/or media group.
      */
     public function updateItemTitle(Request $request, Channel $channel, PlaylistItem $item): JsonResponse
     {
@@ -240,14 +240,22 @@ class TvPlayoutController extends Controller
 
         $data = $request->validate([
             'custom_title' => 'nullable|string|max:500',
+            'media_group'  => 'nullable|string|in:default,clean',
         ]);
 
-        $item->update(['custom_title' => $data['custom_title'] ?: null]);
+        $update = ['custom_title' => $data['custom_title'] ?: null];
+        if (isset($data['media_group'])) {
+            $update['media_group'] = $data['media_group'];
+        }
+        $item->update($update);
 
-        // Update the meta file on disk so overlay picks it up
         $this->engine->writeMetaFile($channel);
 
-        return response()->json(['success' => true, 'display_title' => $item->display_title]);
+        return response()->json([
+            'success' => true,
+            'display_title' => $item->fresh()->display_title,
+            'media_group' => $item->fresh()->media_group,
+        ]);
     }
 
     /**

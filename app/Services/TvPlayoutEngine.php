@@ -858,14 +858,13 @@ class TvPlayoutEngine
 
     /**
      * Write the current playing metadata file for on-screen overlay.
-     * Shows the display title of the currently-airing item (by scheduled_start),
-     * falling back to the first item if no schedule has been calculated yet.
+     * When the current item's media_group is 'clean', blanks all CG text files
+     * so overlays show nothing without requiring an FFmpeg restart.
      */
     public function writeMetaFile(Channel $channel): void
     {
         $now = now();
 
-        // Find the item that is currently airing (started but not yet ended)
         $item = PlaylistItem::where('channel_id', $channel->id)
             ->where('is_active', true)
             ->where('scheduled_start', '<=', $now)
@@ -873,7 +872,6 @@ class TvPlayoutEngine
             ->orderBy('scheduled_start')
             ->first();
 
-        // Fall back to first item if schedule not yet calculated
         if (! $item) {
             $item = PlaylistItem::where('channel_id', $channel->id)
                 ->where('is_active', true)
@@ -881,9 +879,17 @@ class TvPlayoutEngine
                 ->first();
         }
 
-        $meta = $item ? $item->display_title : 'NO PLAYLIST ITEMS';
+        $isClean = $item && ! $item->hasOverlays();
 
-        file_put_contents($this->metaFilePath($channel), $meta);
+        // When clean group: blank all text overlays so nothing shows on screen
+        file_put_contents($this->metaFilePath($channel), $isClean ? ' ' : ($item ? $item->display_title : 'NO PLAYLIST ITEMS'));
+
+        if ($isClean) {
+            // Blank ticker too so it disappears during clean items
+            file_put_contents($this->tickerFilePath($channel), ' ');
+        } else {
+            $this->writeTickerFile($channel);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
