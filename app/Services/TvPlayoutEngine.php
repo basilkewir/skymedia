@@ -403,13 +403,23 @@ class TvPlayoutEngine
      */
     public function updateClockSettings(Channel $channel, array $settings): void
     {
-        $channel->update(array_filter([
+        $update = array_filter([
             'clock_position' => $settings['position'] ?? null,
             'clock_fontsize' => isset($settings['fontsize']) ? max(12, min(72, (int) $settings['fontsize'])) : null,
-            'clock_color' => $settings['color'] ?? null,
-            'clock_format' => $settings['format'] ?? null,
-            'clock_enabled' => isset($settings['enabled']) ? (bool) $settings['enabled'] : null,
-        ], fn ($v) => $v !== null));
+            'clock_color'    => $settings['color'] ?? null,
+            'clock_format'   => $settings['format'] ?? null,
+            'clock_enabled'  => isset($settings['enabled']) ? (bool) $settings['enabled'] : null,
+        ], fn ($v) => $v !== null);
+
+        // X/Y can be 0 so filter separately
+        if (array_key_exists('x', $settings)) {
+            $update['clock_x'] = $settings['x'] === null ? null : (int) $settings['x'];
+        }
+        if (array_key_exists('y', $settings)) {
+            $update['clock_y'] = $settings['y'] === null ? null : (int) $settings['y'];
+        }
+
+        $channel->update($update);
 
         if ($this->isRunning($channel)) {
             $this->restartWithResume($channel);
@@ -655,51 +665,49 @@ class TvPlayoutEngine
             return;
         }
 
-        $youtubeUrl = 'https://www.youtube.com/watch?v=' . escapeshellarg($videoId);
-        $proxy      = app(\App\Services\ProxyService::class)->getWorkingProxy() ?: '';
+        $proxy     = app(\App\Services\ProxyService::class)->getWorkingProxy() ?: '';
         $cookiePath = $this->getYouTubeCookiePath($item);
-        $tmpBase    = escapeshellarg($localFile . '.tmp');
-        $finalFile  = escapeshellarg($localFile);
-        $lockFileEsc = escapeshellarg($lockFile);
         $channelId  = $item->channel_id;
-        $itemId     = $item->id;
-        $artisan    = escapeshellarg(base_path('artisan'));
+        $artisan    = base_path('artisan');
+        $tmpPattern = $localFile . '.tmp.%(ext)s';
         $path       = '/usr/local/bin:/usr/bin:/bin';
 
-        // Build yt-dlp command string
-        $ytArgs = escapeshellarg($ytdlp)
-            . ' --no-warnings'
-            . ' --format ' . escapeshellarg('bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best')
-            . ' --merge-output-format mp4'
-            . ' --no-playlist'
-            . ' --extractor-args ' . escapeshellarg('youtube:player_client=tv')
-            . ' --output ' . escapeshellarg($localFile . '.tmp.%(ext)s');
-
+        // Build yt-dlp args array then escape for shell
+        $args = [
+            $ytdlp,
+            '--no-warnings',
+            '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            '--merge-output-format', 'mp4',
+            '--no-playlist',
+            '--extractor-args', 'youtube:player_client=tv',
+            '--output', $tmpPattern,
+        ];
         if ($cookiePath !== null) {
-            $ytArgs .= ' --cookies ' . escapeshellarg($cookiePath);
+            $args[] = '--cookies';
+            $args[] = $cookiePath;
         }
         if ($proxy !== '') {
-            $ytArgs .= ' --proxy ' . escapeshellarg($proxy);
+            $args[] = '--proxy';
+            $args[] = $proxy;
         }
-        $ytArgs .= ' ' . escapeshellarg("https://www.youtube.com/watch?v={$videoId}");
+        $args[] = "https://www.youtube.com/watch?v={$videoId}";
 
-        // Shell script: create lock, download, move file, remove lock, trigger rebuild
-        $script = implode(' && ', [
-            "export PATH={$path}:\$PATH",
-            "touch {$lockFileEsc}",
-            "{$ytArgs}",
-            // Find the downloaded file (yt-dlp adds extension)
-            "DLFILE=\$(ls {$localFile}.tmp.* 2>/dev/null | head -1)",
-            "[ -n \"\$DLFILE\" ] && mv \"\$DLFILE\" {$finalFile}",
-            "rm -f {$lockFileEsc}",
-            // Trigger concat rebuild via artisan
-            "php {$artisan} tv:rebuild-concat {$channelId} 2>/dev/null || true",
-        ]);
+        $ytCmd      = implode(' ', array_map('escapeshellarg', $args));
+        $lockEsc    = escapeshellarg($lockFile);
+        $localEsc   = escapeshellarg($localFile);
+        $artisanEsc = escapeshellarg($artisan);
 
-        $shell = "setsid sh -c " . escapeshellarg($script) . " </dev/null >/dev/null 2>&1 &";
-        shell_exec($shell);
+        $script = "export PATH={$path}:\$PATH"
+            . "; touch {$lockEsc}"
+            . "; {$ytCmd}"
+            . "; DLFILE=\$(ls " . escapeshellarg($localFile . '.tmp.*') . " 2>/dev/null | head -1)"
+            . "; [ -n \"\$DLFILE\" ] && mv \"\$DLFILE\" {$localEsc} || true"
+            . "; rm -f {$lockEsc}"
+            . "; php {$artisanEsc} tv:rebuild-concat {$channelId} 2>/dev/null || true";
 
-        Log::info("[TvPlayout] Started background download for YouTube {$videoId} (item {$itemId})");
+        shell_exec('setsid sh -c ' . escapeshellarg($script) . ' </dev/null >/dev/null 2>&1 &');
+
+        Log::info("[TvPlayout] Started background download for YouTube {$videoId} (channel {$channelId})");
     }
 
     /**
@@ -922,6 +930,17 @@ class TvPlayoutEngine
                 'bottom-right' => "x=w-tw-{$clockMargin}:y=h-th-{$clockMargin}",
                 default        => "x={$clockMargin}:y={$clockMargin}",
             };
+
+            // Free X/Y positioning takes priority over named preset
+            $clockX = $channel->clock_x;
+            $clockY = $channel->clock_y;
+            if ($clockX !== null && $clockY !== null) {
+                $scaledX = (int) round($clockX * $s);
+                $scaledY = (int) round($clockY * $s);
+                $cx = $scaledX < 0 ? "w-tw" . $scaledX : (string) $scaledX;
+                $cy = $scaledY < 0 ? "h-th" . $scaledY : (string) $scaledY;
+                $clockPosExpr = "x={$cx}:y={$cy}";
+            }
 
             $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedClockFile}':reload=1:{$clockPosExpr}:fontcolor={$clockColor}:fontsize={$clockFontsize}:box=1:boxcolor=black@0.5:boxborderw={$clockBorderW}[clock_out]";
             $lastLabel = 'clock_out';

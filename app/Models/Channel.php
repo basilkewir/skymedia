@@ -30,7 +30,7 @@ class Channel extends Model
         'dvr_duration', 'segment_duration', 'dvr_enabled', 'dvr_path',
         'logo_media_id', 'logo_position', 'logo_scale', 'logo_enabled', 'ticker_enabled', 'ticker_text', 'playlist_loop',
         'ticker_bg_color', 'ticker_bg_opacity', 'ticker_font_size', 'ticker_font_color', 'ticker_speed', 'ticker_position',
-        'clock_position', 'clock_fontsize', 'clock_color', 'clock_format', 'clock_enabled', 'output_resolution',
+        'clock_position', 'clock_fontsize', 'clock_color', 'clock_format', 'clock_enabled', 'clock_x', 'clock_y', 'output_resolution',
         'lowerthird_position', 'lowerthird_x', 'lowerthird_y', 'lowerthird_fontsize', 'lowerthird_font_color', 'lowerthird_bg_color', 'lowerthird_bg_opacity', 'lowerthird_enabled',
         'ticker_items', 'ticker_label', 'ticker_label_color', 'ticker_label_bg',
         // Storage quota
@@ -65,6 +65,8 @@ class Channel extends Model
         'ticker_enabled' => 'boolean',
         'playlist_loop' => 'integer',
         'clock_fontsize' => 'integer',
+        'clock_x'        => 'integer',
+        'clock_y'        => 'integer',
         'ticker_bg_opacity' => 'integer',
         'ticker_font_size' => 'integer',
         'ticker_speed' => 'integer',

@@ -9,22 +9,20 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
- * ProxyService — fetches a fresh working HTTP proxy from the proxifly
- * free-proxy-list repository and caches it for yt-dlp to use.
+ * ProxyService — fetches working SOCKS5 proxies from the proxifly
+ * free-proxy-list repository and caches one for yt-dlp to use.
  *
  * Source: https://github.com/proxifly/free-proxy-list
  */
 class ProxyService
 {
-    private const LIST_URL    = 'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.json';
-    private const CACHE_KEY   = 'youtube_working_proxy';
-    private const POOL_KEY    = 'youtube_proxy_pool';
-    private const CACHE_TTL   = 1800; // 30 min
-    private const TEST_URL    = 'https://www.youtube.com/robots.txt';
+    private const LIST_URL     = 'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.json';
+    private const CACHE_KEY    = 'youtube_working_proxy';
+    private const CACHE_TTL    = 1800; // 30 min
     private const TEST_TIMEOUT = 8;
 
     /**
-     * Return a working proxy string (e.g. "http://1.2.3.4:8080") or null.
+     * Return a working socks5 proxy string (e.g. "socks5://1.2.3.4:1080") or null.
      * Uses the cached value when available; refreshes automatically on miss.
      */
     public function getWorkingProxy(): ?string
@@ -44,22 +42,21 @@ class ProxyService
     {
         $proxies = $this->fetchList();
         if (empty($proxies)) {
-            Log::warning('[ProxyService] Could not fetch proxy list');
+            Log::warning('[ProxyService] Could not fetch SOCKS5 proxy list');
             return null;
         }
 
-        // Shuffle so we don't always hammer the same proxies
         shuffle($proxies);
 
-        foreach (array_slice($proxies, 0, 40) as $proxy) {
+        foreach (array_slice($proxies, 0, 60) as $proxy) {
             if ($this->test($proxy)) {
                 Cache::put(self::CACHE_KEY, $proxy, self::CACHE_TTL);
-                Log::info("[ProxyService] Working proxy found: {$proxy}");
+                Log::info("[ProxyService] Working SOCKS5 proxy found: {$proxy}");
                 return $proxy;
             }
         }
 
-        Log::warning('[ProxyService] No working proxy found in tested batch');
+        Log::warning('[ProxyService] No working SOCKS5 proxy found in tested batch');
         Cache::forget(self::CACHE_KEY);
         return null;
     }
@@ -89,11 +86,10 @@ class ProxyService
 
             $proxies = [];
             foreach ($data as $entry) {
-                // Each entry: { "ip": "1.2.3.4", "port": 8080, "protocols": ["http"], ... }
                 $ip   = $entry['ip']   ?? ($entry['host'] ?? null);
                 $port = $entry['port'] ?? null;
                 if ($ip && $port) {
-                    $proxies[] = "http://{$ip}:{$port}";
+                    $proxies[] = "socks5://{$ip}:{$port}";
                 }
             }
 
@@ -104,12 +100,19 @@ class ProxyService
         }
     }
 
+    /**
+     * Test a SOCKS5 proxy by fetching youtube.com/robots.txt through it via curl.
+     * PHP's Http client (Guzzle) supports socks5:// proxies via curl.
+     */
     private function test(string $proxy): bool
     {
         try {
             $response = Http::timeout(self::TEST_TIMEOUT)
-                ->withOptions(['proxy' => $proxy, 'verify' => false])
-                ->get(self::TEST_URL);
+                ->withOptions([
+                    'proxy'  => $proxy,
+                    'verify' => false,
+                ])
+                ->get('https://www.youtube.com/robots.txt');
 
             return $response->successful();
         } catch (\Throwable) {

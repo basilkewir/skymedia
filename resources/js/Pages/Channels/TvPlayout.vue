@@ -518,13 +518,29 @@
                                 <label class="text-xs text-slate-500 mb-1 block">Position</label>
                                 <div class="grid grid-cols-2 gap-2">
                                     <button v-for="cp in clockPositions" :key="cp.value" type="button"
-                                            @click="clockPosition = cp.value; saveClockSettings()"
+                                            @click="clockPosition = cp.value; clockX = null; clockY = null; saveClockSettings()"
                                             :class="['px-3 py-1.5 text-xs rounded-lg border transition-colors text-left',
-                                                     clockPosition === cp.value
+                                                     clockPosition === cp.value && clockX === null
                                                          ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
                                                          : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700']">
                                         {{ cp.icon }} {{ cp.label }}
                                     </button>
+                                </div>
+                                <div class="mt-2">
+                                    <label class="text-xs text-slate-500 mb-1 block">Custom X / Y position (pixels, overrides preset)</label>
+                                    <div class="flex gap-2">
+                                        <input v-model.number="clockX" type="number" placeholder="X"
+                                               class="w-full form-input text-xs font-mono"
+                                               @change="saveClockSettings()" />
+                                        <input v-model.number="clockY" type="number" placeholder="Y"
+                                               class="w-full form-input text-xs font-mono"
+                                               @change="saveClockSettings()" />
+                                        <button v-if="clockX !== null || clockY !== null" type="button"
+                                                @click="clockX = null; clockY = null; saveClockSettings()"
+                                                class="px-2 py-1 text-xs rounded-lg border bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700 whitespace-nowrap">
+                                            Reset
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                             <div>
@@ -772,6 +788,8 @@ const clockColor = ref(props.channel.clock_color || 'white')
 const clockEnabled = ref(props.channel.clock_enabled !== false)
 const clockFormat = ref(props.channel.clock_format || '%H\:%M\:%S')
 const clockMessage = ref('')
+const clockX = ref(props.channel.clock_x ?? null)
+const clockY = ref(props.channel.clock_y ?? null)
 const clockPositions = [
     { value: 'top-left', icon: '↖', label: 'Top Left' },
     { value: 'top-right', icon: '↗', label: 'Top Right' },
@@ -1367,6 +1385,8 @@ async function saveClockSettings() {
                 color: clockColor.value,
                 format: clockFormat.value,
                 enabled: clockEnabled.value,
+                x: clockX.value,
+                y: clockY.value,
             }),
         })
         const data = await res.json()

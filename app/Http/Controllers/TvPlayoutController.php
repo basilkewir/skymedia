@@ -712,11 +712,13 @@ class TvPlayoutController extends Controller
         $this->ensureAccess($channel);
 
         $data = $request->validate([
-            'position' => 'required|string|in:top-left,top-right,bottom-left,bottom-right',
+            'position' => 'nullable|string|in:top-left,top-right,bottom-left,bottom-right',
             'fontsize' => 'required|integer|min:12|max:72',
             'color' => 'required|string|max:30',
             'format' => 'nullable|string|max:50',
             'enabled' => 'nullable|boolean',
+            'x' => 'nullable|integer',
+            'y' => 'nullable|integer',
         ]);
 
         $this->engine->updateClockSettings($channel, $data);
