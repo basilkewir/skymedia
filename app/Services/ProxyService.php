@@ -9,14 +9,15 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
- * ProxyService — fetches working SOCKS5 proxies from the proxifly
- * free-proxy-list repository and caches one for yt-dlp to use.
+ * ProxyService — fetches working SOCKS5 proxies from multiple free sources
+ * and caches one for yt-dlp to use.
  *
- * Source: https://github.com/proxifly/free-proxy-list
+ * Sources:
+ * - https://github.com/proxifly/free-proxy-list (JSON)
+ * - https://proxyscrape.com/free-proxy-list (text)
  */
 class ProxyService
 {
-    private const LIST_URL     = 'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.json';
     private const CACHE_KEY    = 'youtube_working_proxy';
     private const CACHE_TTL    = 1800; // 30 min
     private const TEST_TIMEOUT = 8;
@@ -36,17 +37,26 @@ class ProxyService
     }
 
     /**
-     * Force-fetch a fresh proxy list, find a working proxy, cache and return it.
+     * Force-fetch a fresh proxy list from multiple sources, find a working proxy, cache and return it.
      */
     public function refresh(): ?string
     {
-        $proxies = $this->fetchList();
+        // Fetch from both sources and merge
+        $proxies = array_merge(
+            $this->fetchFromProxifly(),
+            $this->fetchFromProxyScrape()
+        );
+
         if (empty($proxies)) {
-            Log::warning('[ProxyService] Could not fetch SOCKS5 proxy list');
+            Log::warning('[ProxyService] Could not fetch SOCKS5 proxy list from any source');
             return null;
         }
 
+        // Deduplicate
+        $proxies = array_values(array_unique($proxies));
         shuffle($proxies);
+
+        Log::info("[ProxyService] Testing " . count($proxies) . " proxies from all sources");
 
         foreach (array_slice($proxies, 0, 60) as $proxy) {
             if ($this->test($proxy)) {
@@ -71,10 +81,14 @@ class ProxyService
 
     // ─────────────────────────────────────────────────────────────────
 
-    private function fetchList(): array
+    /**
+     * Fetch SOCKS5 proxies from proxifly GitHub repo (JSON format).
+     */
+    private function fetchFromProxifly(): array
     {
+        $url = 'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.json';
         try {
-            $response = Http::timeout(15)->get(self::LIST_URL);
+            $response = Http::timeout(15)->get($url);
             if (! $response->successful()) {
                 return [];
             }
@@ -93,9 +107,49 @@ class ProxyService
                 }
             }
 
+            Log::debug("[ProxyService] Fetched " . count($proxies) . " proxies from proxifly");
             return $proxies;
         } catch (\Throwable $e) {
-            Log::warning("[ProxyService] Fetch failed: {$e->getMessage()}");
+            Log::warning("[ProxyService] Proxifly fetch failed: {$e->getMessage()}");
+            return [];
+        }
+    }
+
+    /**
+     * Fetch SOCKS5 proxies from proxyscrape.com (text format).
+     * Returns lines like: ip:port:username:password or ip:port
+     */
+    private function fetchFromProxyScrape(): array
+    {
+        $url = 'https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=5000&country=all&ssl=all&anonymity=all';
+        try {
+            $response = Http::timeout(15)->get($url);
+            if (! $response->successful()) {
+                return [];
+            }
+
+            $lines = explode("\n", $response->body());
+            $proxies = [];
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if ($line === '' || str_starts_with($line, '#')) {
+                    continue;
+                }
+                // Format: ip:port or ip:port:username:password
+                $parts = explode(':', $line);
+                if (count($parts) >= 2) {
+                    $ip   = $parts[0];
+                    $port = $parts[1];
+                    if (filter_var($ip, FILTER_VALIDATE_IP) && is_numeric($port)) {
+                        $proxies[] = "socks5://{$ip}:{$port}";
+                    }
+                }
+            }
+
+            Log::debug("[ProxyService] Fetched " . count($proxies) . " proxies from proxyscrape");
+            return $proxies;
+        } catch (\Throwable $e) {
+            Log::warning("[ProxyService] ProxyScrape fetch failed: {$e->getMessage()}");
             return [];
         }
     }

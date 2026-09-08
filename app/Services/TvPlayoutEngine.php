@@ -671,7 +671,7 @@ class TvPlayoutEngine
     /**
      * Start a background shell process that downloads the YouTube video,
      * then rebuilds the concat file when done.
-     * Tries multiple player clients and proxies with timeout protection.
+     * Tries direct first (cookies work without proxy), then proxy as fallback.
      */
     private function startBackgroundDownload(string $videoId, string $localFile, string $lockFile, PlaylistItem $item): void
     {
@@ -690,14 +690,17 @@ class TvPlayoutEngine
         $url        = "https://www.youtube.com/watch?v={$videoId}";
         $path       = '/usr/local/bin:/usr/bin:/bin';
 
-        // Player clients to try in order (web works best without valid cookies)
+        // Player clients to try in order
         $clients = ['web', 'web_safari', 'ios'];
 
-        // Build a shell script that tries each client with timeout
+        // Build cookie arg (always use cookies if available)
         $cookieArg = ($cookiePath !== null) ? '--cookies ' . escapeshellarg($cookiePath) : '';
+        // Build proxy arg (only used in fallback attempts)
         $proxyArg  = ($proxy !== '') ? '--proxy ' . escapeshellarg($proxy) : '';
 
         $clientAttempts = '';
+
+        // Round 1: Try each client WITHOUT proxy (direct connection with cookies)
         foreach ($clients as $i => $client) {
             $attemptCmd = $ytdlp
                 . ' --js-runtimes node --no-warnings --socket-timeout 20'
@@ -708,15 +711,36 @@ class TvPlayoutEngine
                 . " --extractor-args youtube:player_client={$client}"
                 . ' --output ' . escapeshellarg($tmpPattern)
                 . ' ' . $cookieArg
-                . ' ' . $proxyArg
                 . ' ' . escapeshellarg($url);
 
             if ($i === 0) {
-                $clientAttempts .= "echo \"[yt-dlp] Trying client={$client}\" >> " . escapeshellarg($logFile) . "\n";
+                $clientAttempts .= "echo \"[yt-dlp] Trying client={$client} (direct)\" >> " . escapeshellarg($logFile) . "\n";
                 $clientAttempts .= "{$attemptCmd} >> " . escapeshellarg($logFile) . " 2>&1\n";
             } else {
                 $clientAttempts .= "if [ ! -f " . escapeshellarg($localFile) . " ]; then\n";
-                $clientAttempts .= "  echo \"[yt-dlp] Trying client={$client}\" >> " . escapeshellarg($logFile) . "\n";
+                $clientAttempts .= "  echo \"[yt-dlp] Trying client={$client} (direct)\" >> " . escapeshellarg($logFile) . "\n";
+                $clientAttempts .= "  {$attemptCmd} >> " . escapeshellarg($logFile) . " 2>&1\n";
+                $clientAttempts .= "fi\n";
+            }
+        }
+
+        // Round 2: If all direct attempts failed and we have a proxy, try with proxy
+        if ($proxy !== '') {
+            foreach ($clients as $client) {
+                $attemptCmd = $ytdlp
+                    . ' --js-runtimes node --no-warnings --socket-timeout 20'
+                    . ' --retries 1'
+                    . ' --format "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"'
+                    . ' --merge-output-format mp4'
+                    . ' --no-playlist'
+                    . " --extractor-args youtube:player_client={$client}"
+                    . ' --output ' . escapeshellarg($tmpPattern)
+                    . ' ' . $cookieArg
+                    . ' ' . $proxyArg
+                    . ' ' . escapeshellarg($url);
+
+                $clientAttempts .= "if [ ! -f " . escapeshellarg($localFile) . " ]; then\n";
+                $clientAttempts .= "  echo \"[yt-dlp] Trying client={$client} (proxy)\" >> " . escapeshellarg($logFile) . "\n";
                 $clientAttempts .= "  {$attemptCmd} >> " . escapeshellarg($logFile) . " 2>&1\n";
                 $clientAttempts .= "fi\n";
             }
@@ -783,6 +807,10 @@ class TvPlayoutEngine
         // Prefer channel-level cookies if they contain auth fields
         $cookies = $item->channel->youtube_cookies ?? '';
         if (strlen($cookies) > 50 && str_contains($cookies, 'LOGIN_INFO')) {
+            // Check if PSIDTS cookies are expired (they expire ~2 weeks after creation)
+            if ($this->areCookiesExpired($cookies)) {
+                Log::warning("[TvPlayout] YouTube cookies for channel {$item->channel_id} appear expired — update them in Settings");
+            }
             $cookieDir = storage_path('app');
             $tmp = "{$cookieDir}/yt_cookies_{$item->channel_id}.txt";
             file_put_contents($tmp, trim($cookies));
@@ -796,6 +824,21 @@ class TvPlayoutEngine
         }
 
         return null;
+    }
+
+    /**
+     * Check if PSIDTS cookies are expired by looking at their expiry timestamps.
+     */
+    private function areCookiesExpired(string $cookieText): bool
+    {
+        // Look for __Secure-1PSIDTS or __Secure-3PSIDTS expiry timestamps
+        if (preg_match('/__Secure-[13]PSIDTS\s+\S+\s+\S+\s+\S+\s+(\d+)/', $cookieText, $m)) {
+            $expiry = (int) $m[1];
+            if ($expiry > 0 && $expiry < time()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ═══════════════════════════════════════════════════════════════════
