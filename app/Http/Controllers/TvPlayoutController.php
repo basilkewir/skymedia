@@ -188,11 +188,19 @@ class TvPlayoutController extends Controller
         $url = $request->input('youtube_url');
         $videoId = YouTubeMetadataService::extractVideoId($url);
 
-        if ($videoId === null) {
-            return response()->json(['success' => false, 'error' => 'Invalid YouTube URL. Please provide a valid youtube.com/watch?v= or youtu.be/ link.'], 422);
+        if ($videoId !== null) {
+            return $this->addYouTubeById($channel, $videoId);
         }
 
-        // Check for duplicates in this channel
+        if (filter_var($url, FILTER_VALIDATE_URL) && preg_match('#googlevideo\.com/videoplayback#i', $url)) {
+            return $this->addStreamUrl($channel, $url);
+        }
+
+        return response()->json(['success' => false, 'error' => 'Invalid YouTube URL. Please provide a youtube.com/watch?v= link, a youtu.be/ link, a bare video ID, or a direct stream URL.'], 422);
+    }
+
+    private function addYouTubeById(Channel $channel, string $videoId): JsonResponse
+    {
         $exists = PlaylistItem::where('channel_id', $channel->id)
             ->where('filepath', "youtube:{$videoId}")
             ->exists();
@@ -201,7 +209,6 @@ class TvPlayoutController extends Controller
             return response()->json(['success' => false, 'error' => 'This YouTube video is already in the playlist.'], 422);
         }
 
-        // Fetch metadata via YouTube Data API v3
         try {
             $meta = app(YouTubeMetadataService::class)->getVideoDetails($videoId);
         } catch (\Throwable $e) {
@@ -222,11 +229,44 @@ class TvPlayoutController extends Controller
             'sort_order' => $maxOrder + 1,
         ]);
 
-        $summary = $this->engine->recalculateSchedule($channel);
+        $this->engine->recalculateSchedule($channel);
 
         return response()->json([
             'success' => true,
             'message' => "Added YouTube: {$meta['title']} ({$this->formatDuration($meta['duration'])})",
+        ]);
+    }
+
+    private function addStreamUrl(Channel $channel, string $url): JsonResponse
+    {
+        $exists = PlaylistItem::where('channel_id', $channel->id)
+            ->where('filepath', $url)
+            ->exists();
+
+        if ($exists) {
+            return response()->json(['success' => false, 'error' => 'This stream URL is already in the playlist.'], 422);
+        }
+
+        $duration = 0;
+        if (preg_match('/[?&]dur=(\d+(?:\.\d+)?)/', $url, $m)) {
+            $duration = (float) $m[1];
+        }
+
+        $maxOrder = PlaylistItem::where('channel_id', $channel->id)->max('sort_order') ?? 0;
+
+        PlaylistItem::create([
+            'channel_id' => $channel->id,
+            'title' => 'Stream URL',
+            'filepath' => $url,
+            'duration' => $duration > 0 ? $duration : 18250,
+            'sort_order' => $maxOrder + 1,
+        ]);
+
+        $this->engine->recalculateSchedule($channel);
+
+        return response()->json([
+            'success' => true,
+            'message' => "Added stream URL ({$this->formatDuration($duration > 0 ? $duration : 18250)})",
         ]);
     }
 

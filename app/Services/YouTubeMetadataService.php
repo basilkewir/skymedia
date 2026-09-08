@@ -23,6 +23,8 @@ class YouTubeMetadataService
      */
     public static function extractVideoId(string $url): ?string
     {
+        $url = trim($url);
+
         $patterns = [
             '#(?:youtube\.com/(?:watch\?.*?v=|embed/|v/|shorts/)|youtu\.be/)([a-zA-Z0-9_-]{11})#i',
         ];
@@ -31,6 +33,10 @@ class YouTubeMetadataService
             if (preg_match($pattern, $url, $matches)) {
                 return $matches[1];
             }
+        }
+
+        if (preg_match('/^[a-zA-Z0-9_-]{11}$/', $url)) {
+            return $url;
         }
 
         return null;

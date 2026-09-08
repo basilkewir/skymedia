@@ -627,6 +627,10 @@ class TvPlayoutEngine
             return $this->resolveYouTubeItem($item);
         }
 
+        if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
+            return $path;
+        }
+
         if (file_exists($path) && filesize($path) > 1024) {
             return $path;
         }
