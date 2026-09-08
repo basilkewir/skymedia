@@ -33,9 +33,9 @@ class SettingsController extends Controller
         foreach ($data['settings'] as $item) {
             Setting::where('key', $item['key'])->update(['value' => $item['value'] ?? '']);
 
-            // Write YouTube cookies to file so yt-dlp can use them
+            // Write YouTube cookies to auth file (yt-dlp overwrites the regular file)
             if ($item['key'] === 'youtube_cookies') {
-                $cookiePath = storage_path('app/youtube_cookies.txt');
+                $cookiePath = storage_path('app/youtube_cookies_auth.txt');
                 $content = trim($item['value'] ?? '');
                 if ($content !== '') {
                     file_put_contents($cookiePath, $content);

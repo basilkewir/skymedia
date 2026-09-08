@@ -182,8 +182,8 @@ class PreFetchYouTubeStream implements ShouldQueue
 
     private function getCookiePath(): ?string
     {
-        // Prefer global cookie file (always kept in sync from Settings)
-        $globalPath = storage_path('app/youtube_cookies.txt');
+        // Prefer global auth cookie file (source of truth, not overwritten by yt-dlp)
+        $globalPath = storage_path('app/youtube_cookies_auth.txt');
         if (file_exists($globalPath) && filesize($globalPath) > 50) {
             return $globalPath;
         }
@@ -191,7 +191,7 @@ class PreFetchYouTubeStream implements ShouldQueue
         // Fall back to channel-level cookies
         $channelCookies = $this->item->channel->youtube_cookies ?? '';
         if (! empty($channelCookies) && strlen($channelCookies) > 50) {
-            $cookieFile = storage_path("app/youtube_cookies_{$this->item->channel_id}.txt");
+            $cookieFile = storage_path("app/youtube_cookies_auth_{$this->item->channel_id}.txt");
             file_put_contents($cookieFile, trim($channelCookies));
 
             return $cookieFile;

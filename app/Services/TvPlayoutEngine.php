@@ -811,14 +811,15 @@ class TvPlayoutEngine
             if ($this->areCookiesExpired($cookies)) {
                 Log::warning("[TvPlayout] YouTube cookies for channel {$item->channel_id} appear expired — update them in Settings");
             }
+            // Write to a "source" file that yt-dlp won't overwrite
             $cookieDir = storage_path('app');
-            $tmp = "{$cookieDir}/yt_cookies_{$item->channel_id}.txt";
-            file_put_contents($tmp, trim($cookies));
-            return $tmp;
+            $sourceFile = "{$cookieDir}/yt_cookies_auth_{$item->channel_id}.txt";
+            file_put_contents($sourceFile, trim($cookies));
+            return $sourceFile;
         }
 
-        // Fallback to global file
-        $global = storage_path('app/youtube_cookies.txt');
+        // Fallback to global source file
+        $global = storage_path('app/youtube_cookies_auth.txt');
         if (file_exists($global) && filesize($global) > 50) {
             return $global;
         }

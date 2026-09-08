@@ -58,7 +58,7 @@ class YoutubeService
 
         $cookieFile = null;
         if (!empty($channel->youtube_cookies)) {
-            $cookieFile = storage_path("app/youtube_cookies_{$channel->id}.txt");
+            $cookieFile = storage_path("app/youtube_cookies_auth_{$channel->id}.txt");
             file_put_contents($cookieFile, trim($channel->youtube_cookies));
         }
 
