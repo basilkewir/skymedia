@@ -19,8 +19,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── yt-dlp (YouTube stream extraction) ─────────────────────────────
-RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
-    && chmod +x /usr/local/bin/yt-dlp
+RUN apt-get update && apt-get install -y --no-install-recommends python3-pip \
+    && pip3 install --break-system-packages --no-cache-dir 'yt-dlp[default]' \
+    && pip3 install --break-system-packages --no-cache-dir yt-dlp-get-pot bgutil-ytdlp-pot-provider \
+    && apt-get purge -y python3-pip && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* /root/.cache/pip
 
 # ── Composer ───────────────────────────────────────────────────────
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
