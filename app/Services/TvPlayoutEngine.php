@@ -705,7 +705,7 @@ class TvPlayoutEngine
             $attemptCmd = $ytdlp
                 . ' --js-runtimes node --no-warnings --socket-timeout 20'
                 . ' --retries 1'
-                . ' --format "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"'
+                . ' --format "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best"'
                 . ' --merge-output-format mp4'
                 . ' --no-playlist'
                 . " --extractor-args youtube:player_client={$client}"
@@ -730,7 +730,7 @@ class TvPlayoutEngine
                 $attemptCmd = $ytdlp
                     . ' --js-runtimes node --no-warnings --socket-timeout 20'
                     . ' --retries 1'
-                    . ' --format "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"'
+                    . ' --format "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best"'
                     . ' --merge-output-format mp4'
                     . ' --no-playlist'
                     . " --extractor-args youtube:player_client={$client}"
