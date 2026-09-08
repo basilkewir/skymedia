@@ -62,9 +62,6 @@ class YoutubeService
             file_put_contents($cookieFile, trim($channel->youtube_cookies));
         }
 
-        // Check for OAuth2 token (preferred over cookies)
-        $oauthToken = $this->getOAuth2TokenPath();
-
         $poToken = trim((string) ($channel->youtube_po_token ?? ''));
 
         // Get working SOCKS5 proxy for bot evasion
@@ -90,13 +87,8 @@ class YoutubeService
                     '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
                     '--extractor-args', $ytArgs];
 
-            // Prefer OAuth2 over cookies
-            if ($oauthToken) {
-                $cmd[] = '--username';
-                $cmd[] = 'oauth2';
-                $cmd[] = '--password';
-                $cmd[] = '';
-            } elseif ($cookieFile) {
+            // Prefer cookies
+            if ($cookieFile) {
                 $cmd[] = '--cookies';
                 $cmd[] = $cookieFile;
             }
@@ -164,21 +156,6 @@ class YoutubeService
         $found = trim((string) shell_exec('which yt-dlp 2>/dev/null'));
         if ($found) return $found;
         throw new \RuntimeException('yt-dlp not found. Install it: curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp');
-    }
-
-    private function getOAuth2TokenPath(): ?string
-    {
-        $tokenPath = storage_path('app/youtube_oauth2.token');
-        if (file_exists($tokenPath) && filesize($tokenPath) > 10) {
-            return $tokenPath;
-        }
-
-        $homeToken = (getenv('HOME') ?: '/root') . '/.yt-dlp/oauth2.token';
-        if (file_exists($homeToken) && filesize($homeToken) > 10) {
-            return $homeToken;
-        }
-
-        return null;
     }
 
     /**

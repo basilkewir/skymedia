@@ -117,14 +117,7 @@ class PreFetchYouTubeStream implements ShouldQueue
                 '--js-runtimes', 'node',
             ];
 
-            // Prefer OAuth2 over cookies
-            $oauthToken = $this->getOAuth2TokenPath();
-            if ($oauthToken !== null) {
-                $cmd[] = '--username';
-                $cmd[] = 'oauth2';
-                $cmd[] = '--password';
-                $cmd[] = '';
-            } elseif ($cookiePath !== null) {
+            if ($cookiePath !== null) {
                 $cmd[] = '--cookies';
                 $cmd[] = $cookiePath;
             }
@@ -202,21 +195,6 @@ class PreFetchYouTubeStream implements ShouldQueue
             file_put_contents($cookieFile, trim($channelCookies));
 
             return $cookieFile;
-        }
-
-        return null;
-    }
-
-    private function getOAuth2TokenPath(): ?string
-    {
-        $tokenPath = storage_path('app/youtube_oauth2.token');
-        if (file_exists($tokenPath) && filesize($tokenPath) > 10) {
-            return $tokenPath;
-        }
-
-        $homeToken = (getenv('HOME') ?: '/root') . '/.yt-dlp/oauth2.token';
-        if (file_exists($homeToken) && filesize($homeToken) > 10) {
-            return $homeToken;
         }
 
         return null;

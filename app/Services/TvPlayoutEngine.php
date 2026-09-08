@@ -683,7 +683,6 @@ class TvPlayoutEngine
 
         $proxy      = app(\App\Services\ProxyService::class)->getWorkingProxy() ?: '';
         $cookiePath = $this->getYouTubeCookiePath($item);
-        $oauthToken = $this->getOAuth2TokenPath();
         $channelId  = $item->channel_id;
         $artisan    = base_path('artisan');
         $tmpPattern = $localFile . '.tmp.%(ext)s';
@@ -694,14 +693,8 @@ class TvPlayoutEngine
         // Player clients to try in order
         $clients = ['web', 'web_safari', 'ios'];
 
-        // Build auth args: prefer OAuth2 over cookies
-        if ($oauthToken !== null) {
-            $authArg = '--username oauth2 --password ""';
-        } elseif ($cookiePath !== null) {
-            $authArg = '--cookies ' . escapeshellarg($cookiePath);
-        } else {
-            $authArg = '';
-        }
+        // Build cookie arg
+        $cookieArg = ($cookiePath !== null) ? '--cookies ' . escapeshellarg($cookiePath) : '';
         // Build proxy arg (only used in fallback attempts)
         $proxyArg  = ($proxy !== '') ? '--proxy ' . escapeshellarg($proxy) : '';
 
@@ -717,7 +710,7 @@ class TvPlayoutEngine
                 . ' --no-playlist'
                 . " --extractor-args youtube:player_client={$client}"
                 . ' --output ' . escapeshellarg($tmpPattern)
-                . ' ' . $authArg
+                . ' ' . $cookieArg
                 . ' ' . escapeshellarg($url);
 
             if ($i === 0) {
@@ -742,7 +735,7 @@ class TvPlayoutEngine
                     . ' --no-playlist'
                     . " --extractor-args youtube:player_client={$client}"
                     . ' --output ' . escapeshellarg($tmpPattern)
-                    . ' ' . $authArg
+                    . ' ' . $cookieArg
                     . ' ' . $proxyArg
                     . ' ' . escapeshellarg($url);
 
@@ -847,27 +840,6 @@ class TvPlayoutEngine
             }
         }
         return false;
-    }
-
-    /**
-     * Check if yt-dlp OAuth2 token is available (preferred over cookies).
-     * Returns the token file path if valid, null otherwise.
-     */
-    private function getOAuth2TokenPath(): ?string
-    {
-        // Check persistent storage first
-        $tokenPath = storage_path('app/youtube_oauth2.token');
-        if (file_exists($tokenPath) && filesize($tokenPath) > 10) {
-            return $tokenPath;
-        }
-
-        // Check yt-dlp's default location
-        $homeToken = (getenv('HOME') ?: '/root') . '/.yt-dlp/oauth2.token';
-        if (file_exists($homeToken) && filesize($homeToken) > 10) {
-            return $homeToken;
-        }
-
-        return null;
     }
 
     // ═══════════════════════════════════════════════════════════════════
