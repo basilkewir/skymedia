@@ -553,16 +553,19 @@ class TvPlayoutEngine
         }
 
         $files = [];
+        $hasUrl = false;
         foreach ($items as $item) {
             $resolved = $this->resolveFilePath($item);
             if ($resolved !== null) {
                 $files[] = $resolved;
+                if (str_starts_with($resolved, 'http')) {
+                    $hasUrl = true;
+                }
             }
         }
 
         if ($files === []) {
-            // No items resolved yet (e.g. YouTube URLs pending prefetch).
-            // Fall back to slate so the engine can start immediately.
+            // No items resolved yet — fall back to slate.
             $slate = $channel->dvr_directory . '/slate.mp4';
             if (! file_exists($slate) || filesize($slate) < 1024) {
                 try {
@@ -576,6 +579,14 @@ class TvPlayoutEngine
             }
         }
 
+        // When ALL items are streaming URLs, skip the concat demuxer entirely.
+        // Return the first URL — buildCommand will use it as a direct input.
+        if ($hasUrl && count($files) === 1 && str_starts_with($files[0], 'http')) {
+            return $files[0];
+        }
+
+        // Mixed local + URL — fall through to concat demuxer (URLs won't work
+        // here but it's the best we can do without major refactoring).
         $totalDuration = $items->sum('duration');
         $repeat = ($channel->playlist_loop ?? 0) > 0
             ? $channel->playlist_loop
@@ -628,44 +639,100 @@ class TvPlayoutEngine
             return null;
         }
 
-        $cacheDir  = storage_path('app/youtube_cache');
+        $cacheDir = storage_path('app/youtube_cache');
         if (! is_dir($cacheDir)) {
             mkdir($cacheDir, 0755, true);
         }
-        $localFile  = "{$cacheDir}/{$videoId}.mp4";
-        $lockFile   = "{$cacheDir}/{$videoId}.downloading";
 
-        // Already downloaded and valid
+        // Check for a cached local .mp4 file (legacy downloads)
+        $localFile = "{$cacheDir}/{$videoId}.mp4";
         if (file_exists($localFile) && filesize($localFile) > 1_048_576) {
             return $localFile;
         }
 
-        // Clean up stale .downloading lock files (older than 10 minutes)
-        if (file_exists($lockFile)) {
-            $lockAge = time() - filemtime($lockFile);
-            if ($lockAge > 600) {
-                Log::warning("[TvPlayout] YouTube {$videoId}: stale lock file ({$lockAge}s old) — removing");
-                @unlink($lockFile);
-                // Also clean up any partial downloads
-                foreach (glob("{$cacheDir}/{$videoId}.tmp.*") ?: [] as $tmp) {
-                    @unlink($tmp);
+        // Check for a cached stream URL (valid for 2 hours)
+        $urlCacheFile = "{$cacheDir}/{$videoId}.stream_url";
+        if (file_exists($urlCacheFile)) {
+            $cached = file_get_contents($urlCacheFile);
+            $cachedTime = filemtime($urlCacheFile);
+            if ($cached !== false && strlen($cached) > 10 && (time() - $cachedTime) < 7200) {
+                return trim($cached);
+            }
+        }
+
+        // Extract stream URL with yt-dlp (fast, no download)
+        $streamUrl = $this->extractStreamUrl($videoId);
+        if ($streamUrl !== null) {
+            file_put_contents($urlCacheFile, $streamUrl);
+            return $streamUrl;
+        }
+
+        Log::warning("[TvPlayout] YouTube {$videoId}: could not extract stream URL");
+        return null;
+    }
+
+    /**
+     * Extract a direct streaming URL from YouTube using yt-dlp -g.
+     * Returns the URL string or null on failure.
+     */
+    private function extractStreamUrl(string $videoId): ?string
+    {
+        $ytdlp = $this->findYtdlp();
+        if ($ytdlp === null) {
+            return null;
+        }
+
+        $url = "https://www.youtube.com/watch?v={$videoId}";
+        $cookiePath = storage_path('app/youtube_cookies_auth.txt');
+        $clients = ['web', 'web_safari', 'ios'];
+        $proxy = app(\App\Services\ProxyService::class)->getWorkingProxy();
+
+        foreach ($clients as $client) {
+            $cmd = [
+                $ytdlp, '--js-runtimes', 'node', '--no-warnings',
+                '-g',
+                '--socket-timeout', '15',
+                '--retries', '1',
+                '--format', 'best[ext=mp4]/best',
+                '--no-playlist',
+                '--extractor-args', "youtube:player_client={$client}",
+            ];
+
+            if (file_exists($cookiePath) && filesize($cookiePath) > 50) {
+                $cmd[] = '--cookies';
+                $cmd[] = $cookiePath;
+            }
+
+            if ($proxy) {
+                $cmd[] = '--proxy';
+                $cmd[] = $proxy;
+            }
+
+            $cmd[] = $url;
+
+            $output = [];
+            $exitCode = 0;
+            exec(implode(' ', array_map('escapeshellarg', $cmd)) . ' 2>/dev/null', $output, $exitCode);
+
+            if ($exitCode === 0 && ! empty($output)) {
+                $streamUrl = trim(end($output));
+                if (str_starts_with($streamUrl, 'http')) {
+                    Log::info("[TvPlayout] YouTube {$videoId}: extracted stream URL via client={$client}");
+                    return $streamUrl;
                 }
             }
         }
 
-        // Not yet downloaded — kick off a background download if not already running
-        if (! file_exists($lockFile)) {
-            $this->startBackgroundDownload($videoId, $localFile, $lockFile, $item);
-        }
-
-        // Return slate as placeholder while downloading
-        $slate = $item->channel->dvr_directory . '/slate.mp4';
-        if (file_exists($slate) && filesize($slate) > 1024) {
-            Log::info("[TvPlayout] YouTube {$videoId} downloading in background — using slate placeholder");
-            return $slate;
-        }
-
         return null;
+    }
+
+    private function findYtdlp(): ?string
+    {
+        foreach (['/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp'] as $p) {
+            if (is_executable($p)) return $p;
+        }
+        $found = trim((string) shell_exec('which yt-dlp 2>/dev/null'));
+        return $found !== '' ? $found : null;
     }
 
     /**
@@ -886,7 +953,9 @@ class TvPlayoutEngine
         // Scale factor for all overlay pixel values relative to 1080p baseline
         $s = $this->overlayScale($channel);
 
-        // Base command — -ss before -i seeks into the concat at the resume point
+        $isUrl = str_starts_with($concatFile, 'http');
+
+        // Base command
         $cmd = [
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
@@ -894,14 +963,19 @@ class TvPlayoutEngine
             '-err_detect', 'ignore_err',
             '-stream_loop', '-1',
             '-re',
-            '-safe', '0',
-            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
-            '-f', 'concat',
         ];
 
-        if ($resumeOffset > 0) {
-            // -ss placed after -f concat but before -i so it seeks within the
-            // demuxer (fast, no re-encode needed for the seek itself)
+        if ($isUrl) {
+            // Direct URL input — no concat demuxer needed
+            $cmd[] = '-protocol_whitelist', 'file,http,https,tcp,tls,crypto';
+        } else {
+            // Local concat file — use concat demuxer
+            $cmd[] = '-safe', '0';
+            $cmd[] = '-protocol_whitelist', 'file,http,https,tcp,tls,crypto';
+            $cmd[] = '-f', 'concat';
+        }
+
+        if ($resumeOffset > 0 && ! $isUrl) {
             $cmd[] = '-ss';
             $cmd[] = (string) $resumeOffset;
         }
