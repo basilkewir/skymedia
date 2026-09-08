@@ -31,12 +31,12 @@ class TvPlayoutController extends Controller
         abort_unless($channel->source_type === 'tv_playout', 404);
         $this->ensureAccess($channel);
 
+        $summary = $this->engine->recalculateSchedule($channel);
+
         $items = $channel->playlistItems()
             ->where('is_active', true)
             ->orderBy('sort_order')
             ->get();
-
-        $summary = $this->engine->recalculateSchedule($channel);
         $isRunning = $this->engine->isRunning($channel);
 
         // Get download statuses for YouTube items
