@@ -119,11 +119,17 @@
                                     <h2 class="text-sm font-semibold text-white">Playlist Rundown</h2>
                                     <p class="text-xs text-slate-500 mt-0.5">Drag to reorder. FFmpeg reads this sequence continuously.</p>
                                 </div>
-                                <label class="px-3 py-1.5 text-xs bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded-lg hover:bg-indigo-600/30 transition-colors cursor-pointer">
-                                    + Add Media
+                                <label class="px-3 py-1.5 text-xs bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded-lg hover:bg-indigo-600/30 transition-colors cursor-pointer" :class="uploading ? 'opacity-60 pointer-events-none' : ''">
+                                    {{ uploading ? `Uploading ${uploadProgress}%` : '+ Add Media' }}
                                     <input type="file" accept="video/*,.mkv,.ts,.mov,.webm" @change="uploadMedia"
                                            class="hidden" :disabled="uploading" />
                                 </label>
+                            </div>
+                            <div v-if="uploading" class="mt-2">
+                                <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                                    <div class="bg-indigo-500 h-full rounded-full transition-all duration-300" :style="{ width: uploadProgress + '%' }"></div>
+                                </div>
+                                <p class="text-[10px] text-slate-500 mt-1">{{ uploadProgress }}% uploaded</p>
                             </div>
                             <!-- YouTube URL input -->
                             <form @submit.prevent="addYouTube" class="flex gap-2">
@@ -981,6 +987,7 @@ if (props.channel.logo_media_id) {
     logoPreviewUrl.value = `/channels/${props.channel.id}/playout/logo-preview`
 }
 const uploading = ref(false)
+const uploadProgress = ref(0)
 const youtubeUrl = ref('')
 const addingYouTube = ref(false)
 const youtubeError = ref('')
@@ -1308,23 +1315,34 @@ async function uploadMedia(event) {
     const file = event.target.files[0]
     if (!file) return
     uploading.value = true
+    uploadProgress.value = 0
     try {
         const form = new FormData()
         form.append('media', file)
         const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
-        await fetch(route('channels.playout.items.store', props.channel.id), {
-            method: 'POST',
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest',
-                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
-            },
-            body: form,
+        await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest()
+            xhr.open('POST', route('channels.playout.items.store', props.channel.id))
+            xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest')
+            if (csrfToken) xhr.setRequestHeader('X-XSRF-TOKEN', decodeURIComponent(csrfToken))
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    uploadProgress.value = Math.round((e.loaded / e.total) * 100)
+                }
+            })
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) resolve()
+                else reject(new Error(xhr.statusText))
+            }
+            xhr.onerror = () => reject(new Error('Network error'))
+            xhr.send(form)
         })
         router.reload({ only: ['items', 'summary'] })
     } catch (e) {
         console.error('Upload failed', e)
     } finally {
         uploading.value = false
+        uploadProgress.value = 0
         event.target.value = ''
     }
 }
