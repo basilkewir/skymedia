@@ -871,6 +871,35 @@ class TvPlayoutController extends Controller
         return response()->json(['success' => true, 'items' => $items, 'count' => count($items)]);
     }
 
+    public function setStreamUrl(Channel $channel, PlaylistItem $item)
+    {
+        $this->ensureAccess($channel);
+
+        $url = request()->input('url', '');
+        if (! str_starts_with($url, 'http')) {
+            return response()->json(['error' => 'URL must start with http:// or https://'], 422);
+        }
+
+        $videoId = PlaylistItem::parseYouTubeId($item->filepath);
+        if ($videoId === null) {
+            return response()->json(['error' => 'Not a YouTube item'], 422);
+        }
+
+        $cacheDir = storage_path('app/youtube_cache');
+        if (! is_dir($cacheDir)) {
+            mkdir($cacheDir, 0755, true);
+        }
+
+        file_put_contents("{$cacheDir}/{$videoId}.stream_url", $url);
+
+        // Clean up stale download artifacts
+        @unlink("{$cacheDir}/{$videoId}.downloading");
+        @unlink("{$cacheDir}/{$videoId}.log");
+        @unlink("{$cacheDir}/{$videoId}.sh");
+
+        return response()->json(['success' => true, 'video_id' => $videoId]);
+    }
+
     private function ensureAccess(Channel $channel): void
     {
         $user = auth()->user();
