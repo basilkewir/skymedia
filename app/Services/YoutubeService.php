@@ -58,7 +58,7 @@ class YoutubeService
 
         $cookieFile = null;
         if (!empty($channel->youtube_cookies)) {
-            $cookieFile = tempnam(sys_get_temp_dir(), 'yt_cookies_');
+            $cookieFile = storage_path("app/youtube_cookies_{$channel->id}.txt");
             file_put_contents($cookieFile, trim($channel->youtube_cookies));
         }
 

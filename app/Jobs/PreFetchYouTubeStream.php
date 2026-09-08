@@ -95,11 +95,8 @@ class PreFetchYouTubeStream implements ShouldQueue
 
         $cookiePath = $this->getCookiePath();
 
-        // Read player client preference from settings, with fallback chain
-        $preferredClient = Setting::get('youtube_player_client', '') ?: 'tv';
-        // Build client list starting with the preferred client
-        $allClients = ['tv', 'tv_embedded', 'web', 'ios', 'android'];
-        $playerClients = array_unique(array_merge([$preferredClient], $allClients));
+        // Player clients (tv_embedded unsupported since 2026.08.19)
+        $playerClients = ['web', 'web_safari', 'ios'];
 
         // Get a working proxy from ProxyService (auto-refreshes from proxifly repo)
         /** @var ProxyService $proxyService */
@@ -194,7 +191,7 @@ class PreFetchYouTubeStream implements ShouldQueue
         // Fall back to channel-level cookies
         $channelCookies = $this->item->channel->youtube_cookies ?? '';
         if (! empty($channelCookies) && strlen($channelCookies) > 50) {
-            $cookieFile = sys_get_temp_dir() . '/yt_cookies_' . $this->item->channel_id . '.txt';
+            $cookieFile = storage_path("app/youtube_cookies_{$this->item->channel_id}.txt");
             file_put_contents($cookieFile, trim($channelCookies));
 
             return $cookieFile;

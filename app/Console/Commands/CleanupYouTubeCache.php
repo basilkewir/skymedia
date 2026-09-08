@@ -57,7 +57,10 @@ class CleanupYouTubeCache extends Command
         }
 
         // 3. Clean up temporary cookie files older than 1 hour
-        $cookieFiles = glob(sys_get_temp_dir() . '/yt_cookies_*') ?: [];
+        $cookieFiles = array_merge(
+            glob(sys_get_temp_dir() . '/yt_cookies_*') ?: [],
+            glob(storage_path('app/yt_cookies_*.txt')) ?: []
+        );
         $cookieCutoff = time() - 3600;
         foreach ($cookieFiles as $cf) {
             if (filemtime($cf) < $cookieCutoff) {

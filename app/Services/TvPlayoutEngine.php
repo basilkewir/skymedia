@@ -783,7 +783,8 @@ class TvPlayoutEngine
         // Prefer channel-level cookies if they contain auth fields
         $cookies = $item->channel->youtube_cookies ?? '';
         if (strlen($cookies) > 50 && str_contains($cookies, 'LOGIN_INFO')) {
-            $tmp = sys_get_temp_dir() . '/yt_cookies_' . $item->channel_id . '.txt';
+            $cookieDir = storage_path('app');
+            $tmp = "{$cookieDir}/yt_cookies_{$item->channel_id}.txt";
             file_put_contents($tmp, trim($cookies));
             return $tmp;
         }
