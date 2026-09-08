@@ -10,6 +10,8 @@ Schedule::call(function () {
     app(\App\Services\ProxyService::class)->refresh();
 })->everyThirtyMinutes()->withoutOverlapping();
 
+Schedule::command('youtube:refresh-urls')->everyThirtyMinutes()->withoutOverlapping();
+
 // Update NOW PLAYING overlay for running TV playout channels every minute
 Schedule::call(function () {
     $engine = app(\App\Services\TvPlayoutEngine::class);

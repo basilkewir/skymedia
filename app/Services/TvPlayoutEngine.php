@@ -663,13 +663,22 @@ class TvPlayoutEngine
             return $localFile;
         }
 
-        // Check for a cached stream URL (valid for 2 hours)
+        // Check for a cached stream URL (refresh 30 min before expiry)
         $urlCacheFile = "{$cacheDir}/{$videoId}.stream_url";
         if (file_exists($urlCacheFile)) {
             $cached = file_get_contents($urlCacheFile);
-            $cachedTime = filemtime($urlCacheFile);
-            if ($cached !== false && strlen($cached) > 10 && (time() - $cachedTime) < 7200) {
-                return trim($cached);
+            if ($cached !== false && strlen($cached) > 10) {
+                $cached = trim($cached);
+                $cachedTime = filemtime($urlCacheFile);
+                $expiresAt = $this->getStreamUrlExpiry($cached);
+                $age = time() - $cachedTime;
+                if ($expiresAt !== null) {
+                    if (time() < ($expiresAt - 600)) {
+                        return $cached;
+                    }
+                } elseif ($age < 7200) {
+                    return $cached;
+                }
             }
         }
 
@@ -765,6 +774,14 @@ class TvPlayoutEngine
         }
         $found = trim((string) shell_exec('which yt-dlp 2>/dev/null'));
         return $found !== '' ? $found : null;
+    }
+
+    private function getStreamUrlExpiry(string $url): ?int
+    {
+        if (preg_match('/[?&]expire=(\d+)/', $url, $m)) {
+            return (int) $m[1];
+        }
+        return null;
     }
 
     /**
