@@ -305,6 +305,15 @@ class TvPlayoutEngine
         // Rewrite the concat file on disk first
         $concatFile = $this->buildConcatFile($channel);
 
+        // If buildConcatFile returned a URL (not a local file), we must restart
+        // ffmpeg entirely — SIGUSR1 only reloads the concat file on disk.
+        if ($concatFile !== null && str_starts_with($concatFile, 'http')) {
+            if ($this->isRunning($channel)) {
+                $this->stop($channel);
+            }
+            return $this->start($channel->fresh());
+        }
+
         if ($this->isRunning($channel)) {
             // Signal ffmpeg to reload the concat list — zero gap on air
             $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
