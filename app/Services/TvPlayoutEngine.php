@@ -986,12 +986,16 @@ class TvPlayoutEngine
 
         if ($isUrl) {
             // Direct URL input — no concat demuxer needed
-            $cmd[] = '-protocol_whitelist', 'file,http,https,tcp,tls,crypto';
+            $cmd[] = '-protocol_whitelist';
+            $cmd[] = 'file,http,https,tcp,tls,crypto';
         } else {
             // Local concat file — use concat demuxer
-            $cmd[] = '-safe', '0';
-            $cmd[] = '-protocol_whitelist', 'file,http,https,tcp,tls,crypto';
-            $cmd[] = '-f', 'concat';
+            $cmd[] = '-safe';
+            $cmd[] = '0';
+            $cmd[] = '-protocol_whitelist';
+            $cmd[] = 'file,http,https,tcp,tls,crypto';
+            $cmd[] = '-f';
+            $cmd[] = 'concat';
         }
 
         if ($resumeOffset > 0 && ! $isUrl) {
