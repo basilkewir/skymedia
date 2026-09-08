@@ -135,7 +135,7 @@
                             <div class="flex gap-2">
                                 <input v-model="mediaUrl" type="url"
                                        placeholder="Paste URL: HLS (.m3u8), MP4, or YouTube"
-                                       class="flex-1 form-input text-xs font-mono" :disabled="addingUrl" />
+                                       class="flex-1 form-input text-xs font-mono" :disabled="addingUrl" maxlength="4000" />
                                 <button @click="addMediaUrl" :disabled="!mediaUrl || addingUrl"
                                         class="px-3 py-1.5 text-xs bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded-lg hover:bg-indigo-600/30 transition-colors disabled:opacity-40 whitespace-nowrap">
                                     {{ addingUrl ? 'Adding…' : '+ Add URL' }}
