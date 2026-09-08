@@ -879,15 +879,6 @@ class TvPlayoutEngine
         } catch (\Throwable) {}
     }
 
-    private function findYtdlp(): ?string
-    {
-        foreach (['/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp'] as $p) {
-            if (is_executable($p)) return $p;
-        }
-        $found = trim((string) shell_exec('export PATH=/usr/local/bin:/usr/bin:/bin:$PATH; which yt-dlp 2>/dev/null'));
-        return $found !== '' ? $found : null;
-    }
-
     private function getYouTubeCookiePath(PlaylistItem $item): ?string
     {
         // Prefer channel-level cookies if they contain auth fields
