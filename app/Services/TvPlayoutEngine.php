@@ -697,38 +697,42 @@ class TvPlayoutEngine
         $proxy = app(\App\Services\ProxyService::class)->getWorkingProxy();
 
         try {
-            foreach ($clients as $client) {
-                $cmd = [
-                    $ytdlp, '--js-runtimes', 'node', '--no-warnings',
-                    '-g',
-                    '--socket-timeout', '15',
-                    '--retries', '1',
-                    '--format', 'best[ext=mp4]/best',
-                    '--no-playlist',
-                    '--extractor-args', "youtube:player_client={$client}",
-                ];
+            $formats = ['best[ext=mp4]/best', 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best'];
 
-                if ($cookieCopy !== null) {
-                    $cmd[] = '--cookies';
-                    $cmd[] = $cookieCopy;
-                }
+            foreach ($formats as $fmt) {
+                foreach ($clients as $client) {
+                    $cmd = [
+                        $ytdlp, '--js-runtimes', 'node', '--no-warnings',
+                        '-g',
+                        '--socket-timeout', '20',
+                        '--retries', '1',
+                        '--format', $fmt,
+                        '--no-playlist',
+                        '--extractor-args', "youtube:player_client={$client}",
+                    ];
 
-                if ($proxy) {
-                    $cmd[] = '--proxy';
-                    $cmd[] = $proxy;
-                }
+                    if ($cookieCopy !== null) {
+                        $cmd[] = '--cookies';
+                        $cmd[] = $cookieCopy;
+                    }
 
-                $cmd[] = $url;
+                    if ($proxy) {
+                        $cmd[] = '--proxy';
+                        $cmd[] = $proxy;
+                    }
 
-                $output = [];
-                $exitCode = 0;
-                exec(implode(' ', array_map('escapeshellarg', $cmd)) . ' 2>/dev/null', $output, $exitCode);
+                    $cmd[] = $url;
 
-                if ($exitCode === 0 && ! empty($output)) {
-                    $streamUrl = trim(end($output));
-                    if (str_starts_with($streamUrl, 'http')) {
-                        Log::info("[TvPlayout] YouTube {$videoId}: extracted stream URL via client={$client}");
-                        return $streamUrl;
+                    $output = [];
+                    $exitCode = 0;
+                    exec(implode(' ', array_map('escapeshellarg', $cmd)) . ' 2>/dev/null', $output, $exitCode);
+
+                    if ($exitCode === 0 && ! empty($output)) {
+                        $streamUrl = trim(end($output));
+                        if (str_starts_with($streamUrl, 'http')) {
+                            Log::info("[TvPlayout] YouTube {$videoId}: extracted stream URL via client={$client} fmt={$fmt}");
+                            return $streamUrl;
+                        }
                     }
                 }
             }
