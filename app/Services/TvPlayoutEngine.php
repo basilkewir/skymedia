@@ -683,43 +683,58 @@ class TvPlayoutEngine
         }
 
         $url = "https://www.youtube.com/watch?v={$videoId}";
-        $cookiePath = storage_path('app/youtube_cookies_auth.txt');
+        $cookieSource = storage_path('app/youtube_cookies_auth.txt');
+
+        // yt-dlp overwrites the cookie file it reads, so use a temp copy
+        $cookieCopy = tempnam(sys_get_temp_dir(), 'yt_cookies_');
+        if (file_exists($cookieSource) && filesize($cookieSource) > 50) {
+            copy($cookieSource, $cookieCopy);
+        } else {
+            $cookieCopy = null;
+        }
+
         $clients = ['web', 'web_safari', 'ios'];
         $proxy = app(\App\Services\ProxyService::class)->getWorkingProxy();
 
-        foreach ($clients as $client) {
-            $cmd = [
-                $ytdlp, '--js-runtimes', 'node', '--no-warnings',
-                '-g',
-                '--socket-timeout', '15',
-                '--retries', '1',
-                '--format', 'best[ext=mp4]/best',
-                '--no-playlist',
-                '--extractor-args', "youtube:player_client={$client}",
-            ];
+        try {
+            foreach ($clients as $client) {
+                $cmd = [
+                    $ytdlp, '--js-runtimes', 'node', '--no-warnings',
+                    '-g',
+                    '--socket-timeout', '15',
+                    '--retries', '1',
+                    '--format', 'best[ext=mp4]/best',
+                    '--no-playlist',
+                    '--extractor-args', "youtube:player_client={$client}",
+                ];
 
-            if (file_exists($cookiePath) && filesize($cookiePath) > 50) {
-                $cmd[] = '--cookies';
-                $cmd[] = $cookiePath;
-            }
-
-            if ($proxy) {
-                $cmd[] = '--proxy';
-                $cmd[] = $proxy;
-            }
-
-            $cmd[] = $url;
-
-            $output = [];
-            $exitCode = 0;
-            exec(implode(' ', array_map('escapeshellarg', $cmd)) . ' 2>/dev/null', $output, $exitCode);
-
-            if ($exitCode === 0 && ! empty($output)) {
-                $streamUrl = trim(end($output));
-                if (str_starts_with($streamUrl, 'http')) {
-                    Log::info("[TvPlayout] YouTube {$videoId}: extracted stream URL via client={$client}");
-                    return $streamUrl;
+                if ($cookieCopy !== null) {
+                    $cmd[] = '--cookies';
+                    $cmd[] = $cookieCopy;
                 }
+
+                if ($proxy) {
+                    $cmd[] = '--proxy';
+                    $cmd[] = $proxy;
+                }
+
+                $cmd[] = $url;
+
+                $output = [];
+                $exitCode = 0;
+                exec(implode(' ', array_map('escapeshellarg', $cmd)) . ' 2>/dev/null', $output, $exitCode);
+
+                if ($exitCode === 0 && ! empty($output)) {
+                    $streamUrl = trim(end($output));
+                    if (str_starts_with($streamUrl, 'http')) {
+                        Log::info("[TvPlayout] YouTube {$videoId}: extracted stream URL via client={$client}");
+                        return $streamUrl;
+                    }
+                }
+            }
+        } finally {
+            if ($cookieCopy !== null && file_exists($cookieCopy)) {
+                @unlink($cookieCopy);
             }
         }
 
