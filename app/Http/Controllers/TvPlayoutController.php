@@ -182,7 +182,7 @@ class TvPlayoutController extends Controller
         $this->ensureAccess($channel);
 
         $request->validate([
-            'youtube_url' => 'required|string|max:500',
+            'youtube_url' => 'required|string|max:2000',
         ]);
 
         $url = $request->input('youtube_url');
