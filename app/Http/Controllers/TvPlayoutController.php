@@ -283,6 +283,55 @@ class TvPlayoutController extends Controller
     }
 
     /**
+     * Add a URL-based video (HLS .m3u8, direct .mp4, etc.) to the playlist.
+     */
+    public function addUrl(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $request->validate([
+            'url' => 'required|url|max:2000',
+            'title' => 'nullable|string|max:500',
+        ]);
+
+        $url = $request->input('url');
+        $title = $request->input('title') ?: basename(parse_url($url, PHP_URL_PATH) ?: $url);
+
+        $exists = PlaylistItem::where('channel_id', $channel->id)
+            ->where('filepath', $url)
+            ->exists();
+
+        if ($exists) {
+            return response()->json(['success' => false, 'error' => 'This URL is already in the playlist.'], 422);
+        }
+
+        // Probe duration via ffprobe (works for HLS and direct URLs)
+        $duration = $this->probeDuration($url);
+
+        $maxOrder = PlaylistItem::where('channel_id', $channel->id)->max('sort_order') ?? 0;
+
+        PlaylistItem::create([
+            'channel_id' => $channel->id,
+            'title' => $title,
+            'filepath' => $url,
+            'duration' => $duration > 0 ? $duration : 0,
+            'sort_order' => $maxOrder + 1,
+        ]);
+
+        $this->engine->recalculateSchedule($channel);
+
+        if ($this->engine->isRunning($channel)) {
+            $this->engine->rebuild($channel);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => "Added: {$title}" . ($duration > 0 ? " ({$this->formatDuration($duration)})" : ''),
+        ]);
+    }
+
+    /**
      * Update a playlist item's custom title and/or media group.
      */
     public function updateItemTitle(Request $request, Channel $channel, PlaylistItem $item): JsonResponse
@@ -726,14 +775,25 @@ class TvPlayoutController extends Controller
     private function probeDuration(string $filepath): float
     {
         try {
-            $proc = new Process([
+            $cmd = [
                 config('skymedia.ffprobe_binary', 'ffprobe'),
                 '-v', 'error',
                 '-show_entries', 'format=duration',
                 '-of', 'default=noprint_wrappers=1:nokey=1',
-                $filepath,
-            ]);
-            $proc->setTimeout(15);
+            ];
+
+            // For remote URLs, add protocol whitelist and timeout
+            if (str_starts_with($filepath, 'http://') || str_starts_with($filepath, 'https://')) {
+                $cmd[] = '-protocol_whitelist';
+                $cmd[] = 'file,http,https,tcp,tls,crypto';
+                $cmd[] = '-rw_timeout';
+                $cmd[] = '10000000'; // 10 seconds in microseconds
+            }
+
+            $cmd[] = $filepath;
+
+            $proc = new Process($cmd);
+            $proc->setTimeout(30);
             $proc->run();
 
             $out = trim($proc->getOutput());

@@ -131,17 +131,18 @@
                                 </div>
                                 <p class="text-[10px] text-slate-500 mt-1">{{ uploadProgress }}% uploaded</p>
                             </div>
-                            <!-- YouTube URL input -->
-                            <form @submit.prevent="addYouTube" class="flex gap-2">
-                                <input v-model="youtubeUrl" type="url" placeholder="https://www.youtube.com/watch?v=..."
-                                       class="flex-1 form-input text-xs font-mono" :disabled="addingYouTube" />
-                                <button type="submit" :disabled="!youtubeUrl || addingYouTube"
-                                        class="px-3 py-1.5 text-xs bg-red-600/20 text-red-400 border border-red-500/30 rounded-lg hover:bg-red-600/30 transition-colors disabled:opacity-40 whitespace-nowrap">
-                                    {{ addingYouTube ? 'Adding…' : '🔗 Add YouTube' }}
+                            <!-- URL input (HLS / MP4 / YouTube) -->
+                            <div class="flex gap-2">
+                                <input v-model="mediaUrl" type="url"
+                                       placeholder="Paste URL: HLS (.m3u8), MP4, or YouTube"
+                                       class="flex-1 form-input text-xs font-mono" :disabled="addingUrl" />
+                                <button @click="addMediaUrl" :disabled="!mediaUrl || addingUrl"
+                                        class="px-3 py-1.5 text-xs bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded-lg hover:bg-indigo-600/30 transition-colors disabled:opacity-40 whitespace-nowrap">
+                                    {{ addingUrl ? 'Adding…' : '+ Add URL' }}
                                 </button>
-                            </form>
-                            <p v-if="youtubeError" class="mt-1 text-xs text-red-400">{{ youtubeError }}</p>
-                            <p v-if="youtubeSuccess" class="mt-1 text-xs text-green-400">{{ youtubeSuccess }}</p>
+                            </div>
+                            <p v-if="urlError" class="mt-1 text-xs text-red-400">{{ urlError }}</p>
+                            <p v-if="urlSuccess" class="mt-1 text-xs text-green-400">{{ urlSuccess }}</p>
                             <!-- Loop control -->
                             <div class="flex items-center gap-3 mt-3 pt-3 border-t border-slate-800">
                                 <label class="text-xs text-slate-500">Loop</label>
@@ -1003,10 +1004,10 @@ if (props.channel.logo_media_id) {
 }
 const uploading = ref(false)
 const uploadProgress = ref(0)
-const youtubeUrl = ref('')
-const addingYouTube = ref(false)
-const youtubeError = ref('')
-const youtubeSuccess = ref('')
+const mediaUrl = ref('')
+const addingUrl = ref(false)
+const urlError = ref('')
+const urlSuccess = ref('')
 const engineLog = ref('')
 const previewPlayer = ref(null)
 const customStartTime = ref('')
@@ -1362,37 +1363,38 @@ async function uploadMedia(event) {
     }
 }
 
-async function addYouTube() {
-    if (!youtubeUrl.value) return
-    addingYouTube.value = true
-    youtubeError.value = ''
-    youtubeSuccess.value = ''
+async function addMediaUrl() {
+    if (!mediaUrl.value) return
+    addingUrl.value = true
+    urlError.value = ''
+    urlSuccess.value = ''
     try {
         const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
-        const res = await fetch(route('channels.playout.youtube', props.channel.id), {
+        const res = await fetch(route('channels.playout.url', props.channel.id), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest',
                 'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
             },
-            body: JSON.stringify({ youtube_url: youtubeUrl.value }),
+            body: JSON.stringify({ url: mediaUrl.value }),
         })
         const data = await res.json()
         if (res.ok) {
-            youtubeSuccess.value = data.success || 'YouTube video added!'
-            youtubeUrl.value = ''
-            router.reload({ only: ['items', 'summary'] })
-            setTimeout(() => youtubeSuccess.value = '', 4000)
+            urlSuccess.value = data.message || 'URL added!'
+            mediaUrl.value = ''
+            router.reload({ only: ['items', 'summary', 'downloadStatuses'] })
+            setTimeout(() => urlSuccess.value = '', 4000)
         } else {
-            youtubeError.value = data.errors?.youtube_url?.[0] || data.error || 'Failed to add YouTube video'
+            urlError.value = data.errors?.url?.[0] || data.error || 'Failed to add URL'
         }
     } catch (e) {
-        youtubeError.value = 'Network error: ' + e.message
+        urlError.value = 'Network error: ' + e.message
     } finally {
-        addingYouTube.value = false
+        addingUrl.value = false
     }
 }
+
 
 async function triggerYouTubeDownload(item) {
     try {
