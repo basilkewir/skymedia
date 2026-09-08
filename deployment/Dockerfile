@@ -21,7 +21,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── yt-dlp (YouTube stream extraction) ─────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends python3-pip \
     && pip3 install --break-system-packages --no-cache-dir 'yt-dlp[default]' \
-    && pip3 install --break-system-packages --no-cache-dir yt-dlp-get-pot bgutil-ytdlp-pot-provider \
     && apt-get purge -y python3-pip && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/* /root/.cache/pip
 
