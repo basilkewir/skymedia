@@ -639,6 +639,76 @@ class TvPlayoutEngine
     }
 
     /**
+     * Get the download status for a YouTube playlist item.
+     * Returns: 'ready', 'downloading', 'queued', or 'failed'.
+     */
+    public function getYouTubeDownloadStatus(PlaylistItem $item): string
+    {
+        $videoId = PlaylistItem::parseYouTubeId($item->filepath);
+        if ($videoId === null) {
+            return 'ready';
+        }
+
+        $cacheDir  = storage_path('app/youtube_cache');
+        $localFile = "{$cacheDir}/{$videoId}.mp4";
+        $lockFile  = "{$cacheDir}/{$videoId}.downloading";
+        $logFile   = "{$cacheDir}/{$videoId}.log";
+
+        // Downloaded and ready
+        if (file_exists($localFile) && filesize($localFile) > 1_048_576) {
+            return 'ready';
+        }
+
+        // Download in progress
+        if (file_exists($lockFile)) {
+            // Check if lock is stale (> 30 min)
+            if (time() - filemtime($lockFile) > 1800) {
+                @unlink($lockFile);
+                return 'failed';
+            }
+            return 'downloading';
+        }
+
+        // Check log for failure
+        if (file_exists($logFile)) {
+            $log = file_get_contents($logFile);
+            if (str_contains($log, 'All attempts failed')) {
+                return 'failed';
+            }
+        }
+
+        return 'queued';
+    }
+
+    /**
+     * Trigger a background download for a YouTube playlist item.
+     * Called when an item is added or when stream URL extraction fails.
+     */
+    public function triggerYouTubeDownload(PlaylistItem $item): void
+    {
+        $videoId = PlaylistItem::parseYouTubeId($item->filepath);
+        if ($videoId === null) {
+            return;
+        }
+
+        $cacheDir  = storage_path('app/youtube_cache');
+        $lockFile  = "{$cacheDir}/{$videoId}.downloading";
+        $localFile = "{$cacheDir}/{$videoId}.mp4";
+
+        // Already downloaded
+        if (file_exists($localFile) && filesize($localFile) > 1_048_576) {
+            return;
+        }
+
+        // Already downloading
+        if (file_exists($lockFile)) {
+            return;
+        }
+
+        $this->startBackgroundDownload($videoId, $item);
+    }
+
+    /**
      * Resolve a YouTube playlist item to a local cached .mp4 file.
      * If not yet downloaded, starts a background download and returns the
      * slate as a placeholder so the channel can start immediately.
@@ -657,21 +727,22 @@ class TvPlayoutEngine
             mkdir($cacheDir, 0755, true);
         }
 
-        // Check for a cached local .mp4 file (legacy downloads)
         $localFile = "{$cacheDir}/{$videoId}.mp4";
+        $lockFile  = "{$cacheDir}/{$videoId}.downloading";
+
+        // 1. Check for a completed local .mp4 file
         if (file_exists($localFile) && filesize($localFile) > 1_048_576) {
             return $localFile;
         }
 
-        // Check for a cached stream URL (refresh 30 min before expiry)
+        // 2. Check for a cached stream URL (valid for ~5 hours)
         $urlCacheFile = "{$cacheDir}/{$videoId}.stream_url";
         if (file_exists($urlCacheFile)) {
             $cached = file_get_contents($urlCacheFile);
             if ($cached !== false && strlen($cached) > 10) {
                 $cached = trim($cached);
-                $cachedTime = filemtime($urlCacheFile);
                 $expiresAt = $this->getStreamUrlExpiry($cached);
-                $age = time() - $cachedTime;
+                $age = time() - filemtime($urlCacheFile);
                 if ($expiresAt !== null) {
                     if (time() < ($expiresAt - 600)) {
                         return $cached;
@@ -682,14 +753,19 @@ class TvPlayoutEngine
             }
         }
 
-        // Extract stream URL with yt-dlp (fast, no download)
+        // 3. Try extracting a stream URL (fast, no download)
         $streamUrl = $this->extractStreamUrl($videoId);
         if ($streamUrl !== null) {
             file_put_contents($urlCacheFile, $streamUrl);
             return $streamUrl;
         }
 
-        Log::warning("[TvPlayout] YouTube {$videoId}: could not extract stream URL");
+        // 4. Stream URL extraction failed — trigger background download if not already running
+        if (! file_exists($lockFile)) {
+            Log::info("[TvPlayout] YouTube {$videoId}: stream URL failed, starting background download");
+            $this->startBackgroundDownload($videoId, $item);
+        }
+
         return null;
     }
 
@@ -789,7 +865,7 @@ class TvPlayoutEngine
      * then rebuilds the concat file when done.
      * Tries direct first (cookies work without proxy), then proxy as fallback.
      */
-    private function startBackgroundDownload(string $videoId, string $localFile, string $lockFile, PlaylistItem $item): void
+    private function startBackgroundDownload(string $videoId, PlaylistItem $item): void
     {
         $ytdlp = $this->findYtdlp();
         if ($ytdlp === null) {
@@ -797,30 +873,37 @@ class TvPlayoutEngine
             return;
         }
 
-        $proxy      = app(\App\Services\ProxyService::class)->getWorkingProxy() ?: '';
-        $cookiePath = $this->getYouTubeCookiePath($item);
-        $channelId  = $item->channel_id;
-        $artisan    = base_path('artisan');
+        $cacheDir  = storage_path('app/youtube_cache');
+        $localFile = "{$cacheDir}/{$videoId}.mp4";
+        $lockFile  = "{$cacheDir}/{$videoId}.downloading";
+        $logFile   = "{$cacheDir}/{$videoId}.log";
+        $url       = "https://www.youtube.com/watch?v={$videoId}";
+        $channelId = $item->channel_id;
+        $artisan   = base_path('artisan');
         $tmpPattern = $localFile . '.tmp.%(ext)s';
-        $logFile    = storage_path("app/youtube_cache/{$videoId}.log");
-        $url        = "https://www.youtube.com/watch?v={$videoId}";
-        $path       = '/usr/local/bin:/usr/bin:/bin';
+        $path      = '/usr/local/bin:/usr/bin:/bin';
 
-        // Player clients to try in order
-        $clients = ['web', 'web_safari', 'ios'];
+        // Copy global cookies so yt-dlp can't overwrite the source
+        $cookieSource = storage_path('app/youtube_cookies_auth.txt');
+        $cookieCopy = tempnam(sys_get_temp_dir(), 'yt_dl_cookies_');
+        if (file_exists($cookieSource) && filesize($cookieSource) > 50) {
+            copy($cookieSource, $cookieCopy);
+        } else {
+            $cookieCopy = null;
+        }
 
-        // Build cookie arg
-        $cookieArg = ($cookiePath !== null) ? '--cookies ' . escapeshellarg($cookiePath) : '';
-        // Build proxy arg (only used in fallback attempts)
+        $proxy     = app(\App\Services\ProxyService::class)->getWorkingProxy() ?: '';
+        $clients   = ['android', 'web', 'web_safari', 'ios'];
+        $cookieArg = ($cookieCopy !== null) ? '--cookies ' . escapeshellarg($cookieCopy) : '';
         $proxyArg  = ($proxy !== '') ? '--proxy ' . escapeshellarg($proxy) : '';
 
         $clientAttempts = '';
 
-        // Round 1: Try each client WITHOUT proxy (direct connection with auth)
+        // Round 1: Try each client WITHOUT proxy
         foreach ($clients as $i => $client) {
             $attemptCmd = $ytdlp
-                . ' --js-runtimes node --no-warnings --socket-timeout 20'
-                . ' --retries 1'
+                . ' --js-runtimes node --no-warnings --socket-timeout 30'
+                . ' --retries 2'
                 . ' --format "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best"'
                 . ' --merge-output-format mp4'
                 . ' --no-playlist'
@@ -844,8 +927,8 @@ class TvPlayoutEngine
         if ($proxy !== '') {
             foreach ($clients as $client) {
                 $attemptCmd = $ytdlp
-                    . ' --js-runtimes node --no-warnings --socket-timeout 20'
-                    . ' --retries 1'
+                    . ' --js-runtimes node --no-warnings --socket-timeout 30'
+                    . ' --retries 2'
                     . ' --format "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best"'
                     . ' --merge-output-format mp4'
                     . ' --no-playlist'
@@ -872,6 +955,7 @@ class TvPlayoutEngine
             . "  echo \"[yt-dlp] All attempts failed\" >> " . escapeshellarg($logFile) . "\n"
             . "fi\n"
             . "rm -f " . escapeshellarg($lockFile) . "\n"
+            . "rm -f " . escapeshellarg($cookieCopy ?? '') . "\n"
             . "php " . escapeshellarg($artisan) . " tv:rebuild-concat " . escapeshellarg((string) $channelId) . " 2>/dev/null || true";
 
         $script = "#!/bin/sh\n"
@@ -881,7 +965,7 @@ class TvPlayoutEngine
             . $clientAttempts
             . $postDownload;
 
-        $scriptFile = storage_path("app/youtube_cache/{$videoId}.sh");
+        $scriptFile = "{$cacheDir}/{$videoId}.sh";
         file_put_contents($scriptFile, $script);
         chmod($scriptFile, 0755);
 

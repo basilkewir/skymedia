@@ -39,6 +39,14 @@ class TvPlayoutController extends Controller
         $summary = $this->engine->recalculateSchedule($channel);
         $isRunning = $this->engine->isRunning($channel);
 
+        // Get download statuses for YouTube items
+        $downloadStatuses = [];
+        foreach ($items as $item) {
+            if ($item->isYouTube()) {
+                $downloadStatuses[$item->id] = $this->engine->getYouTubeDownloadStatus($item);
+            }
+        }
+
         // Preview URL: nginx serves HLS directly from DVR directory on port 8080
         $host = config('skymedia.server_ip');
         if ($host === 'localhost') {
@@ -52,6 +60,7 @@ class TvPlayoutController extends Controller
             'summary' => $summary,
             'isRunning' => $isRunning,
             'previewUrl' => $previewUrl,
+            'downloadStatuses' => $downloadStatuses,
             'isAdmin' => (bool) (auth()->user()->is_admin ?? false),
         ]);
     }
@@ -221,7 +230,7 @@ class TvPlayoutController extends Controller
 
         $maxOrder = PlaylistItem::where('channel_id', $channel->id)->max('sort_order') ?? 0;
 
-        PlaylistItem::create([
+        $item = PlaylistItem::create([
             'channel_id' => $channel->id,
             'title' => $meta['title'],
             'filepath' => "youtube:{$videoId}",
@@ -231,9 +240,12 @@ class TvPlayoutController extends Controller
 
         $this->engine->recalculateSchedule($channel);
 
+        // Trigger background download immediately
+        $this->engine->triggerYouTubeDownload($item);
+
         return response()->json([
             'success' => true,
-            'message' => "Added YouTube: {$meta['title']} ({$this->formatDuration($meta['duration'])})",
+            'message' => "Added YouTube: {$meta['title']} ({$this->formatDuration($meta['duration'])}) — downloading in background",
         ]);
     }
 
@@ -938,6 +950,49 @@ class TvPlayoutController extends Controller
         @unlink("{$cacheDir}/{$videoId}.sh");
 
         return response()->json(['success' => true, 'video_id' => $videoId]);
+    }
+
+    /**
+     * Get download status for all YouTube items in the playlist.
+     */
+    public function downloadStatus(Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $items = $channel->playlistItems()
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->get();
+
+        $statuses = [];
+        foreach ($items as $item) {
+            if ($item->isYouTube()) {
+                $statuses[$item->id] = [
+                    'status' => $this->engine->getYouTubeDownloadStatus($item),
+                    'video_id' => $item->youtube_id,
+                ];
+            }
+        }
+
+        return response()->json(['statuses' => $statuses]);
+    }
+
+    /**
+     * Manually trigger a download for a YouTube item.
+     */
+    public function triggerDownload(Channel $channel, PlaylistItem $item): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        if (! $item->isYouTube()) {
+            return response()->json(['success' => false, 'error' => 'Not a YouTube item'], 422);
+        }
+
+        $this->engine->triggerYouTubeDownload($item);
+
+        return response()->json(['success' => true, 'message' => 'Download triggered']);
     }
 
     private function ensureAccess(Channel $channel): void

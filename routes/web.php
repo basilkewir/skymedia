@@ -89,6 +89,8 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('channels/{channel}/playout/ticker-items', [TvPlayoutController::class, 'updateTickerItems'])->name('channels.playout.ticker-items');
     Route::post('channels/{channel}/playout/ticker-upload', [TvPlayoutController::class, 'uploadTickerFile'])->name('channels.playout.ticker-upload');
     Route::post('channels/{channel}/playout/items/{item}/stream-url', [TvPlayoutController::class, 'setStreamUrl'])->name('channels.playout.items.stream-url');
+    Route::get('channels/{channel}/playout/download-status', [TvPlayoutController::class, 'downloadStatus'])->name('channels.playout.download-status');
+    Route::post('channels/{channel}/playout/items/{item}/trigger-download', [TvPlayoutController::class, 'triggerDownload'])->name('channels.playout.items.trigger-download');
 
     // ── Channels CRUD resource ────────────────────────────────────────────────
     Route::resource('channels', ChannelController::class);

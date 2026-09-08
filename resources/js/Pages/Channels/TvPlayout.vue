@@ -193,7 +193,15 @@
                                     <div class="col-span-4 text-sm text-slate-200 font-medium min-w-0">
                                         <div class="flex items-center gap-1.5">
                                             <span v-if="item.filepath?.startsWith('youtube:')"
-                                                  class="inline-block px-1.5 py-0.5 bg-red-500/20 text-red-400 text-xs rounded font-mono flex-shrink-0">YT</span>
+                                                  class="inline-block px-1.5 py-0.5 text-xs rounded font-mono flex-shrink-0"
+                                                  :class="{
+                                                      'bg-red-500/20 text-red-400 border border-red-500/30': downloadStatuses[item.id] === 'ready',
+                                                      'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse': downloadStatuses[item.id] === 'downloading',
+                                                      'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30': downloadStatuses[item.id] === 'queued',
+                                                      'bg-slate-600/40 text-slate-400 border border-slate-500/30': downloadStatuses[item.id] === 'failed' || !downloadStatuses[item.id],
+                                                  }">
+                                                {{ downloadStatuses[item.id] === 'ready' ? 'YT ✓' : downloadStatuses[item.id] === 'downloading' ? 'YT ⬇' : downloadStatuses[item.id] === 'queued' ? 'YT …' : downloadStatuses[item.id] === 'failed' ? 'YT ✕' : 'YT' }}
+                                            </span>
                                             <span v-if="item.media_group === 'clean'"
                                                   class="inline-block px-1.5 py-0.5 bg-slate-600/60 text-slate-400 text-[10px] rounded flex-shrink-0" title="No overlays">CLEAN</span>
                                             <span class="truncate">{{ item.custom_title || item.title }}</span>
@@ -211,11 +219,16 @@
                                     <div class="col-span-3 flex items-center justify-end gap-1">
                                         <button @click="editItemTitle(item)"
                                                 class="px-1.5 py-1 text-xs text-slate-500 hover:text-indigo-400 transition-colors" title="Edit title / group">✎</button>
-                                        <button v-if="item.filepath?.startsWith('youtube:')" @click="downloadYouTubeItem(item)"
-                                                :disabled="item._downloading"
+                                        <button v-if="item.filepath?.startsWith('youtube:')" @click="triggerYouTubeDownload(item)"
+                                                :disabled="downloadStatuses[item.id] === 'downloading' || downloadStatuses[item.id] === 'ready'"
                                                 class="px-1.5 py-1 text-xs transition-colors"
-                                                :class="item._downloading ? 'text-amber-400 animate-pulse' : 'text-slate-500 hover:text-green-400'"
-                                                title="Download to disk for reliable playback">⬇</button>
+                                                :class="{
+                                                    'text-green-400': downloadStatuses[item.id] === 'ready',
+                                                    'text-amber-400 animate-pulse': downloadStatuses[item.id] === 'downloading',
+                                                    'text-slate-500 hover:text-green-400': downloadStatuses[item.id] !== 'ready' && downloadStatuses[item.id] !== 'downloading',
+                                                }"
+                                                :title="downloadStatuses[item.id] === 'ready' ? 'Downloaded' : downloadStatuses[item.id] === 'downloading' ? 'Downloading…' : 'Download to disk'">
+                                            {{ downloadStatuses[item.id] === 'ready' ? '✓' : downloadStatuses[item.id] === 'downloading' ? '⏳' : '⬇' }}</button>
                                         <button v-if="index > 0" @click="moveUp(index)"
                                                 class="p-1 text-slate-500 hover:text-white transition-colors" title="Move up">↑</button>
                                         <button v-if="index < items.length - 1" @click="moveDown(index)"
@@ -787,12 +800,14 @@ const props = defineProps({
     summary: Object,
     isRunning: Boolean,
     previewUrl: String,
+    downloadStatuses: Object,
     isAdmin: Boolean,
 })
 
 const items = ref([...props.items])
 const isRunning = ref(props.isRunning)
 const pushRunning = ref(props.channel.push_status === 'live')
+const downloadStatuses = ref({ ...props.downloadStatuses })
 const tickerText = ref(props.channel.ticker_text || '')
 const tickerMessage = ref('')
 
@@ -1379,12 +1394,10 @@ async function addYouTube() {
     }
 }
 
-async function downloadYouTubeItem(item) {
-    if (!confirm(`Download this video to disk?\n\n"${item.title}"\n\nThis may take several minutes.`)) return
-    item._downloading = true
+async function triggerYouTubeDownload(item) {
     try {
         const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
-        const res = await fetch(route('channels.playout.items.download-youtube', [props.channel.id, item.id]), {
+        const res = await fetch(route('channels.playout.items.trigger-download', [props.channel.id, item.id]), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -1394,17 +1407,31 @@ async function downloadYouTubeItem(item) {
         })
         const data = await res.json()
         if (data.success) {
-            // Refresh the page to get updated item data
-            router.reload({ only: ['items', 'summary'] })
-        } else {
-            alert(data.error || 'Download failed')
+            downloadStatuses.value[item.id] = 'downloading'
         }
     } catch (e) {
-        alert('Network error: ' + e.message)
-    } finally {
-        item._downloading = false
+        console.error('Trigger download failed:', e)
     }
 }
+
+// Poll download statuses every 5 seconds
+let pollInterval = null
+onMounted(() => {
+    pollInterval = setInterval(async () => {
+        const hasActive = Object.values(downloadStatuses.value).some(s => s === 'downloading' || s === 'queued')
+        if (!hasActive) return
+        try {
+            const res = await fetch(route('channels.playout.download-status', props.channel.id))
+            const data = await res.json()
+            if (data.statuses) {
+                downloadStatuses.value = { ...downloadStatuses.value, ...data.statuses }
+            }
+        } catch (e) { /* ignore */ }
+    }, 5000)
+})
+onUnmounted(() => {
+    if (pollInterval) clearInterval(pollInterval)
+})
 
 async function removeItem(item) {
     if (!confirm(`Remove "${item.custom_title || item.title}" from playlist?`)) return
