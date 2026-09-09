@@ -347,10 +347,11 @@ class TvPlayoutController extends Controller
 
         // Direct URL — probe with ffprobe
         $duration = $this->probeDuration($url);
-        $title    = $request->input('title') ?: basename(parse_url($url, PHP_URL_PATH) ?: $url);
+        $title    = $request->input('title') ?: $this->titleFromUrl($url);
+        $isHls    = str_contains($url, '.m3u8') || str_contains($url, '/hls');
 
         return response()->json([
-            'type'      => 'url',
+            'type'      => $isHls ? 'hls' : 'url',
             'title'     => $title,
             'duration'  => $duration,
             'thumbnail' => null,
@@ -389,7 +390,7 @@ class TvPlayoutController extends Controller
             return $this->addYouTubeById($channel, $videoId);
         }
 
-        $title = $request->input('title') ?: basename(parse_url($url, PHP_URL_PATH) ?: $url);
+        $title = $request->input('title') ?: $this->titleFromUrl($url);
 
         $exists = PlaylistItem::where('channel_id', $channel->id)
             ->where('filepath', $url)
@@ -898,7 +899,7 @@ class TvPlayoutController extends Controller
                 $cmd[] = '-protocol_whitelist';
                 $cmd[] = 'file,http,https,tcp,tls,crypto';
                 $cmd[] = '-rw_timeout';
-                $cmd[] = '10000000'; // 10 seconds in microseconds
+                $cmd[] = '30000000'; // 30 seconds in microseconds
                 $filepath = $this->encodeUrlBrackets($filepath);
             }
 
@@ -926,6 +927,19 @@ class TvPlayoutController extends Controller
     private function encodeUrlBrackets(string $url): string
     {
         return str_replace(['[', ']'], ['%5B', '%5D'], $url);
+    }
+
+    /**
+     * Extract a human-readable title from a URL, safely handling brackets
+     * and other characters that break parse_url.
+     */
+    private function titleFromUrl(string $url): string
+    {
+        // Strip query string first, then grab the last path segment
+        $noQuery = strtok($url, '?');
+        $base    = basename((string) $noQuery);
+        // Decode percent-encoding for display
+        return $base !== '' ? urldecode($base) : $url;
     }
 
     private function formatDuration(float $seconds): string

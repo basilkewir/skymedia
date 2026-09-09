@@ -157,8 +157,9 @@
                                     <div class="flex-1 min-w-0">
                                         <p class="text-xs text-white font-medium truncate">{{ urlPreview.title }}</p>
                                         <p class="text-xs text-slate-400 mt-0.5">{{ urlPreview.duration > 0 ? formatDuration(urlPreview.duration) : 'Duration unknown' }}</p>
-                                        <p v-if="!urlPreview.playable" class="text-xs text-red-400 mt-0.5">⚠ Could not probe — may not play</p>
-                                        <p v-else class="text-xs text-green-400 mt-0.5">✓ Reachable</p>
+                                        <p v-if="urlPreview.playable" class="text-xs text-green-400 mt-0.5">✓ Reachable</p>
+                                        <p v-else-if="urlPreview.type === 'hls'" class="text-xs text-red-400 mt-0.5">⚠ Could not probe HLS stream</p>
+                                        <p v-else class="text-xs text-yellow-400 mt-0.5">⚠ Duration unknown — ffmpeg will stream directly</p>
                                     </div>
                                 </div>
                                 <div class="flex gap-2 mt-3">
