@@ -853,21 +853,8 @@ class TvPlayoutEngine
             @unlink($muxedTs);
         }
 
-        // 3. Extract fresh stream URL(s) from server
-        $result = $this->extractStreamUrl($videoId);
-        if ($result !== null) {
-            file_put_contents($urlCacheFile, $result);
-            $urls = explode("\n", $result);
-            $videoUrl = trim($urls[0]);
-            $audioUrl = isset($urls[1]) ? trim($urls[1]) : null;
-            if ($audioUrl === null) {
-                return $videoUrl;
-            }
-            return $this->muxVideoAudio($videoId, $videoUrl, $audioUrl, $muxedTs, (float) $item->duration);
-        }
-
-        // 4. Stream URL extraction failed — log and return null (slate plays)
-        Log::warning("[TvPlayout] YouTube {$videoId}: stream URL extraction failed");
+        // 3. Kick off background extraction+mux and return null (slate plays while working)
+        $this->startBackgroundExtract($videoId, $item, $urlCacheFile, $muxedTs);
         return null;
     }
 
@@ -922,7 +909,65 @@ class TvPlayoutEngine
     }
 
     /**
-     * Extract direct streaming URL(s) from YouTube using yt-dlp -g.
+     * Background: extract stream URL(s) via yt-dlp -g, then mux if needed,
+     * then trigger tv:rebuild-concat. Slate plays until this completes.
+     */
+    private function startBackgroundExtract(string $videoId, PlaylistItem $item, string $urlCacheFile, string $muxedTs): void
+    {
+        $lockFile = $urlCacheFile . '.extracting';
+        if (file_exists($lockFile) && time() - filemtime($lockFile) < 300) {
+            return; // already running
+        }
+        touch($lockFile);
+
+        $ytdlp   = $this->findYtdlp() ?? 'yt-dlp';
+        $ffmpeg  = $this->ffmpeg->getBin();
+        $artisan = base_path('artisan');
+        $channelId = $item->channel_id;
+        $url     = 'https://www.youtube.com/watch?v=' . $videoId;
+        $cookieSource = storage_path('app/youtube_cookies_auth.txt');
+
+        $cookieArgs = '';
+        if (file_exists($cookieSource) && filesize($cookieSource) > 50) {
+            $cookieArgs = ' --cookies ' . escapeshellarg($cookieSource);
+        }
+
+        // Build a shell script: try each client, write URL cache, mux if needed, rebuild
+        $formats = ['18', '22', 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo+bestaudio'];
+        $clients = ['tv_embedded', 'web', 'ios'];
+
+        $tryBlocks = '';
+        foreach ($formats as $fmt) {
+            foreach ($clients as $client) {
+                $tryBlocks .= 'URLS=$(' . escapeshellarg($ytdlp)
+                    . ' --no-warnings -g --socket-timeout 20 --retries 1'
+                    . ' --format ' . escapeshellarg($fmt)
+                    . ' --no-playlist --extractor-args ' . escapeshellarg("youtube:player_client={$client}")
+                    . $cookieArgs
+                    . ' ' . escapeshellarg($url) . ' 2>/dev/null) && [ -n "$URLS" ] && echo "$URLS" > ' . escapeshellarg($urlCacheFile) . ' && break 2' . "\n";
+            }
+        }
+
+        $muxCmd = 'LINES=$(wc -l < ' . escapeshellarg($urlCacheFile) . ')'
+            . ' && if [ "$LINES" -ge 2 ]; then'
+            . ' VURL=$(sed -n 1p ' . escapeshellarg($urlCacheFile) . ')'
+            . ' AURL=$(sed -n 2p ' . escapeshellarg($urlCacheFile) . ')'
+            . ' ' . $ffmpeg . ' -y -loglevel error -protocol_whitelist file,http,https,tcp,tls,crypto'
+            . ' -i "$VURL" -i "$AURL" -c copy -map 0:v:0 -map 1:a:0 -f mpegts ' . escapeshellarg($muxedTs) . '; fi';
+
+        $script = "set -e\n{$tryBlocks}rm -f " . escapeshellarg($lockFile) . "\n"
+            . $muxCmd . "\n"
+            . 'php ' . escapeshellarg($artisan) . ' tv:rebuild-concat ' . escapeshellarg((string) $channelId) . "\n"
+            . 'rm -f ' . escapeshellarg($lockFile);
+
+        $scriptFile = sys_get_temp_dir() . '/yt_extract_' . $videoId . '.sh';
+        file_put_contents($scriptFile, $script);
+        chmod($scriptFile, 0755);
+
+        shell_exec('setsid sh ' . escapeshellarg($scriptFile) . ' </dev/null >/dev/null 2>&1 &');
+
+        Log::info("[TvPlayout] YouTube {$videoId}: background extraction started");
+    }
      *
      * YouTube no longer provides muxed (video+audio) streams for most videos.
      * yt-dlp -g returns two lines when video+audio are separate streams.
