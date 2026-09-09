@@ -627,8 +627,12 @@ class TvPlayoutEngine
 
     /**
      * Resolve a playlist item's filepath to a playable path/URL.
-     * For YouTube items: returns a locally downloaded .mp4 file (downloading
-     * synchronously if needed). Local files are returned directly.
+     *
+     * - youtube:ID  → resolveYouTubeItem (stream URL extraction + mux)
+     * - HLS .m3u8   → pre-transcoded to a local .ts file (HLS never terminates
+     *                  in the concat demuxer, so it must be pulled to disk first)
+     * - other HTTP  → returned as-is (direct MP4 googlevideo URLs work fine)
+     * - local file  → returned as-is
      */
     private function resolveFilePath(PlaylistItem $item): ?string
     {
@@ -639,6 +643,11 @@ class TvPlayoutEngine
         }
 
         if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
+            // HLS streams never end — the concat demuxer would loop the first one forever.
+            // Pre-transcode to a local .ts file so ffmpeg can seek/advance normally.
+            if (str_contains($path, '.m3u8') || str_contains($path, '/hls')) {
+                return $this->resolveHlsItem($item);
+            }
             return $path;
         }
 
@@ -647,6 +656,64 @@ class TvPlayoutEngine
         }
 
         return null;
+    }
+
+    /**
+     * Pre-transcode an HLS stream URL to a local .ts file.
+     * Uses -t duration to stop at the right time. Cached for 5 hours.
+     * Returns the local .ts path or null if transcoding fails.
+     */
+    private function resolveHlsItem(PlaylistItem $item): ?string
+    {
+        $cacheDir = storage_path('app/hls_cache');
+        if (! is_dir($cacheDir)) {
+            mkdir($cacheDir, 0755, true);
+        }
+
+        $hash    = md5($item->filepath);
+        $tsFile  = "{$cacheDir}/{$hash}.ts";
+        $lockFile = "{$cacheDir}/{$hash}.transcoding";
+
+        // Return cached file if fresh (< 5 hours old)
+        if (file_exists($tsFile) && filesize($tsFile) > 1_048_576) {
+            if (time() - filemtime($tsFile) < 18000) {
+                return $tsFile;
+            }
+            @unlink($tsFile);
+        }
+
+        // Already transcoding in background — return null (slate will play)
+        if (file_exists($lockFile) && time() - filemtime($lockFile) < 7200) {
+            return null;
+        }
+
+        $duration = (float) $item->duration;
+        if ($duration <= 0) {
+            return null;
+        }
+
+        Log::info("[TvPlayout] HLS item {$item->id}: transcoding to {$tsFile}");
+        touch($lockFile);
+
+        $ffmpeg  = $this->ffmpeg->getBin();
+        $artisan = base_path('artisan');
+        $channelId = $item->channel_id;
+
+        // Run in background — channel plays slate until ready, then rebuilds
+        $cmd = escapeshellarg($ffmpeg)
+            . ' -y -loglevel error'
+            . ' -protocol_whitelist file,http,https,tcp,tls,crypto'
+            . ' -i ' . escapeshellarg($item->filepath)
+            . ' -t ' . number_format($duration, 3, '.', '')
+            . ' -c copy -f mpegts '
+            . escapeshellarg($tsFile)
+            . ' && rm -f ' . escapeshellarg($lockFile)
+            . ' && php ' . escapeshellarg($artisan) . ' tv:rebuild-concat ' . escapeshellarg((string) $channelId)
+            . ' || rm -f ' . escapeshellarg($lockFile);
+
+        shell_exec("setsid sh -c {$cmd} </dev/null >/dev/null 2>&1 &");
+
+        return null; // slate plays while transcoding
     }
 
     /**
@@ -877,7 +944,11 @@ class TvPlayoutEngine
             'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo+bestaudio',
         ];
         $clients = ['tv_embedded', 'web', 'ios'];
+        // Only use proxy if it's HTTP/HTTPS — skip broken SOCKS proxies
         $proxy = app(\App\Services\ProxyService::class)->getWorkingProxy();
+        if ($proxy && str_starts_with($proxy, 'socks')) {
+            $proxy = null;
+        }
 
         try {
             foreach ($formats as $fmt) {
