@@ -1091,15 +1091,6 @@ class TvPlayoutEngine
         $cmd[] = '-protocol_whitelist';
         $cmd[] = 'file,http,https,tcp,tls,crypto';
 
-        if ($hasUrls) {
-            $cmd[] = '-reconnect';
-            $cmd[] = '1';
-            $cmd[] = '-reconnect_streamed';
-            $cmd[] = '1';
-            $cmd[] = '-reconnect_delay_max';
-            $cmd[] = '5';
-        }
-
         $cmd[] = '-f';
         $cmd[] = 'concat';
 
