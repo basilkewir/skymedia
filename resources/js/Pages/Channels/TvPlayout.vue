@@ -1273,23 +1273,25 @@ function addTickerItem() {
 }
 
 function downloadSampleCsv() {
-    const label = tickerLabel.value ? tickerLabel.value : 'BREAKING NEWS'
-    const labelColor = tickerLabelColor.value || '#ffffff'
-    const labelBg = tickerLabelBg.value || '#cc0000'
+    const label = tickerLabel.value || 'BREAKING NEWS'
+    const lc = tickerLabelColor.value || '#ffffff'
+    const lb = tickerLabelBg.value || '#cc0000'
     const rows = [
-        '# Ticker CSV — columns: text, #fontcolor, #bgcolor  (color columns optional)',
+        '# SkyMedia Ticker CSV',
+        '# Format: text, #fontcolor, #bgcolor',
+        '# Color columns are optional — omit to use channel defaults.',
         '# Lines starting with # are ignored.',
-        `# Ticker label (shown as a static prefix badge): ${label} | font: ${labelColor} | bg: ${labelBg}`,
+        `# Label prefix set to: "${label}"  (font ${lc} / bg ${lb})`,
+        '# The label is a static badge — set it in the Label prefix field, not here.',
         '',
-        `${label}: Government announces new economic policy effective January 2026,#ffffff,#cc0000`,
-        `${label}: Expect heavy rainfall across the coast this weekend — stay safe,#ffffff,#1a56db`,
-        'SPORTS: National team wins 3-1 in last night\'s championship final,#ffff00,#006400',
-        'MARKETS: Stock exchange closes up 2.4% — tech sector leads gains,#ffffff,#7c3aed',
-        'TRAFFIC: Major delays on the highway due to road works — use alternate routes,#000000,#f59e0b',
-        'ENTERTAINMENT: Award ceremony returns this Friday — tune in at 8 PM,#ffffff,#db2777',
-        'HEALTH ALERT: Vaccination drive begins Monday at all district health centres,#ffffff,#0891b2',
-        'Simple text item with no colors',
-        'Another item,#ffffff',
+        `${label}: This is your first ticker item,#ffffff,${lb}`,
+        `${label}: Replace these lines with your own content,#ffffff,${lb}`,
+        'Weather update: Sunny skies expected throughout the week,#ffffff,#1a56db',
+        'Sports: Home team wins 2-0 in last night match,#ffff00,#006400',
+        'Markets: Exchange closes up 1.8% — energy sector leads gains,#ffffff,#7c3aed',
+        'Traffic: Delays reported on the main highway — allow extra time,#000000,#f59e0b',
+        'This line uses channel default colors',
+        'This line sets only font color,#00ffcc',
     ]
     const blob = new Blob([rows.join('\n')], { type: 'text/csv' })
     const a = document.createElement('a')
