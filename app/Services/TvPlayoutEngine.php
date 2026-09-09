@@ -1513,10 +1513,20 @@ class TvPlayoutEngine
         $clockFile = $this->clockFilePath($channel);
         $pidFile   = $this->clockWriterPidFile($channel);
 
-        // Kill any existing writer for this channel
+        // Kill any existing writer for this channel — including stale processes
+        // from previous restarts that may still be writing to the same clock file
         $oldPid = (int) @file_get_contents($pidFile);
         if ($oldPid > 0) {
             exec("kill {$oldPid} 2>/dev/null");
+        }
+        // Kill any other orphaned writers targeting this clock file (race condition guard)
+        $escapedClockFileForGrep = escapeshellarg($clockFile);
+        exec("pgrep -f " . escapeshellarg("date.*" . basename($clockFile)) . " 2>/dev/null", $orphans);
+        foreach ($orphans as $orphanPid) {
+            $orphanPid = (int) trim($orphanPid);
+            if ($orphanPid > 0 && $orphanPid !== $oldPid) {
+                exec("kill {$orphanPid} 2>/dev/null");
+            }
         }
 
         $timezone  = $channel->timezone ?? config('app.timezone', 'UTC');
@@ -1579,6 +1589,13 @@ class TvPlayoutEngine
             exec("kill {$pid} 2>/dev/null");
         }
         @unlink($pidFile);
+        // Kill any orphaned writers targeting this channel's clock file
+        $clockFile = $this->clockFilePath($channel);
+        exec("pgrep -f " . escapeshellarg("date.*" . basename($clockFile)) . " 2>/dev/null", $orphans);
+        foreach ($orphans as $orphanPid) {
+            $orphanPid = (int) trim($orphanPid);
+            if ($orphanPid > 0) exec("kill {$orphanPid} 2>/dev/null");
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
