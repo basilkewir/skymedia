@@ -820,10 +820,8 @@ class FFmpegService
         // The loop PID is what we track; killing it stops both the loop and
         // any running ffmpeg child.
         $isRtmpListener = in_array('-listen', $command) && in_array('1', $command);
+        $pidTmp = tempnam(sys_get_temp_dir(), 'skymedia_pid_');
         if ($isRtmpListener) {
-            // Write a sentinel file so the loop knows when to stop cleanly.
-            // Use setsid so the loop shell is detached from the parent tty and
-            // does not keep a `docker exec` session open after the command exits.
             $stopFile = $pidFile . '.stop';
             @unlink($stopFile);
             $shell = "export PATH={$path}:\$PATH; setsid sh -c "
@@ -833,25 +831,34 @@ class FFmpegService
                     . '[ ! -f ' . escapeshellarg($stopFile) . ' ] && sleep 1; '
                     . 'done'
                 )
-                . ' </dev/null >/dev/null 2>&1 & echo $!';
+                . ' </dev/null >/dev/null 2>&1 & echo $! > ' . escapeshellarg($pidTmp);
         } else {
-            // Double-fork via subshell: the inner setsid process is fully detached
-            // from the PHP process and the SSH session. The outer shell captures
-            // the PID via a temp file instead of stdout so it can close all fds
-            // before exiting, preventing SSH from waiting on open descriptors.
-            $pidTmp = tempnam(sys_get_temp_dir(), 'skymedia_pid_');
-            $shell = "export PATH={$path}:\$PATH; "
-                . "(setsid nohup {$escaped} >> "
+            $shell = "export PATH={$path}:\$PATH; setsid nohup {$escaped} >> "
                 . escapeshellarg($logFile)
-                . ' 2>&1 </dev/null & echo $! > ' . escapeshellarg($pidTmp)
-                . ') </dev/null >/dev/null 2>&1; cat ' . escapeshellarg($pidTmp);
+                . ' 2>&1 </dev/null & echo $! > ' . escapeshellarg($pidTmp);
         }
 
-        $pid = (int) trim((string) shell_exec($shell));
-
-        if (isset($pidTmp)) {
-            @unlink($pidTmp);
+        // Launch via proc_open with all fds closed — never blocks the caller.
+        $descriptors = [
+            0 => ['file', '/dev/null', 'r'],
+            1 => ['file', '/dev/null', 'w'],
+            2 => ['file', '/dev/null', 'w'],
+        ];
+        $proc2 = proc_open($shell, $descriptors, $pipes);
+        if (is_resource($proc2)) {
+            proc_close($proc2);
         }
+
+        // Poll for the PID file written by the shell (max 2s)
+        $pid = 0;
+        for ($w = 0; $w < 20; $w++) {
+            usleep(100_000);
+            if (($p = (int) trim((string) @file_get_contents($pidTmp))) > 0) {
+                $pid = $p;
+                break;
+            }
+        }
+        @unlink($pidTmp);
 
         if ($pid <= 0) {
             $error = $this->readLogTail($logFile, 30);
