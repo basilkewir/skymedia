@@ -599,8 +599,21 @@ class TvPlayoutEngine
                 }
             }
             if ($allUrls) {
+                // Repeat URLs to fill 24 hours (no -stream_loop for concat filter)
+                $totalDur = $items->sum('duration');
+                $repeat = ($channel->playlist_loop ?? 0) > 0
+                    ? $channel->playlist_loop
+                    : ($totalDur > 0 ? max(10, min((int) ceil(86400 / $totalDur), 500)) : 50);
+
+                $expanded = [];
+                for ($i = 0; $i < $repeat; $i++) {
+                    foreach ($files as $f) {
+                        $expanded[] = $f;
+                    }
+                }
+
                 $manifestPath = $this->concatFilePath($channel) . '.urls';
-                file_put_contents($manifestPath, json_encode($files));
+                file_put_contents($manifestPath, json_encode($expanded));
                 return 'url_manifest:' . $manifestPath;
             }
         }
@@ -1091,15 +1104,20 @@ class TvPlayoutEngine
         $isUrlManifest = str_starts_with($concatFile, 'url_manifest:');
         $isUrl = str_starts_with($concatFile, 'http') || $isUrlManifest;
 
-        // Base command
+        // Base command — skip -stream_loop for URL manifests (urls already repeated to fill 24h)
         $cmd = [
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
             '-fflags', '+genpts+igndts+discardcorrupt+flush_packets',
             '-err_detect', 'ignore_err',
-            '-stream_loop', '-1',
-            '-re',
         ];
+
+        if (! $isUrlManifest) {
+            $cmd[] = '-stream_loop';
+            $cmd[] = '-1';
+        }
+
+        $cmd[] = '-re';
 
         if ($isUrlManifest) {
             // Multiple URL inputs — each gets its own -i, concat filter joins them
