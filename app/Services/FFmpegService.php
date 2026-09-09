@@ -835,11 +835,23 @@ class FFmpegService
                 )
                 . ' </dev/null >/dev/null 2>&1 & echo $!';
         } else {
-            $shell = "export PATH={$path}:\$PATH; setsid nohup {$escaped} >> "
-                     . escapeshellarg($logFile) . ' 2>&1 </dev/null & echo $!';
+            // Double-fork via subshell: the inner setsid process is fully detached
+            // from the PHP process and the SSH session. The outer shell captures
+            // the PID via a temp file instead of stdout so it can close all fds
+            // before exiting, preventing SSH from waiting on open descriptors.
+            $pidTmp = tempnam(sys_get_temp_dir(), 'skymedia_pid_');
+            $shell = "export PATH={$path}:\$PATH; "
+                . "(setsid nohup {$escaped} >> "
+                . escapeshellarg($logFile)
+                . ' 2>&1 </dev/null & echo $! > ' . escapeshellarg($pidTmp)
+                . ') </dev/null >/dev/null 2>&1; cat ' . escapeshellarg($pidTmp);
         }
 
         $pid = (int) trim((string) shell_exec($shell));
+
+        if (isset($pidTmp)) {
+            @unlink($pidTmp);
+        }
 
         if ($pid <= 0) {
             $error = $this->readLogTail($logFile, 30);
