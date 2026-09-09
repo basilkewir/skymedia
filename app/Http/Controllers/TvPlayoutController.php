@@ -899,6 +899,7 @@ class TvPlayoutController extends Controller
                 $cmd[] = 'file,http,https,tcp,tls,crypto';
                 $cmd[] = '-rw_timeout';
                 $cmd[] = '10000000'; // 10 seconds in microseconds
+                $filepath = $this->encodeUrlBrackets($filepath);
             }
 
             $cmd[] = $filepath;
@@ -915,6 +916,16 @@ class TvPlayoutController extends Controller
         }
 
         return 0.0;
+    }
+
+    /**
+     * Percent-encode [ and ] in URLs — these are valid in filenames but
+     * treated as range syntax by curl/ffprobe/ffmpeg's URL parser.
+     * The stored filepath is kept as-is; only the path passed to tools is encoded.
+     */
+    private function encodeUrlBrackets(string $url): string
+    {
+        return str_replace(['[', ']'], ['%5B', '%5D'], $url);
     }
 
     private function formatDuration(float $seconds): string
@@ -1212,6 +1223,7 @@ class TvPlayoutController extends Controller
             ];
             if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
                 array_push($cmd, '-protocol_whitelist', 'file,http,https,tcp,tls,crypto', '-rw_timeout', '10000000');
+                $path = str_replace(['[', ']'], ['%5B', '%5D'], $path);
             }
             $cmd[] = $path;
 

@@ -640,7 +640,13 @@ class TvPlayoutEngine
         $lines = ['ffconcat version 1.0'];
         for ($i = 0; $i < $repeat; $i++) {
             foreach ($files as $entry) {
-                $lines[] = "file '" . str_replace("'", "'\\''", $entry['path']) . "'";
+                $path = $entry['path'];
+                // Percent-encode [ and ] in HTTP URLs — ffmpeg's URL parser
+                // treats them as range syntax and fails to open the file.
+                if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
+                    $path = str_replace(['[', ']'], ['%5B', '%5D'], $path);
+                }
+                $lines[] = "file '" . str_replace("'", "'\\''", $path) . "'";
                 if ($entry['duration'] > 0) {
                     $lines[] = 'duration ' . number_format($entry['duration'], 3, '.', '');
                 }
@@ -722,7 +728,7 @@ class TvPlayoutEngine
             // Probe duration for HLS streams
             $ffprobe = trim((string) shell_exec('which ffprobe 2>/dev/null')) ?: 'ffprobe';
             $out = [];
-            exec($ffprobe . ' -v quiet -protocol_whitelist file,http,https,tcp,tls,crypto -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ' . escapeshellarg($item->filepath) . ' 2>/dev/null', $out);
+            exec($ffprobe . ' -v quiet -protocol_whitelist file,http,https,tcp,tls,crypto -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ' . escapeshellarg(str_replace(['[', ']'], ['%5B', '%5D'], $item->filepath)) . ' 2>/dev/null', $out);
             $duration = (float) trim(implode('', $out));
             if ($duration > 0) {
                 $item->update(['duration' => $duration]);
