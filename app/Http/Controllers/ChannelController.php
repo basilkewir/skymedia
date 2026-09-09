@@ -111,14 +111,11 @@ class ChannelController extends Controller
                 $data['ingest_port'] = null;
             }
         } elseif (($data['source_type'] ?? '') === 'tv_playout') {
-            // TV playout channels run entirely on the VPS — no ingest, no push
             $data['source_url'] = 'tv_playout://local';
             $data['ingest_mode'] = 'pull';
             $data['ingest_port'] = null;
             $data['dvr_enabled'] = false;
             $data['record_duration'] = 0;
-            $data['push_url'] = null;
-            $data['push_stream_key'] = null;
         }
 
         $channel = Channel::create($data);

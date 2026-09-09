@@ -14,7 +14,8 @@ return [
      * Per-channel check_interval overrides this for health probes.
      */
     'monitor_tick' => env('SKYMEDIA_MONITOR_TICK', 3),
-    'mediamtx_api' => env('MEDIAMTX_API_URL', 'http://rtmp:9997'),
+    'mediamtx_api' => env('MEDIAMTX_API_URL', 'http://127.0.0.1:9997'),
+    'mediamtx_rtmp_host' => env('MEDIAMTX_RTMP_HOST', '127.0.0.1'),
 
     /*
      * Max DVR bitrate assumption (bits/sec) used for storage warnings.

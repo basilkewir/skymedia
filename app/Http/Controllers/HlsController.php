@@ -23,9 +23,10 @@ class HlsController extends Controller
      */
     public function serve(Channel $channel, string $file): BinaryFileResponse|RedirectResponse
     {
-        // Numeric ID: redirect to slug-based URL (301 permanent).
-        // This keeps old embeds working while the slug URL is served by nginx.
-        if (is_numeric($channel->getKey())) {
+        // Numeric ID in URL: redirect to slug-based URL (301 permanent).
+        // The {channel} route parameter is the raw string from the URL.
+        $routeParam = request()->route('channel');
+        if (is_numeric($routeParam)) {
             return redirect(
                 route('hls.serve', ['channel' => $channel->slug, 'file' => $file]),
                 301

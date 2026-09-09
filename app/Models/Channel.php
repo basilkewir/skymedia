@@ -145,6 +145,15 @@ class Channel extends Model
         return $this->belongsTo(ChannelSource::class, 'current_source_id');
     }
 
+    // ── Route model binding: accept both numeric ID and slug ─────────────────
+
+    public function resolveRouteBinding($value, $field = null): ?self
+    {
+        return is_numeric($value)
+            ? $this->where('id', $value)->first()
+            : $this->where('slug', $value)->first();
+    }
+
     // ── Computed attributes ───────────────────────────────────────────────────
 
     public function getPushTargetAttribute(): string
