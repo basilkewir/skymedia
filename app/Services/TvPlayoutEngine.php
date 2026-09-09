@@ -1616,7 +1616,10 @@ class TvPlayoutEngine
         } else {
             $text = trim((string) $channel->ticker_text);
         }
-        file_put_contents($this->tickerFilePath($channel), $text ?: ' ');
+        // FFmpeg drawtext processes % as a format specifier and \ as an escape
+        // even when reading from a textfile. Escape both so any user content renders correctly.
+        $text = str_replace(['\\', '%'], ['\\\\', '%%'], $text ?: ' ');
+        file_put_contents($this->tickerFilePath($channel), $text);
     }
 
     /**
