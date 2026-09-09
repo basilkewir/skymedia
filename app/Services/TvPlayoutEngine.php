@@ -689,7 +689,16 @@ class TvPlayoutEngine
 
         $duration = (float) $item->duration;
         if ($duration <= 0) {
-            return null;
+            // Try to probe duration from the URL
+            $ffprobe = trim((string) shell_exec('which ffprobe 2>/dev/null')) ?: 'ffprobe';
+            $out = [];
+            exec($ffprobe . ' -v quiet -protocol_whitelist file,http,https,tcp,tls,crypto -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ' . escapeshellarg($item->filepath) . ' 2>/dev/null', $out);
+            $duration = (float) trim(implode('', $out));
+            if ($duration > 0) {
+                $item->update(['duration' => $duration]);
+            } else {
+                return null;
+            }
         }
 
         Log::info("[TvPlayout] HLS item {$item->id}: transcoding to {$tsFile}");
