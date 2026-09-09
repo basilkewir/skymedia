@@ -699,32 +699,12 @@ class TvPlayoutEngine
             }
         }
 
-        Log::info("[TvPlayout] URL item {$item->id}: transcoding to {$tsFile}");
+        Log::info("[TvPlayout] URL item {$item->id}: transcoding queued");
         touch($lockFile);
 
-        $ffmpeg  = $this->ffmpeg->getBin();
-        $artisan = base_path('artisan');
-        $channelId = $item->channel_id;
-
-        // HLS: copy streams with duration limit. Direct files: re-encode to ensure TS compatibility.
-        if ($isHls) {
-            $codecArgs = ' -t ' . number_format($duration, 3, '.', '') . ' -c copy';
-        } else {
-            $codecArgs = ' -c:v libx264 -preset veryfast -crf 23 -c:a aac -b:a 128k -ac 2 -ar 48000';
-        }
-
-        $cmd = $ffmpeg
-            . ' -y -loglevel error'
-            . ' -protocol_whitelist file,http,https,tcp,tls,crypto'
-            . ' -i ' . escapeshellarg($item->filepath)
-            . $codecArgs
-            . ' -f mpegts '
-            . escapeshellarg($tsFile)
-            . ' && rm -f ' . escapeshellarg($lockFile)
-            . ' && php ' . escapeshellarg($artisan) . ' tv:rebuild-concat ' . escapeshellarg((string) $channelId)
-            . ' || rm -f ' . escapeshellarg($lockFile);
-
-        shell_exec('setsid sh -c ' . escapeshellarg($cmd) . ' </dev/null >/dev/null 2>&1 &');
+        \App\Jobs\TranscodeUrlToTs::dispatch(
+            $item->filepath, $tsFile, $lockFile, $item->channel_id, $isHls, $duration
+        );
 
         return null; // slate plays while transcoding
     }
@@ -871,8 +851,7 @@ class TvPlayoutEngine
     {
         // Return cached mux if still fresh
         if (file_exists($outputTs) && filesize($outputTs) > 1_048_576) {
-            $age = time() - filemtime($outputTs);
-            if ($age < 18000) {
+            if (time() - filemtime($outputTs) < 18000) {
                 return $outputTs;
             }
             @unlink($outputTs);
@@ -880,30 +859,15 @@ class TvPlayoutEngine
 
         $lockFile = $outputTs . '.muxing';
         if (file_exists($lockFile) && time() - filemtime($lockFile) < 7200) {
-            return null; // already muxing in background
+            return null;
         }
-
-        Log::info("[TvPlayout] YouTube {$videoId}: muxing in background → {$outputTs}");
         touch($lockFile);
 
-        $ffmpeg  = $this->ffmpeg->getBin();
-        $artisan = base_path('artisan');
         $channelId = $this->getChannelIdForVideoId($videoId);
+        \App\Jobs\MuxVideoAudio::dispatch($videoId, $videoUrl, $audioUrl, $outputTs, $channelId ?? 0);
 
-        $cmd = $ffmpeg
-            . ' -y -loglevel error'
-            . ' -protocol_whitelist file,http,https,tcp,tls,crypto'
-            . ' -i ' . escapeshellarg($videoUrl)
-            . ' -i ' . escapeshellarg($audioUrl)
-            . ' -c copy -map 0:v:0 -map 1:a:0 -f mpegts '
-            . escapeshellarg($outputTs)
-            . ' && rm -f ' . escapeshellarg($lockFile)
-            . ($channelId ? ' && php ' . escapeshellarg($artisan) . ' tv:rebuild-concat ' . escapeshellarg((string) $channelId) : '')
-            . ' || rm -f ' . escapeshellarg($lockFile);
-
-        shell_exec('setsid sh -c ' . escapeshellarg($cmd) . ' </dev/null >/dev/null 2>&1 &');
-
-        return null; // slate plays while muxing
+        Log::info("[TvPlayout] YouTube {$videoId}: mux job queued");
+        return null;
     }
 
     private function getChannelIdForVideoId(string $videoId): ?int
@@ -924,16 +888,9 @@ class TvPlayoutEngine
         }
         touch($lockFile);
 
-        $artisan = base_path('artisan');
-        $cmd = 'php ' . escapeshellarg($artisan) . ' tv:extract-youtube'
-            . ' ' . escapeshellarg($videoId)
-            . ' ' . escapeshellarg((string) $item->channel_id)
-            . ' ' . escapeshellarg($urlCacheFile)
-            . ' ' . escapeshellarg($muxedTs);
+        \App\Jobs\ExtractYouTubeUrl::dispatch($videoId, $item->channel_id, $urlCacheFile, $muxedTs);
 
-        shell_exec('setsid sh -c ' . escapeshellarg($cmd) . ' </dev/null >>' . escapeshellarg(sys_get_temp_dir() . '/yt_extract_' . $videoId . '.log') . ' 2>&1 &');
-
-        Log::info("[TvPlayout] YouTube {$videoId}: background extraction started");
+        Log::info("[TvPlayout] YouTube {$videoId}: extraction job queued");
     }
 
     /**
