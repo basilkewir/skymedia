@@ -1122,7 +1122,12 @@ class TvPlayoutController extends Controller
 
         $plain = mb_substr(implode('   •   ', array_column($items, 'text')), 0, 65535);
         $channel->update(['ticker_items' => $items, 'ticker_text' => $plain]);
-        $this->engine->writeTickerFile($channel->fresh());
+        $fresh = $channel->fresh();
+        $this->engine->writeTickerFile($fresh);
+
+        if ($this->engine->isRunning($fresh)) {
+            $this->engine->rebuild($fresh);
+        }
 
         return response()->json(['success' => true, 'items' => $items, 'count' => count($items)]);
     }

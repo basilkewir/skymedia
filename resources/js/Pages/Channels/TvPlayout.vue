@@ -1273,13 +1273,16 @@ function addTickerItem() {
 }
 
 function downloadSampleCsv() {
+    const label = tickerLabel.value ? tickerLabel.value : 'BREAKING NEWS'
+    const labelColor = tickerLabelColor.value || '#ffffff'
+    const labelBg = tickerLabelBg.value || '#cc0000'
     const rows = [
-        '# Ticker CSV sample — columns: text, font color (#hex), background color (#hex)',
-        '# Font and background color columns are optional.',
+        '# Ticker CSV — columns: text, #fontcolor, #bgcolor  (color columns optional)',
         '# Lines starting with # are ignored.',
+        `# Ticker label (shown as a static prefix badge): ${label} | font: ${labelColor} | bg: ${labelBg}`,
         '',
-        'BREAKING NEWS: Government announces new economic policy effective January 2026,#ffffff,#cc0000',
-        'WEATHER: Expect heavy rainfall across the coast this weekend — stay safe,#ffffff,#1a56db',
+        `${label}: Government announces new economic policy effective January 2026,#ffffff,#cc0000`,
+        `${label}: Expect heavy rainfall across the coast this weekend — stay safe,#ffffff,#1a56db`,
         'SPORTS: National team wins 3-1 in last night\'s championship final,#ffff00,#006400',
         'MARKETS: Stock exchange closes up 2.4% — tech sector leads gains,#ffffff,#7c3aed',
         'TRAFFIC: Major delays on the highway due to road works — use alternate routes,#000000,#f59e0b',
