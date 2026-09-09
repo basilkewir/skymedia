@@ -1068,7 +1068,7 @@ class TvPlayoutEngine
 
         // Detect if the concat file contains URLs (read first entry)
         $concatContent = file_get_contents($concatFile);
-        $hasUrls = (bool) preg_match('/^file\s+https?:\/\//mi', $concatContent);
+        $hasUrls = (bool) preg_match('/^file\s+[\'"]?https?:\/\//mi', $concatContent);
 
         // Base command
         $cmd = [
