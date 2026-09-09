@@ -309,11 +309,20 @@ class TvPlayoutEngine
         $this->recalculateSchedule($channel);
         $this->writeMetaFile($channel);
 
-        // Rewrite the concat file on disk first
+        $concatPath = $this->concatFilePath($channel);
+
+        // Snapshot whether the current concat is slate-only before rewriting it
+        $wasSlateOnly = false;
+        if (file_exists($concatPath)) {
+            $existing = file_get_contents($concatPath);
+            $wasSlateOnly = str_contains($existing, 'slate.mp4') &&
+                            ! preg_match('/^file\s+[^\n]*(?<!slate\.mp4)[^\n]*$/m', $existing);
+        }
+
+        // Rewrite the concat file on disk
         $concatFile = $this->buildConcatFile($channel);
 
-        // If buildConcatFile returned a URL (not a local file), we must restart
-        // ffmpeg entirely — SIGUSR1 only reloads the concat file on disk.
+        // If buildConcatFile returned a URL (not a local file), restart entirely
         if ($concatFile !== null && str_starts_with($concatFile, 'http')) {
             if ($this->isRunning($channel)) {
                 $this->stop($channel);
@@ -322,6 +331,24 @@ class TvPlayoutEngine
         }
 
         if ($this->isRunning($channel)) {
+            // If we were playing slate and now have real content, restart so the
+            // new content starts immediately rather than waiting for the slate loop
+            // to exhaust (which could take hours).
+            $newContent = $concatFile ? file_get_contents($concatFile) : '';
+            $nowHasReal = $concatFile !== null &&
+                          ! (str_contains($newContent, 'slate.mp4') &&
+                             ! preg_match('/^file\s+[^\n]*(?<!slate\.mp4)[^\n]*$/m', $newContent));
+
+            if ($wasSlateOnly && $nowHasReal) {
+                Log::info("[TvPlayout] {$channel->name}: slate → real content, restarting ffmpeg");
+                $this->captureOffset($channel);
+                $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
+                $pid = $this->ffmpeg->readPid($pidFile);
+                if ($pid > 0) $this->ffmpeg->stopProcess($pid);
+                $this->ffmpeg->clearPid($pidFile);
+                return $this->start($channel->fresh());
+            }
+
             // Signal ffmpeg to reload the concat list — zero gap on air
             $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
             $pid = $this->ffmpeg->readPid($pidFile);
@@ -643,9 +670,14 @@ class TvPlayoutEngine
         }
 
         if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
-            // HLS and direct file URLs both need to be pre-transcoded to a local .ts
-            // so the concat demuxer can loop/seek them correctly.
-            return $this->resolveHlsItem($item);
+            // HLS (.m3u8) must be pre-transcoded to a local .ts — the concat demuxer
+            // cannot loop/seek an infinite HLS stream.
+            // All other HTTP URLs (MP4, MKV, TS, direct downloads) are passed straight
+            // through to ffmpeg which streams them natively — no pre-download needed.
+            if (str_contains($path, '.m3u8') || str_contains($path, '/hls')) {
+                return $this->resolveHlsItem($item);
+            }
+            return $path;
         }
 
         if (file_exists($path) && filesize($path) > 1024) {
