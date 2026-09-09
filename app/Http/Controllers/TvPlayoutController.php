@@ -603,7 +603,7 @@ class TvPlayoutController extends Controller
         $summary = $this->engine->recalculateSchedule($channel);
 
         if ($this->engine->isRunning($channel)) {
-            $this->engine->rebuild($channel);
+            $this->engine->restartWithResume($channel);
         }
 
         $freshItems = $channel->playlistItems()
@@ -613,7 +613,6 @@ class TvPlayoutController extends Controller
 
         $totalDuration = $freshItems->sum('duration');
         $summary = [
-            'total_duration_seconds' => $totalDuration,
             'formatted_total'        => $this->formatDurationLong((float) $totalDuration),
             'item_count'             => $freshItems->count(),
             'anchor_start'           => $freshItems->first()?->scheduled_start?->toIso8601String(),
@@ -1282,16 +1281,25 @@ class TvPlayoutController extends Controller
         abort_unless($channel->source_type === 'tv_playout', 404);
         $this->ensureAccess($channel);
 
-        // Cameroon / Africa RSS sources — ordered by reliability
-        $feeds = [
-            ['url' => 'https://www.cameroon-tribune.cm/rss.xml',          'label' => 'CAMEROON'],
-            ['url' => 'https://www.journalducameroun.com/feed/',           'label' => 'CAMEROON'],
-            ['url' => 'https://www.crtv.cm/feed/',                        'label' => 'CAMEROON'],
-            ['url' => 'https://www.bbc.co.uk/africa/index.xml',           'label' => 'AFRICA'],
-            ['url' => 'https://feeds.bbci.co.uk/news/world/africa/rss.xml', 'label' => 'AFRICA'],
-            ['url' => 'https://allafrica.com/tools/headlines/rdf/cameroon/headlines.rdf', 'label' => 'CAMEROON'],
-            ['url' => 'https://allafrica.com/tools/headlines/rdf/africa/headlines.rdf',   'label' => 'AFRICA'],
+        $lang = request()->query('lang', 'en'); // 'en' or 'fr'
+
+        $feedsByLang = [
+            'en' => [
+                ['url' => 'https://feeds.bbci.co.uk/news/world/africa/rss.xml',                                    'label' => 'AFRICA'],
+                ['url' => 'https://allafrica.com/tools/headlines/rdf/cameroon/headlines.rdf',                      'label' => 'CAMEROON'],
+                ['url' => 'https://allafrica.com/tools/headlines/rdf/africa/headlines.rdf',                        'label' => 'AFRICA'],
+                ['url' => 'https://www.voanews.com/api/zmpqoiepiq',                                                'label' => 'AFRICA'],
+            ],
+            'fr' => [
+                ['url' => 'https://www.cameroon-tribune.cm/rss.xml',                                               'label' => 'CAMEROON'],
+                ['url' => 'https://www.journalducameroun.com/feed/',                                               'label' => 'CAMEROON'],
+                ['url' => 'https://www.crtv.cm/feed/',                                                            'label' => 'CAMEROON'],
+                ['url' => 'https://allafrica.com/tools/headlines/rdf/cameroon/headlines.rdf',                      'label' => 'CAMEROON'],
+                ['url' => 'https://www.rfi.fr/fr/afrique/rss',                                                    'label' => 'AFRIQUE'],
+            ],
         ];
+
+        $feeds = $feedsByLang[$lang] ?? $feedsByLang['en'];
 
         // Color scheme: Cameroon flag (green/red/yellow) + category tints
         $labelColors = [

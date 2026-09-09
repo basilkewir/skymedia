@@ -492,6 +492,16 @@
                             <div class="flex items-center justify-between">
                                 <label class="text-xs text-slate-500">Ticker items <span class="text-slate-600">(each scrolls as one line, joined by •)</span></label>
                                 <div class="flex gap-1.5 flex-wrap justify-end">
+                                    <div class="flex items-center rounded border border-slate-700 overflow-hidden flex-shrink-0">
+                                        <button @click="newsLang = 'en'" type="button"
+                                                :class="['px-1.5 py-1 text-[10px] transition-colors', newsLang === 'en' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700']">
+                                            EN
+                                        </button>
+                                        <button @click="newsLang = 'fr'" type="button"
+                                                :class="['px-1.5 py-1 text-[10px] transition-colors', newsLang === 'fr' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700']">
+                                            FR
+                                        </button>
+                                    </div>
                                     <button @click="fetchNews" type="button" :disabled="fetchingNews"
                                             class="px-2 py-1 text-[10px] bg-green-600/20 text-green-300 border border-green-500/40 rounded hover:bg-green-600/40 transition-colors disabled:opacity-50 font-semibold" title="Fetch live Cameroon/Africa news">
                                         {{ fetchingNews ? 'Fetching…' : '🌍 Fetch News' }}
@@ -1280,6 +1290,7 @@ const tickerLabel = ref(props.channel.ticker_label ?? '')
 const tickerLabelColor = ref(props.channel.ticker_label_color ?? '#ff0000')
 const tickerLabelBg = ref(props.channel.ticker_label_bg ?? '#ffffff')
 const fetchingNews = ref(false)
+const newsLang = ref('en')
 
 function addTickerItem() {
     tickerItems.value.push({ text: '', color: '#ffffff', bg_color: '#000000' })
@@ -1368,7 +1379,7 @@ async function fetchNews() {
     tickerMessage.value = 'Fetching news…'
     try {
         const csrfToken = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1]
-        const res = await fetch(route('channels.playout.fetch-news', props.channel.id), {
+        const res = await fetch(route('channels.playout.fetch-news', props.channel.id) + '?lang=' + newsLang.value, {
             headers: { 'X-Requested-With': 'XMLHttpRequest', 'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '' },
         })
         const data = await res.json()

@@ -179,7 +179,7 @@ class TvPlayoutEngine
      * Used by all overlay-settings updates so the playlist time is preserved.
      * The push process is also restarted so it picks up the new HLS output.
      */
-    private function restartWithResume(Channel $channel): void
+    public function restartWithResume(Channel $channel): void
     {
         if (! $this->isRunning($channel)) {
             return;
