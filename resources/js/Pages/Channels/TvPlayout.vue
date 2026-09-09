@@ -236,7 +236,7 @@
                                             </span>
                                             <span v-if="item.media_group === 'clean'"
                                                   class="inline-block px-1.5 py-0.5 bg-slate-600/60 text-slate-400 text-[10px] rounded flex-shrink-0" title="No overlays">CLEAN</span>
-                                            <span class="truncate">{{ item.custom_title || item.title }}</span>
+                                            <span class="truncate">{{ item.display_title || item.custom_title || item.title }}</span>
                                         </div>
                                         <div v-if="item.custom_title && item.custom_title !== item.title" class="text-[10px] text-slate-600 truncate mt-0.5">
                                             Original: {{ item.title }}
@@ -291,15 +291,20 @@
                                 <!-- Inline edit row -->
                                 <div v-else class="px-6 py-3 bg-slate-800/40 border-l-2 border-indigo-500">
                                     <div class="flex items-center gap-2 mb-2">
-                                        <span class="text-xs text-slate-400 font-medium truncate flex-1">{{ item.title }}</span>
-                                        <button @click="cancelEdit" class="text-xs text-slate-500 hover:text-white">✕ Cancel</button>
+                                        <span class="text-[10px] text-slate-500 truncate flex-1">Original: <span class="text-slate-400 font-mono">{{ item.title }}</span></span>
+                                        <button @click="cancelEdit" class="text-xs text-slate-500 hover:text-white flex-shrink-0">✕ Cancel</button>
                                     </div>
                                     <div class="flex items-center gap-2 mb-2">
                                         <input v-model="editTitle" type="text"
-                                               placeholder="Display title (leave empty to use original)"
+                                               placeholder="Display title"
                                                class="flex-1 form-input text-xs"
                                                @keydown.enter="saveItemEdit"
-                                               @keydown.escape="cancelEdit" />
+                                               @keydown.escape="cancelEdit"
+                                               @vue:mounted="el => { el.focus(); el.select() }" />
+                                        <button @click="editTitle = item.title" type="button"
+                                                class="px-2 py-1 text-[10px] text-slate-500 hover:text-slate-300 border border-slate-700 rounded flex-shrink-0" title="Reset to original filename">
+                                            Reset
+                                        </button>
                                     </div>
                                     <div class="flex items-center gap-2">
                                         <span class="text-xs text-slate-500">Group:</span>
@@ -1233,7 +1238,7 @@ const editSaving = ref(false)
 
 function editItemTitle(item) {
     editingItem.value = item
-    editTitle.value = item.custom_title || ''
+    editTitle.value = item.custom_title || item.title
     editGroup.value = item.media_group || 'default'
 }
 
@@ -1246,6 +1251,8 @@ async function saveItemEdit() {
     editSaving.value = true
     try {
         const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        // If the entered title matches the original, clear the custom_title
+        const customTitle = editTitle.value.trim() === editingItem.value.title ? null : (editTitle.value.trim() || null)
         const res = await fetch(route('channels.playout.items.title', [props.channel.id, editingItem.value.id]), {
             method: 'PUT',
             headers: {
@@ -1253,11 +1260,12 @@ async function saveItemEdit() {
                 'X-Requested-With': 'XMLHttpRequest',
                 'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
             },
-            body: JSON.stringify({ custom_title: editTitle.value || null, media_group: editGroup.value }),
+            body: JSON.stringify({ custom_title: customTitle, media_group: editGroup.value }),
         })
         const data = await res.json()
         if (data.success) {
-            editingItem.value.custom_title = editTitle.value || null
+            editingItem.value.custom_title = customTitle
+            editingItem.value.display_title = data.display_title
             editingItem.value.media_group = data.media_group
             editingItem.value = null
         }
