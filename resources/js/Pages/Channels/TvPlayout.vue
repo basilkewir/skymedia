@@ -487,6 +487,10 @@
                             <div class="flex items-center justify-between">
                                 <label class="text-xs text-slate-500">Ticker items <span class="text-slate-600">(each scrolls as one line, joined by •)</span></label>
                                 <div class="flex gap-1.5">
+                                    <button @click="downloadSampleCsv" type="button"
+                                            class="px-2 py-1 text-[10px] bg-slate-700/50 text-slate-400 border border-slate-700 rounded hover:bg-slate-700 transition-colors" title="Download sample CSV">
+                                        ↓ Sample
+                                    </button>
                                     <label class="px-2 py-1 text-[10px] bg-slate-700 text-slate-300 rounded cursor-pointer hover:bg-slate-600 transition-colors" title="Upload .txt or .csv file">
                                         ↑ Import
                                         <input type="file" accept=".txt,.csv,text/plain,text/csv" @change="importTickerFile" class="hidden" />
@@ -497,7 +501,7 @@
                                     </button>
                                 </div>
                             </div>
-                            <p class="text-[10px] text-slate-600">CSV format: text,#fontcolor,#bgcolor — color columns optional</p>
+                            <p class="text-[10px] text-slate-600">CSV: text,#fontcolor,#bgcolor — colors optional</p>
                             <div v-if="tickerItems.length === 0" class="text-xs text-slate-600 py-2 text-center border border-dashed border-slate-700 rounded-lg">
                                 No items — add lines or import a file
                             </div>
@@ -1262,6 +1266,30 @@ const tickerLabelBg = ref(props.channel.ticker_label_bg ?? '#ffffff')
 
 function addTickerItem() {
     tickerItems.value.push({ text: '', color: '#ffffff', bg_color: '#000000' })
+}
+
+function downloadSampleCsv() {
+    const rows = [
+        '# Ticker CSV sample — columns: text, font color (#hex), background color (#hex)',
+        '# Font and background color columns are optional.',
+        '# Lines starting with # are ignored.',
+        '',
+        'BREAKING NEWS: Government announces new economic policy effective January 2026,#ffffff,#cc0000',
+        'WEATHER: Expect heavy rainfall across the coast this weekend — stay safe,#ffffff,#1a56db',
+        'SPORTS: National team wins 3-1 in last night\'s championship final,#ffff00,#006400',
+        'MARKETS: Stock exchange closes up 2.4% — tech sector leads gains,#ffffff,#7c3aed',
+        'TRAFFIC: Major delays on the highway due to road works — use alternate routes,#000000,#f59e0b',
+        'ENTERTAINMENT: Award ceremony returns this Friday — tune in at 8 PM,#ffffff,#db2777',
+        'HEALTH ALERT: Vaccination drive begins Monday at all district health centres,#ffffff,#0891b2',
+        'Simple text item with no colors',
+        'Another item,#ffffff',
+    ]
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = 'ticker_sample.csv'
+    a.click()
+    URL.revokeObjectURL(a.href)
 }
 
 async function importTickerFile(e) {
