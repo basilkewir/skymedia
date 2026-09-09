@@ -139,14 +139,39 @@
                             <div class="flex gap-2">
                                 <input v-model="mediaUrl" type="text"
                                        placeholder="Paste URL: HLS (.m3u8), MP4, YouTube, or direct stream"
-                                       class="flex-1 form-input text-xs font-mono" :disabled="addingUrl" maxlength="8000" />
-                                <button @click="addMediaUrl" :disabled="!mediaUrl || addingUrl"
+                                       class="flex-1 form-input text-xs font-mono" :disabled="addingUrl || previewLoading" maxlength="8000"
+                                       @keydown.enter="previewMediaUrl" />
+                                <button @click="previewMediaUrl" :disabled="!mediaUrl || addingUrl || previewLoading"
                                         class="px-3 py-1.5 text-xs bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded-lg hover:bg-indigo-600/30 transition-colors disabled:opacity-40 whitespace-nowrap">
-                                    {{ addingUrl ? 'Adding…' : '+ Add URL' }}
+                                    {{ previewLoading ? 'Checking…' : '+ Add URL' }}
                                 </button>
                             </div>
                             <p v-if="urlError" class="mt-1 text-xs text-red-400">{{ urlError }}</p>
                             <p v-if="urlSuccess" class="mt-1 text-xs text-green-400">{{ urlSuccess }}</p>
+
+                            <!-- Preview modal -->
+                            <div v-if="urlPreview" class="mt-3 p-3 bg-slate-800 border border-slate-700 rounded-lg">
+                                <div class="flex gap-3">
+                                    <img v-if="urlPreview.thumbnail" :src="urlPreview.thumbnail" class="w-24 h-14 object-cover rounded flex-shrink-0" />
+                                    <div v-else class="w-24 h-14 bg-slate-700 rounded flex-shrink-0 flex items-center justify-center text-slate-500 text-xs">No preview</div>
+                                    <div class="flex-1 min-w-0">
+                                        <p class="text-xs text-white font-medium truncate">{{ urlPreview.title }}</p>
+                                        <p class="text-xs text-slate-400 mt-0.5">{{ urlPreview.duration > 0 ? formatDuration(urlPreview.duration) : 'Duration unknown' }}</p>
+                                        <p v-if="!urlPreview.playable" class="text-xs text-red-400 mt-0.5">⚠ Could not probe — may not play</p>
+                                        <p v-else class="text-xs text-green-400 mt-0.5">✓ Reachable</p>
+                                    </div>
+                                </div>
+                                <div class="flex gap-2 mt-3">
+                                    <button @click="confirmAddUrl" :disabled="addingUrl"
+                                            class="px-3 py-1.5 text-xs bg-green-600/20 text-green-400 border border-green-500/30 rounded-lg hover:bg-green-600/30 transition-colors disabled:opacity-40">
+                                        {{ addingUrl ? 'Adding…' : '✓ Add to Playlist' }}
+                                    </button>
+                                    <button @click="urlPreview = null; urlError = ''"
+                                            class="px-3 py-1.5 text-xs text-slate-400 border border-slate-700 rounded-lg hover:bg-slate-700 transition-colors">
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
                             <!-- Loop control -->
                             <div class="flex items-center gap-3 mt-3 pt-3 border-t border-slate-800">
                                 <label class="text-xs text-slate-500">Loop</label>
@@ -1013,7 +1038,17 @@ if (props.channel.logo_media_id) {
 const uploading = ref(false)
 const uploadProgress = ref(0)
 const mediaUrl = ref('')
+
+function formatDuration(seconds) {
+    if (!seconds || seconds <= 0) return ''
+    const h = Math.floor(seconds / 3600)
+    const m = Math.floor((seconds % 3600) / 60)
+    const s = Math.floor(seconds % 60)
+    return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`
+}
 const addingUrl = ref(false)
+const previewLoading = ref(false)
+const urlPreview = ref(null)
 const urlError = ref('')
 const urlSuccess = ref('')
 const engineLog = ref('')
@@ -1371,7 +1406,32 @@ async function uploadMedia(event) {
     }
 }
 
-async function addMediaUrl() {
+async function previewMediaUrl() {
+    if (!mediaUrl.value) return
+    urlError.value = ''
+    urlPreview.value = null
+    previewLoading.value = true
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.playout.preview-url', props.channel.id), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '' },
+            body: JSON.stringify({ url: mediaUrl.value }),
+        })
+        const data = await res.json()
+        if (res.ok) {
+            urlPreview.value = data
+        } else {
+            urlError.value = data.errors?.url?.[0] || data.error || 'Failed to preview URL'
+        }
+    } catch (e) {
+        urlError.value = 'Network error: ' + e.message
+    } finally {
+        previewLoading.value = false
+    }
+}
+
+async function confirmAddUrl() {
     if (!mediaUrl.value) return
     addingUrl.value = true
     urlError.value = ''
@@ -1380,17 +1440,14 @@ async function addMediaUrl() {
         const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
         const res = await fetch(route('channels.playout.url', props.channel.id), {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
-            },
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '' },
             body: JSON.stringify({ url: mediaUrl.value }),
         })
         const data = await res.json()
         if (res.ok) {
             urlSuccess.value = data.message || 'URL added!'
             mediaUrl.value = ''
+            urlPreview.value = null
             router.reload({ only: ['items', 'summary', 'downloadStatuses'] })
             setTimeout(() => urlSuccess.value = '', 4000)
         } else {

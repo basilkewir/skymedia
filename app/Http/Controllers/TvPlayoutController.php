@@ -310,6 +310,55 @@ class TvPlayoutController extends Controller
     }
 
     /**
+    /**
+     * Preview a URL before adding — returns title, duration, thumbnail.
+     */
+    public function previewUrl(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $request->validate(['url' => 'required|string|max:8000']);
+        $url = trim($request->input('url'));
+
+        // YouTube
+        $videoId = YouTubeMetadataService::extractVideoId($url);
+        if ($videoId !== null) {
+            try {
+                $meta = app(YouTubeMetadataService::class)->getVideoDetails($videoId);
+                return response()->json([
+                    'type'      => 'youtube',
+                    'title'     => $meta['title'] ?? $videoId,
+                    'duration'  => $meta['duration'] ?? 0,
+                    'thumbnail' => $meta['thumbnail'] ?? "https://img.youtube.com/vi/{$videoId}/hqdefault.jpg",
+                    'playable'  => true,
+                ]);
+            } catch (\Throwable) {
+                // No API key or API failed — return basic info from video ID
+                return response()->json([
+                    'type'      => 'youtube',
+                    'title'     => $videoId,
+                    'duration'  => 0,
+                    'thumbnail' => "https://img.youtube.com/vi/{$videoId}/hqdefault.jpg",
+                    'playable'  => true,
+                ]);
+            }
+        }
+
+        // Direct URL — probe with ffprobe
+        $duration = $this->probeDuration($url);
+        $title    = $request->input('title') ?: basename(parse_url($url, PHP_URL_PATH) ?: $url);
+
+        return response()->json([
+            'type'      => 'url',
+            'title'     => $title,
+            'duration'  => $duration,
+            'thumbnail' => null,
+            'playable'  => $duration > 0,
+        ]);
+    }
+
+    /**
      * Add a URL-based video (HLS .m3u8, direct .mp4, googlevideo stream, etc.) to the playlist.
      */
     public function addUrl(Request $request, Channel $channel): JsonResponse

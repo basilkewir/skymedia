@@ -69,6 +69,7 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('channels/{channel}/playout/items', [TvPlayoutController::class, 'addItem'])->name('channels.playout.items.store');
     Route::post('channels/{channel}/playout/youtube', [TvPlayoutController::class, 'addYouTube'])->name('channels.playout.youtube');
     Route::post('channels/{channel}/playout/url', [TvPlayoutController::class, 'addUrl'])->name('channels.playout.url');
+    Route::post('channels/{channel}/playout/preview-url', [TvPlayoutController::class, 'previewUrl'])->name('channels.playout.preview-url');
     Route::delete('channels/{channel}/playout/items/{item}', [TvPlayoutController::class, 'destroyItem'])->name('channels.playout.items.destroy');
     Route::put('channels/{channel}/playout/items/{item}/title', [TvPlayoutController::class, 'updateItemTitle'])->name('channels.playout.items.title');
     Route::post('channels/{channel}/playout/items/{item}/download-youtube', [TvPlayoutController::class, 'downloadYouTube'])->name('channels.playout.items.download-youtube');
