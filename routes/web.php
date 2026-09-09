@@ -90,6 +90,7 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('channels/{channel}/playout/lowerthird', [TvPlayoutController::class, 'updateLowerthirdSettings'])->name('channels.playout.lowerthird');
     Route::post('channels/{channel}/playout/ticker-items', [TvPlayoutController::class, 'updateTickerItems'])->name('channels.playout.ticker-items');
     Route::post('channels/{channel}/playout/ticker-upload', [TvPlayoutController::class, 'uploadTickerFile'])->name('channels.playout.ticker-upload');
+    Route::get('channels/{channel}/playout/fetch-news', [TvPlayoutController::class, 'fetchRssNews'])->name('channels.playout.fetch-news');
     Route::post('channels/{channel}/playout/items/{item}/stream-url', [TvPlayoutController::class, 'setStreamUrl'])->name('channels.playout.items.stream-url');
     Route::get('channels/{channel}/playout/download-status', [TvPlayoutController::class, 'downloadStatus'])->name('channels.playout.download-status');
     Route::post('channels/{channel}/playout/items/{item}/trigger-download', [TvPlayoutController::class, 'triggerDownload'])->name('channels.playout.items.trigger-download');

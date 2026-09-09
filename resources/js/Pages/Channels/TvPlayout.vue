@@ -477,8 +477,8 @@
                             <div class="flex gap-2">
                                 <input v-model="tickerLabel" type="text" placeholder="BREAKING NEWS"
                                        class="flex-1 form-input text-xs" maxlength="200" />
-                                <input v-model="tickerLabelColor" type="color" class="w-8 h-8 rounded cursor-pointer border border-slate-600" title="Label text color" />
-                                <input v-model="tickerLabelBg" type="color" class="w-8 h-8 rounded cursor-pointer border border-slate-600" title="Label background color" />
+                                <input v-model="tickerLabelColor" type="color" class="w-8 h-8 rounded cursor-pointer border border-slate-600" title="Label text color" @change="saveTickerItems" />
+                                <input v-model="tickerLabelBg" type="color" class="w-8 h-8 rounded cursor-pointer border border-slate-600" title="Label background color" @change="saveTickerItems" />
                             </div>
                         </div>
 
@@ -487,6 +487,10 @@
                             <div class="flex items-center justify-between">
                                 <label class="text-xs text-slate-500">Ticker items <span class="text-slate-600">(each scrolls as one line, joined by •)</span></label>
                                 <div class="flex gap-1.5">
+                                    <button @click="fetchNews" type="button" :disabled="fetchingNews"
+                                            class="px-2 py-1 text-[10px] bg-green-700/30 text-green-400 border border-green-600/30 rounded hover:bg-green-700/50 transition-colors disabled:opacity-50" title="Fetch live Cameroon/Africa news">
+                                        {{ fetchingNews ? '…' : '🌍 News' }}
+                                    </button>
                                     <button @click="downloadSampleCsv" type="button"
                                             class="px-2 py-1 text-[10px] bg-slate-700/50 text-slate-400 border border-slate-700 rounded hover:bg-slate-700 transition-colors" title="Download sample CSV">
                                         ↓ Sample
@@ -1267,6 +1271,7 @@ const tickerItems = ref((props.channel.ticker_items ?? []).map(i => ({ text: i.t
 const tickerLabel = ref(props.channel.ticker_label ?? '')
 const tickerLabelColor = ref(props.channel.ticker_label_color ?? '#ff0000')
 const tickerLabelBg = ref(props.channel.ticker_label_bg ?? '#ffffff')
+const fetchingNews = ref(false)
 
 function addTickerItem() {
     tickerItems.value.push({ text: '', color: '#ffffff', bg_color: '#000000' })
@@ -1347,6 +1352,46 @@ async function saveTickerItems() {
         }
     } catch (err) {
         tickerMessage.value = 'Error: ' + err.message
+    }
+}
+
+async function fetchNews() {
+    fetchingNews.value = true
+    tickerMessage.value = 'Fetching news…'
+    try {
+        const csrfToken = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.playout.fetch-news', props.channel.id), {
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '' },
+        })
+        const data = await res.json()
+        if (data.success) {
+            // Prepend fetched items, keeping any existing manual items
+            const fetched = data.items.map(item => ({
+                text: `[${item.label}] ${item.text}`,
+                color: item.color,
+                bg_color: item.bg_color ?? '#000000',
+            }))
+            tickerItems.value = [...fetched, ...tickerItems.value.filter(i => i.text.trim())]
+            // Auto-set label + ticker style to Cameroon palette
+            if (data.label_colors?.CAMEROON) {
+                tickerLabelBg.value = data.label_colors.CAMEROON.bg   // #007a5e green
+                tickerLabelColor.value = data.label_colors.CAMEROON.fg // #ffffff
+            }
+            // Apply Cameroon-palette ticker style: dark green bg, yellow text
+            tickerBgColor.value = '#003d2e'
+            tickerFontColor.value = '#fcd116'
+            await saveTickerSettings()
+            tickerMessage.value = `Fetched ${data.count} headlines — review and push to air`
+            setTimeout(() => tickerMessage.value = '', 6000)
+        } else {
+            tickerMessage.value = data.error || 'Fetch failed'
+            setTimeout(() => tickerMessage.value = '', 4000)
+        }
+    } catch (err) {
+        tickerMessage.value = 'Fetch error: ' + err.message
+        setTimeout(() => tickerMessage.value = '', 4000)
+    } finally {
+        fetchingNews.value = false
     }
 }
 

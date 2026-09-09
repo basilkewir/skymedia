@@ -11,6 +11,7 @@ use App\Services\TvPlayoutEngine;
 use App\Services\YouTubeMetadataService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Process;
 use Inertia\Inertia;
@@ -1270,6 +1271,80 @@ class TvPlayoutController extends Controller
         } catch (\Throwable $e) {
             return response()->json(['playable' => false, 'error' => $e->getMessage()]);
         }
+    }
+
+    /**
+     * Fetch live news headlines from RSS feeds (Cameroon / Africa focus).
+     * Returns ticker items with category-coded colors ready to push to air.
+     */
+    public function fetchRssNews(Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        // Cameroon / Africa RSS sources — ordered by reliability
+        $feeds = [
+            ['url' => 'https://www.cameroon-tribune.cm/rss.xml',          'label' => 'CAMEROON'],
+            ['url' => 'https://www.journalducameroun.com/feed/',           'label' => 'CAMEROON'],
+            ['url' => 'https://www.crtv.cm/feed/',                        'label' => 'CAMEROON'],
+            ['url' => 'https://www.bbc.co.uk/africa/index.xml',           'label' => 'AFRICA'],
+            ['url' => 'https://feeds.bbci.co.uk/news/world/africa/rss.xml', 'label' => 'AFRICA'],
+            ['url' => 'https://allafrica.com/tools/headlines/rdf/cameroon/headlines.rdf', 'label' => 'CAMEROON'],
+            ['url' => 'https://allafrica.com/tools/headlines/rdf/africa/headlines.rdf',   'label' => 'AFRICA'],
+        ];
+
+        // Color scheme: Cameroon flag (green/red/yellow) + category tints
+        $labelColors = [
+            'CAMEROON' => ['bg' => '#007a5e', 'fg' => '#ffffff'],  // Cameroon green
+            'AFRICA'   => ['bg' => '#cc0000', 'fg' => '#ffffff'],  // Red
+        ];
+        // Per-item text colors cycling through Cameroon palette
+        $textColors = ['#ffffff', '#fcd116', '#ffffff', '#a8e6cf', '#ffffff', '#fcd116'];
+
+        $items = [];
+        $seen  = [];
+
+        foreach ($feeds as $feed) {
+            if (count($items) >= 20) break;
+            try {
+                $response = Http::timeout(6)->withHeaders(['User-Agent' => 'SkyMedia/1.0'])->get($feed['url']);
+                if (! $response->successful()) continue;
+
+                $xml = @simplexml_load_string($response->body(), 'SimpleXMLElement', LIBXML_NOCDATA);
+                if ($xml === false) continue;
+
+                // Support both RSS 2.0 (<channel><item>) and RDF (<item>)
+                $xmlItems = $xml->channel->item ?? $xml->item ?? [];
+
+                foreach ($xmlItems as $entry) {
+                    if (count($items) >= 20) break;
+                    $title = trim(strip_tags((string) ($entry->title ?? '')));
+                    if ($title === '' || isset($seen[$title])) continue;
+                    $seen[$title] = true;
+
+                    $colorIdx = count($items) % count($textColors);
+                    $items[] = [
+                        'text'     => $title,
+                        'color'    => $textColors[$colorIdx],
+                        'bg_color' => null,  // use channel default bg
+                        'label'    => $feed['label'],
+                    ];
+                }
+            } catch (\Throwable) {
+                continue;
+            }
+        }
+
+        if (empty($items)) {
+            return response()->json(['success' => false, 'error' => 'Could not fetch news — all feeds unavailable'], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'items'   => $items,
+            'count'   => count($items),
+            'label_colors' => $labelColors,
+        ]);
     }
 
     private function ensureAccess(Channel $channel): void
