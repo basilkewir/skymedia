@@ -486,10 +486,10 @@
                         <div class="space-y-1.5 mb-3">
                             <div class="flex items-center justify-between">
                                 <label class="text-xs text-slate-500">Ticker items <span class="text-slate-600">(each scrolls as one line, joined by •)</span></label>
-                                <div class="flex gap-1.5">
+                                <div class="flex gap-1.5 flex-wrap justify-end">
                                     <button @click="fetchNews" type="button" :disabled="fetchingNews"
-                                            class="px-2 py-1 text-[10px] bg-green-700/30 text-green-400 border border-green-600/30 rounded hover:bg-green-700/50 transition-colors disabled:opacity-50" title="Fetch live Cameroon/Africa news">
-                                        {{ fetchingNews ? '…' : '🌍 News' }}
+                                            class="px-2 py-1 text-[10px] bg-green-600/20 text-green-300 border border-green-500/40 rounded hover:bg-green-600/40 transition-colors disabled:opacity-50 font-semibold" title="Fetch live Cameroon/Africa news">
+                                        {{ fetchingNews ? 'Fetching…' : '🌍 Fetch News' }}
                                     </button>
                                     <button @click="downloadSampleCsv" type="button"
                                             class="px-2 py-1 text-[10px] bg-slate-700/50 text-slate-400 border border-slate-700 rounded hover:bg-slate-700 transition-colors" title="Download sample CSV">
