@@ -866,12 +866,8 @@ class TvPlayoutEngine
             return $this->muxVideoAudio($videoId, $videoUrl, $audioUrl, $muxedTs, (float) $item->duration);
         }
 
-        // 4. Fallback: background download
-        if (! file_exists($lockFile)) {
-            Log::info("[TvPlayout] YouTube {$videoId}: stream URL extraction failed, starting background download");
-            $this->startBackgroundDownload($videoId, $item);
-        }
-
+        // 4. Stream URL extraction failed — log and return null (slate plays)
+        Log::warning("[TvPlayout] YouTube {$videoId}: stream URL extraction failed");
         return null;
     }
 
@@ -882,42 +878,47 @@ class TvPlayoutEngine
      */
     private function muxVideoAudio(string $videoId, string $videoUrl, string $audioUrl, string $outputTs, float $duration): ?string
     {
-        // Return cached mux if still fresh (re-mux when video URL expires)
+        // Return cached mux if still fresh
         if (file_exists($outputTs) && filesize($outputTs) > 1_048_576) {
             $age = time() - filemtime($outputTs);
-            if ($age < 18000) { // 5 hours
+            if ($age < 18000) {
                 return $outputTs;
             }
             @unlink($outputTs);
         }
 
-        Log::info("[TvPlayout] YouTube {$videoId}: muxing video+audio streams into {$outputTs}");
-
-        $ffmpeg = $this->ffmpeg->getBin();
-        $cmd = [
-            $ffmpeg, '-y', '-loglevel', 'error',
-            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
-            '-i', $videoUrl,
-            '-i', $audioUrl,
-            '-c', 'copy',
-            '-map', '0:v:0',
-            '-map', '1:a:0',
-            '-f', 'mpegts',
-            $outputTs,
-        ];
-
-        $proc = new \Symfony\Component\Process\Process($cmd);
-        $proc->setTimeout(max(60, (int) ($duration * 1.5) + 60));
-        $proc->run();
-
-        if ($proc->isSuccessful() && file_exists($outputTs) && filesize($outputTs) > 1_048_576) {
-            Log::info("[TvPlayout] YouTube {$videoId}: mux complete → {$outputTs}");
-            return $outputTs;
+        $lockFile = $outputTs . '.muxing';
+        if (file_exists($lockFile) && time() - filemtime($lockFile) < 7200) {
+            return null; // already muxing in background
         }
 
-        Log::error("[TvPlayout] YouTube {$videoId}: mux failed — " . $proc->getErrorOutput());
-        @unlink($outputTs);
-        return null;
+        Log::info("[TvPlayout] YouTube {$videoId}: muxing in background → {$outputTs}");
+        touch($lockFile);
+
+        $ffmpeg  = $this->ffmpeg->getBin();
+        $artisan = base_path('artisan');
+        $channelId = $this->getChannelIdForVideoId($videoId);
+
+        $cmd = $ffmpeg
+            . ' -y -loglevel error'
+            . ' -protocol_whitelist file,http,https,tcp,tls,crypto'
+            . ' -i ' . escapeshellarg($videoUrl)
+            . ' -i ' . escapeshellarg($audioUrl)
+            . ' -c copy -map 0:v:0 -map 1:a:0 -f mpegts '
+            . escapeshellarg($outputTs)
+            . ' && rm -f ' . escapeshellarg($lockFile)
+            . ($channelId ? ' && php ' . escapeshellarg($artisan) . ' tv:rebuild-concat ' . escapeshellarg((string) $channelId) : '')
+            . ' || rm -f ' . escapeshellarg($lockFile);
+
+        shell_exec('setsid sh -c ' . escapeshellarg($cmd) . ' </dev/null >/dev/null 2>&1 &');
+
+        return null; // slate plays while muxing
+    }
+
+    private function getChannelIdForVideoId(string $videoId): ?int
+    {
+        $item = PlaylistItem::where('filepath', 'youtube:' . $videoId)->first();
+        return $item?->channel_id;
     }
 
     /**
