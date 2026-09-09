@@ -643,12 +643,9 @@ class TvPlayoutEngine
         }
 
         if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
-            // HLS streams never end — the concat demuxer would loop the first one forever.
-            // Pre-transcode to a local .ts file so ffmpeg can seek/advance normally.
-            if (str_contains($path, '.m3u8') || str_contains($path, '/hls')) {
-                return $this->resolveHlsItem($item);
-            }
-            return $path;
+            // HLS and direct file URLs both need to be pre-transcoded to a local .ts
+            // so the concat demuxer can loop/seek them correctly.
+            return $this->resolveHlsItem($item);
         }
 
         if (file_exists($path) && filesize($path) > 1024) {
@@ -670,9 +667,10 @@ class TvPlayoutEngine
             mkdir($cacheDir, 0755, true);
         }
 
-        $hash    = md5($item->filepath);
-        $tsFile  = "{$cacheDir}/{$hash}.ts";
+        $hash     = md5($item->filepath);
+        $tsFile   = "{$cacheDir}/{$hash}.ts";
         $lockFile = "{$cacheDir}/{$hash}.transcoding";
+        $isHls    = str_contains($item->filepath, '.m3u8') || str_contains($item->filepath, '/hls');
 
         // Return cached file if fresh (< 5 hours old)
         if (file_exists($tsFile) && filesize($tsFile) > 1_048_576) {
@@ -688,8 +686,8 @@ class TvPlayoutEngine
         }
 
         $duration = (float) $item->duration;
-        if ($duration <= 0) {
-            // Try to probe duration from the URL
+        if ($duration <= 0 && $isHls) {
+            // Probe duration for HLS streams
             $ffprobe = trim((string) shell_exec('which ffprobe 2>/dev/null')) ?: 'ffprobe';
             $out = [];
             exec($ffprobe . ' -v quiet -protocol_whitelist file,http,https,tcp,tls,crypto -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ' . escapeshellarg($item->filepath) . ' 2>/dev/null', $out);
@@ -701,20 +699,26 @@ class TvPlayoutEngine
             }
         }
 
-        Log::info("[TvPlayout] HLS item {$item->id}: transcoding to {$tsFile}");
+        Log::info("[TvPlayout] URL item {$item->id}: transcoding to {$tsFile}");
         touch($lockFile);
 
         $ffmpeg  = $this->ffmpeg->getBin();
         $artisan = base_path('artisan');
         $channelId = $item->channel_id;
 
-        // Run in background — channel plays slate until ready, then rebuilds
+        // HLS: copy streams with duration limit. Direct files: re-encode to ensure TS compatibility.
+        if ($isHls) {
+            $codecArgs = ' -t ' . number_format($duration, 3, '.', '') . ' -c copy';
+        } else {
+            $codecArgs = ' -c:v libx264 -preset veryfast -crf 23 -c:a aac -b:a 128k -ac 2 -ar 48000';
+        }
+
         $cmd = $ffmpeg
             . ' -y -loglevel error'
             . ' -protocol_whitelist file,http,https,tcp,tls,crypto'
             . ' -i ' . escapeshellarg($item->filepath)
-            . ' -t ' . number_format($duration, 3, '.', '')
-            . ' -c copy -f mpegts '
+            . $codecArgs
+            . ' -f mpegts '
             . escapeshellarg($tsFile)
             . ' && rm -f ' . escapeshellarg($lockFile)
             . ' && php ' . escapeshellarg($artisan) . ' tv:rebuild-concat ' . escapeshellarg((string) $channelId)
