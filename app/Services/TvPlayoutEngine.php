@@ -1617,8 +1617,9 @@ class TvPlayoutEngine
             $text = trim((string) $channel->ticker_text);
         }
         // FFmpeg drawtext processes % as a format specifier even in textfile= mode.
-        // Replace % with the unicode fullwidth percent sign which renders identically on screen.
-        $text = str_replace('%', '\u{FF05}', $text ?: ' ');
+        // Replace % with the unicode fullwidth percent sign (U+FF05) which renders
+        // identically on screen but is not treated as a format specifier by ffmpeg.
+        $text = str_replace('%', '％', $text ?: ' ');
         file_put_contents($this->tickerFilePath($channel), $text);
     }
 
