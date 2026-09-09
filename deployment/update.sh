@@ -164,15 +164,30 @@ ok "Permissions set"
 
 # ── 8. Restart services ───────────────────────────────────────────────────────
 step "8 / 8  Restart services"
-systemctl enable supervisor --quiet 2>/dev/null || true
-systemctl start supervisor --quiet 2>/dev/null || true
 cp "${APP_DIR}/deployment/supervisord.conf" /etc/supervisor/conf.d/skymedia.conf
-supervisorctl reread >/dev/null 2>&1 || true
-supervisorctl update >/dev/null 2>&1 || true
 
-for svc in skymedia-monitor skymedia-scheduler skymedia-queue; do
-    supervisorctl start "${svc}" 2>/dev/null || supervisorctl restart "${svc}" || true
+# Ensure supervisor is running — try systemctl first, fall back to direct start
+systemctl enable supervisor --quiet 2>/dev/null || true
+if ! systemctl is-active --quiet supervisor 2>/dev/null; then
+    systemctl start supervisor 2>/dev/null || supervisord -c /etc/supervisor/supervisord.conf 2>/dev/null || true
+fi
+
+# Wait up to 10s for the socket to appear
+for i in $(seq 1 10); do
+    [[ -S /var/run/supervisor.sock ]] && break
+    sleep 1
 done
+
+if [[ -S /var/run/supervisor.sock ]]; then
+    supervisorctl reread >/dev/null 2>&1 || true
+    supervisorctl update >/dev/null 2>&1 || true
+    for svc in skymedia-monitor skymedia-scheduler skymedia-queue; do
+        supervisorctl start "${svc}" 2>/dev/null || supervisorctl restart "${svc}" 2>/dev/null || true
+    done
+    ok "Supervisor services started"
+else
+    warn "Supervisor socket not found — services may not be running. Check: systemctl status supervisor"
+fi
 
 nginx -t && systemctl reload nginx
 ok "Nginx reloaded"
