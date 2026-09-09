@@ -61,6 +61,10 @@
                             {{ isRunning ? 'Streaming' : 'Stopped' }}
                         </div>
                     </div>
+                    <div v-if="isRunning && nowPlayingTitle" class="bg-slate-800/60 rounded-lg px-4 py-3 col-span-2 sm:col-span-3">
+                        <div class="text-xs text-slate-500 uppercase tracking-wider">Now Playing</div>
+                        <div class="text-sm font-mono text-yellow-300 font-bold mt-1 truncate" :title="nowPlayingTitle">▶ {{ nowPlayingTitle }}</div>
+                    </div>
                     <div class="bg-slate-800/60 rounded-lg px-4 py-3">
                         <div class="text-xs text-slate-500 uppercase tracking-wider">Starts At</div>
                         <div class="text-lg font-mono text-amber-400 font-bold mt-1">{{ formatTime(summary.anchor_start) }}</div>
@@ -1194,6 +1198,7 @@ const customStartTime = ref('')
 const recalculating = ref(false)
 const recalcMessage = ref('')
 const recalcError = ref('')
+const nowPlayingTitle = ref('')
 let hlsPlayer = null
 let statusTimer = null
 
@@ -1384,13 +1389,14 @@ async function fetchNews() {
         })
         const data = await res.json()
         if (data.success) {
-            // Prepend fetched items, keeping any existing manual items
             const fetched = data.items.map(item => ({
                 text: `[${item.label}] ${item.text}`,
                 color: item.color,
                 bg_color: item.bg_color ?? '#000000',
             }))
-            tickerItems.value = [...fetched, ...tickerItems.value.filter(i => i.text.trim())]
+            // Remove any previously fetched news items (they start with [LABEL]) before prepending fresh ones
+            const manual = tickerItems.value.filter(i => i.text.trim() && !i.text.match(/^\[[A-Z]+\]/));
+            tickerItems.value = [...fetched, ...manual]
             // Auto-set label + ticker style to Cameroon palette
             if (data.label_colors?.CAMEROON) {
                 tickerLabelBg.value = data.label_colors.CAMEROON.bg   // #007a5e green
@@ -1794,6 +1800,8 @@ async function pollStatus() {
         const data = await res.json()
         isRunning.value = data.is_running
         if (data.push_running !== undefined) pushRunning.value = data.push_running
+        if (data.current_item?.title) nowPlayingTitle.value = data.current_item.title
+        else if (!data.is_running) nowPlayingTitle.value = ''
     } catch {}
 }
 

@@ -118,19 +118,37 @@ class TvPlayoutController extends Controller
         abort_unless($channel->source_type === 'tv_playout', 404);
         $this->ensureAccess($channel);
 
-        $item = $channel->playlistItems()
+        $fresh = $channel->fresh();
+        $items = $channel->playlistItems()
             ->where('is_active', true)
             ->orderBy('sort_order')
-            ->first();
+            ->get();
+
+        // Compute the currently playing item using the same wall-clock offset logic as writeMetaFile
+        $item = null;
+        $totalDuration = $items->sum('duration');
+        if ($totalDuration > 0 && $fresh->last_live_at) {
+            $elapsed = (float) $fresh->last_live_at->diffInSeconds(now(), true);
+            $offset  = fmod($elapsed, $totalDuration);
+            $cursor  = 0.0;
+            foreach ($items as $candidate) {
+                $dur = (float) $candidate->duration;
+                if ($dur <= 0) continue;
+                if ($offset < $cursor + $dur) { $item = $candidate; break; }
+                $cursor += $dur;
+            }
+        }
+        $item = $item ?? $items->first();
 
         return response()->json([
-            'is_running' => $this->engine->isRunning($channel),
-            'playout_status' => $channel->fresh()->playout_status,
-            'playout_pid' => $channel->fresh()->playout_pid,
-            'push_status' => $channel->fresh()->push_status,
-            'push_running' => $this->engine->isPushRunning($channel),
-            'current_item' => $item ? [
-                'title' => $item->title,
+            'is_running'     => $this->engine->isRunning($channel),
+            'playout_status' => $fresh->playout_status,
+            'playout_pid'    => $fresh->playout_pid,
+            'push_status'    => $fresh->push_status,
+            'push_running'   => $this->engine->isPushRunning($channel),
+            'current_item'   => $item ? [
+                'id'       => $item->id,
+                'title'    => $item->display_title,
                 'duration' => $item->formatted_duration,
             ] : null,
         ]);
