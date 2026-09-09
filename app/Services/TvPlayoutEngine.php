@@ -1630,29 +1630,48 @@ class TvPlayoutEngine
      */
     public function writeMetaFile(Channel $channel): void
     {
-        $now = now();
-
-        $item = PlaylistItem::where('channel_id', $channel->id)
+        $items = PlaylistItem::where('channel_id', $channel->id)
             ->where('is_active', true)
-            ->where('scheduled_start', '<=', $now)
-            ->where('scheduled_end', '>', $now)
-            ->orderBy('scheduled_start')
-            ->first();
+            ->orderBy('sort_order')
+            ->get();
 
-        if (! $item) {
-            $item = PlaylistItem::where('channel_id', $channel->id)
-                ->where('is_active', true)
-                ->orderBy('sort_order')
-                ->first();
+        $item = null;
+
+        if ($items->isNotEmpty()) {
+            // Compute position in the looping playlist using elapsed wall-clock time
+            // since last_live_at modulo total duration. This stays accurate across
+            // any number of loop cycles, unlike scheduled_start/end which go stale.
+            $totalDuration = $items->sum('duration');
+
+            if ($totalDuration > 0 && $channel->last_live_at) {
+                $elapsed = (float) $channel->last_live_at->diffInSeconds(now(), true);
+                $offset  = fmod($elapsed, $totalDuration);
+
+                $cursor = 0.0;
+                foreach ($items as $candidate) {
+                    $dur = (float) $candidate->duration;
+                    if ($dur <= 0) {
+                        continue;
+                    }
+                    if ($offset < $cursor + $dur) {
+                        $item = $candidate;
+                        break;
+                    }
+                    $cursor += $dur;
+                }
+            }
+
+            // Fallback: first item (e.g. duration data missing or channel just started)
+            if (! $item) {
+                $item = $items->first();
+            }
         }
 
         $isClean = $item && ! $item->hasOverlays();
 
-        // When clean group: blank all text overlays so nothing shows on screen
         file_put_contents($this->metaFilePath($channel), $isClean ? ' ' : ($item ? 'NOW PLAYING: ' . $item->display_title : 'NO PLAYLIST ITEMS'));
 
         if ($isClean) {
-            // Blank ticker too so it disappears during clean items
             file_put_contents($this->tickerFilePath($channel), ' ');
         } else {
             $this->writeTickerFile($channel);
