@@ -1064,8 +1064,8 @@ class TvPlayoutController extends Controller
             'label_bg'          => 'nullable|string|max:30',
         ]);
 
-        // Build plain ticker_text from items for backward compat
-        $plain = implode('   •   ', array_column($data['items'], 'text'));
+        // Build plain ticker_text from items for backward compat (truncated — full data is in ticker_items JSON)
+        $plain = mb_substr(implode('   •   ', array_column($data['items'], 'text')), 0, 65535);
 
         $channel->update(array_filter([
             'ticker_items'       => $data['items'],
@@ -1120,7 +1120,7 @@ class TvPlayoutController extends Controller
             return response()->json(['success' => false, 'error' => 'No valid lines found in file'], 422);
         }
 
-        $plain = implode('   •   ', array_column($items, 'text'));
+        $plain = mb_substr(implode('   •   ', array_column($items, 'text')), 0, 65535);
         $channel->update(['ticker_items' => $items, 'ticker_text' => $plain]);
         $this->engine->writeTickerFile($channel->fresh());
 

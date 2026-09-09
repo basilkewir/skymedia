@@ -1536,7 +1536,16 @@ class TvPlayoutEngine
 
         $pid = (int) trim((string) shell_exec($shell));
         if ($pid > 0) {
-            file_put_contents($pidFile, $pid);
+            // Ensure the pids directory and file are writable by the web process
+            $pidsDir = dirname($pidFile);
+            if (! is_dir($pidsDir)) {
+                mkdir($pidsDir, 0775, true);
+            }
+            // If an existing root-owned pid file blocks us, remove it first
+            if (file_exists($pidFile) && ! is_writable($pidFile)) {
+                @unlink($pidFile);
+            }
+            @file_put_contents($pidFile, $pid);
         }
 
         // Seed the file immediately so FFmpeg doesn't start with an empty textfile
