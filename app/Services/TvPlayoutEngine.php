@@ -720,11 +720,14 @@ class TvPlayoutEngine
     }
 
     /**
-     * Resolve a YouTube playlist item to a local cached .mp4 file.
-     * If not yet downloaded, starts a background download and returns the
-     * slate as a placeholder so the channel can start immediately.
-     * Once the download completes the concat is rebuilt automatically.
-     * Cleans up stale .downloading lock files older than 10 minutes.
+     * Resolve a YouTube playlist item to a playable path.
+     *
+     * Priority:
+     *   1. Local downloaded .mp4 (permanent)
+     *   2. Cached stream URL(s) from yt-dlp -g (expires ~6h, re-extracted when stale)
+     *      - Single URL  → returned directly (muxed stream)
+     *      - Two URLs    → pre-muxed into a local .ts file via ffmpeg, path returned
+     *   3. Background download triggered as fallback
      */
     private function resolveYouTubeItem(PlaylistItem $item): ?string
     {
@@ -738,42 +741,58 @@ class TvPlayoutEngine
             mkdir($cacheDir, 0755, true);
         }
 
-        $localFile = "{$cacheDir}/{$videoId}.mp4";
-        $lockFile  = "{$cacheDir}/{$videoId}.downloading";
+        $localFile   = "{$cacheDir}/{$videoId}.mp4";
+        $lockFile    = "{$cacheDir}/{$videoId}.downloading";
+        $urlCacheFile = "{$cacheDir}/{$videoId}.stream_url";
+        $muxedTs     = "{$cacheDir}/{$videoId}_muxed.ts";
 
-        // 1. Check for a completed local .mp4 file
+        // 1. Local downloaded .mp4
         if (file_exists($localFile) && filesize($localFile) > 1_048_576) {
             return $localFile;
         }
 
-        // 2. Check for a cached stream URL (valid for ~5 hours)
-        $urlCacheFile = "{$cacheDir}/{$videoId}.stream_url";
+        // 2. Cached stream URL(s) — check expiry
         if (file_exists($urlCacheFile)) {
-            $cached = file_get_contents($urlCacheFile);
-            if ($cached !== false && strlen($cached) > 10) {
-                $cached = trim($cached);
-                $expiresAt = $this->getStreamUrlExpiry($cached);
+            $cached = trim((string) file_get_contents($urlCacheFile));
+            if (strlen($cached) > 10) {
+                $urls = explode("\n", $cached);
+                $videoUrl = trim($urls[0]);
+                $audioUrl = isset($urls[1]) ? trim($urls[1]) : null;
+
+                // Check expiry of the video URL
+                $expiresAt = $this->getStreamUrlExpiry($videoUrl);
                 $age = time() - filemtime($urlCacheFile);
-                if ($expiresAt !== null) {
-                    if (time() < ($expiresAt - 600)) {
-                        return $cached;
+                $valid = $expiresAt !== null ? time() < ($expiresAt - 600) : $age < 7200;
+
+                if ($valid) {
+                    if ($audioUrl === null) {
+                        return $videoUrl; // muxed single stream
                     }
-                } elseif ($age < 7200) {
-                    return $cached;
+                    // Two separate streams — pre-mux into a .ts file
+                    return $this->muxVideoAudio($videoId, $videoUrl, $audioUrl, $muxedTs, (float) $item->duration);
                 }
             }
+            // Stale — delete and re-extract
+            @unlink($urlCacheFile);
+            @unlink($muxedTs);
         }
 
-        // 3. Try extracting a stream URL (fast, no download)
-        $streamUrl = $this->extractStreamUrl($videoId);
-        if ($streamUrl !== null) {
-            file_put_contents($urlCacheFile, $streamUrl);
-            return $streamUrl;
+        // 3. Extract fresh stream URL(s) from server
+        $result = $this->extractStreamUrl($videoId);
+        if ($result !== null) {
+            file_put_contents($urlCacheFile, $result);
+            $urls = explode("\n", $result);
+            $videoUrl = trim($urls[0]);
+            $audioUrl = isset($urls[1]) ? trim($urls[1]) : null;
+            if ($audioUrl === null) {
+                return $videoUrl;
+            }
+            return $this->muxVideoAudio($videoId, $videoUrl, $audioUrl, $muxedTs, (float) $item->duration);
         }
 
-        // 4. Stream URL extraction failed — trigger background download if not already running
+        // 4. Fallback: background download
         if (! file_exists($lockFile)) {
-            Log::info("[TvPlayout] YouTube {$videoId}: stream URL failed, starting background download");
+            Log::info("[TvPlayout] YouTube {$videoId}: stream URL extraction failed, starting background download");
             $this->startBackgroundDownload($videoId, $item);
         }
 
@@ -781,8 +800,59 @@ class TvPlayoutEngine
     }
 
     /**
-     * Extract a direct streaming URL from YouTube using yt-dlp -g.
-     * Returns the URL string or null on failure.
+     * Pre-mux separate video+audio URLs into a local .ts file using ffmpeg.
+     * This runs synchronously but is fast (no re-encode — copy streams).
+     * Returns the muxed .ts path on success, null on failure.
+     */
+    private function muxVideoAudio(string $videoId, string $videoUrl, string $audioUrl, string $outputTs, float $duration): ?string
+    {
+        // Return cached mux if still fresh (re-mux when video URL expires)
+        if (file_exists($outputTs) && filesize($outputTs) > 1_048_576) {
+            $age = time() - filemtime($outputTs);
+            if ($age < 18000) { // 5 hours
+                return $outputTs;
+            }
+            @unlink($outputTs);
+        }
+
+        Log::info("[TvPlayout] YouTube {$videoId}: muxing video+audio streams into {$outputTs}");
+
+        $ffmpeg = $this->ffmpeg->getBin();
+        $cmd = [
+            $ffmpeg, '-y', '-loglevel', 'error',
+            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+            '-i', $videoUrl,
+            '-i', $audioUrl,
+            '-c', 'copy',
+            '-map', '0:v:0',
+            '-map', '1:a:0',
+            '-f', 'mpegts',
+            $outputTs,
+        ];
+
+        $proc = new \Symfony\Component\Process\Process($cmd);
+        $proc->setTimeout(max(60, (int) ($duration * 1.5) + 60));
+        $proc->run();
+
+        if ($proc->isSuccessful() && file_exists($outputTs) && filesize($outputTs) > 1_048_576) {
+            Log::info("[TvPlayout] YouTube {$videoId}: mux complete → {$outputTs}");
+            return $outputTs;
+        }
+
+        Log::error("[TvPlayout] YouTube {$videoId}: mux failed — " . $proc->getErrorOutput());
+        @unlink($outputTs);
+        return null;
+    }
+
+    /**
+     * Extract direct streaming URL(s) from YouTube using yt-dlp -g.
+     *
+     * YouTube no longer provides muxed (video+audio) streams for most videos.
+     * yt-dlp -g returns two lines when video+audio are separate streams.
+     * We cache the result as "videoUrl" or "videoUrl\naudioUrl" and handle
+     * both cases in buildConcatFile / buildCommand.
+     *
+     * Returns the cache file content string (one or two URLs) or null on failure.
      */
     private function extractStreamUrl(string $videoId): ?string
     {
@@ -793,8 +863,6 @@ class TvPlayoutEngine
 
         $url = "https://www.youtube.com/watch?v={$videoId}";
         $cookieSource = storage_path('app/youtube_cookies_auth.txt');
-
-        // yt-dlp overwrites the cookie file it reads, so use a temp copy
         $cookieCopy = tempnam(sys_get_temp_dir(), 'yt_cookies_');
         if (file_exists($cookieSource) && filesize($cookieSource) > 50) {
             copy($cookieSource, $cookieCopy);
@@ -802,46 +870,36 @@ class TvPlayoutEngine
             $cookieCopy = null;
         }
 
-        $clients = ['web', 'web_safari', 'ios'];
+        // Try muxed first (itag 18 = 360p mp4 with audio), then separate streams
+        $formats = [
+            '18',                                                          // muxed 360p mp4
+            '22',                                                          // muxed 720p mp4
+            'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo+bestaudio',
+        ];
+        $clients = ['tv_embedded', 'web', 'ios'];
         $proxy = app(\App\Services\ProxyService::class)->getWorkingProxy();
 
         try {
-            $formats = ['best[ext=mp4]/best', 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best'];
-
             foreach ($formats as $fmt) {
                 foreach ($clients as $client) {
                     $cmd = [
-                        $ytdlp, '--js-runtimes', 'node', '--no-warnings',
-                        '-g',
-                        '--socket-timeout', '20',
-                        '--retries', '1',
-                        '--format', $fmt,
-                        '--no-playlist',
+                        $ytdlp, '--no-warnings', '-g',
+                        '--socket-timeout', '20', '--retries', '1',
+                        '--format', $fmt, '--no-playlist',
                         '--extractor-args', "youtube:player_client={$client}",
                     ];
-
-                    if ($cookieCopy !== null) {
-                        $cmd[] = '--cookies';
-                        $cmd[] = $cookieCopy;
-                    }
-
-                    if ($proxy) {
-                        $cmd[] = '--proxy';
-                        $cmd[] = $proxy;
-                    }
-
+                    if ($cookieCopy !== null) { $cmd[] = '--cookies'; $cmd[] = $cookieCopy; }
+                    if ($proxy) { $cmd[] = '--proxy'; $cmd[] = $proxy; }
                     $cmd[] = $url;
 
-                    $output = [];
-                    $exitCode = 0;
+                    $output = []; $exitCode = 0;
                     exec(implode(' ', array_map('escapeshellarg', $cmd)) . ' 2>/dev/null', $output, $exitCode);
 
-                    if ($exitCode === 0 && ! empty($output)) {
-                        $streamUrl = trim(end($output));
-                        if (str_starts_with($streamUrl, 'http')) {
-                            Log::info("[TvPlayout] YouTube {$videoId}: extracted stream URL via client={$client} fmt={$fmt}");
-                            return $streamUrl;
-                        }
+                    $lines = array_filter(array_map('trim', $output), fn ($l) => str_starts_with($l, 'http'));
+                    if ($exitCode === 0 && count($lines) >= 1) {
+                        $result = implode("\n", array_values($lines)); // 1 line = muxed, 2 lines = video+audio
+                        Log::info("[TvPlayout] YouTube {$videoId}: extracted " . count($lines) . " URL(s) via client={$client} fmt={$fmt}");
+                        return $result;
                     }
                 }
             }
