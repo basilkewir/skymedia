@@ -82,9 +82,15 @@ class TvPlayoutEngine
         try {
             $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 2);
         } catch (\Throwable $e) {
-            Log::error("[TvPlayout] {$channel->name} failed to start: {$e->getMessage()}");
-            $channel->update(['stream_status' => 'error', 'last_error' => substr($e->getMessage(), 0, 500)]);
-            return false;
+            // For URL-based playlists (HLS VOD), ffmpeg may briefly exit while
+            // buffering the first segment then restart — check if it recovered.
+            $pid = $this->ffmpeg->readPid($pidFile);
+            if ($pid <= 0 || ! $this->ffmpeg->isRunning($pid)) {
+                Log::error("[TvPlayout] {$channel->name} failed to start: {$e->getMessage()}");
+                $channel->update(['stream_status' => 'error', 'last_error' => substr($e->getMessage(), 0, 500)]);
+                return false;
+            }
+            Log::info("[TvPlayout] {$channel->name} started after brief init delay — PID {$pid}");
         }
 
         $channel->update([
