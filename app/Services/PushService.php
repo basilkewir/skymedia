@@ -372,7 +372,7 @@ class PushService
         $logFile = $this->ffmpeg->logFile($channel, $type);
 
         try {
-            return $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 8);
+            return $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 2);
         } catch (\Throwable $e) {
             Log::error("[Push] {$channel->name} {$type} failed: {$e->getMessage()}");
 

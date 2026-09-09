@@ -1169,7 +1169,7 @@ class StreamManager
         $logFile = $this->ffmpeg->logFile($channel, 'hls_relay');
 
         try {
-            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 6);
+            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 2);
             $this->log($channel, 'info', 'hls_relay_started',
                 "HLS relay started — PID {$pid} → {$rtmpUrl}");
             Log::info("[HLS Relay] {$channel->name} started — PID {$pid} → {$rtmpUrl}");
