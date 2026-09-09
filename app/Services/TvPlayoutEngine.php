@@ -577,11 +577,12 @@ class TvPlayoutEngine
             return null;
         }
 
+        /** @var array<array{path: string, duration: float}> $files */
         $files = [];
         foreach ($items as $item) {
             $resolved = $this->resolveFilePath($item);
             if ($resolved !== null) {
-                $files[] = $resolved;
+                $files[] = ['path' => $resolved, 'duration' => (float) $item->duration];
             }
         }
 
@@ -594,23 +595,28 @@ class TvPlayoutEngine
                 } catch (\Throwable) {}
             }
             if (file_exists($slate) && filesize($slate) > 1024) {
-                $files[] = $slate;
+                $files[] = ['path' => $slate, 'duration' => 0.0];
             } else {
                 return null;
             }
         }
 
-        // Local files and URLs — use concat demuxer for all
         $totalDuration = $items->sum('duration');
         $repeat = ($channel->playlist_loop ?? 0) > 0
             ? $channel->playlist_loop
             : ($totalDuration > 0 ? max(10, min((int) ceil(86400 / $totalDuration), 500)) : 50);
 
         $concatPath = $this->concatFilePath($channel);
-        $lines = [];
+
+        // Use ffconcat format (with header + duration) — supports both local files and HTTP URLs.
+        // The concat demuxer requires duration hints for HTTP URLs to seek/loop correctly.
+        $lines = ['ffconcat version 1.0'];
         for ($i = 0; $i < $repeat; $i++) {
-            foreach ($files as $f) {
-                $lines[] = "file '" . str_replace("'", "'\\''", $f) . "'";
+            foreach ($files as $entry) {
+                $lines[] = "file '" . str_replace("'", "'\\''", $entry['path']) . "'";
+                if ($entry['duration'] > 0) {
+                    $lines[] = 'duration ' . number_format($entry['duration'], 3, '.', '');
+                }
             }
         }
 
@@ -1094,6 +1100,8 @@ class TvPlayoutEngine
             '-err_detect', 'ignore_err',
         ];
 
+        // -stream_loop only works for local-file concat lists; URL-based lists
+        // are looped by repeating entries in the ffconcat file itself.
         if (! $hasUrls) {
             $cmd[] = '-stream_loop';
             $cmd[] = '-1';
