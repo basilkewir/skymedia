@@ -690,11 +690,15 @@ class TvPlayoutEngine
         }
 
         if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
-            // HLS (.m3u8) must be pre-transcoded to a local .ts — the concat demuxer
-            // cannot loop/seek an infinite HLS stream.
-            // All other HTTP URLs (MP4, MKV, TS, direct downloads) are passed straight
-            // through to ffmpeg which streams them natively — no pre-download needed.
+            // VOD HLS (.m3u8 with a known finite duration) can be passed directly to
+            // ffmpeg's concat demuxer — it handles them natively.
+            // Only pre-transcode to .ts when the item has no duration (likely a live stream
+            // that never terminates and would block the concat demuxer).
             if (str_contains($path, '.m3u8') || str_contains($path, '/hls')) {
+                // If we have a duration, treat as VOD and pass directly
+                if ((float) $item->duration > 0) {
+                    return $path;
+                }
                 return $this->resolveHlsItem($item);
             }
             return $path;

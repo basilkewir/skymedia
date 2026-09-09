@@ -1303,8 +1303,8 @@ class TvPlayoutController extends Controller
 
         $feedsByLang = [
             'en' => [
-                ['url' => 'https://feeds.bbci.co.uk/news/world/africa/rss.xml',                                    'label' => 'AFRICA'],
                 ['url' => 'https://allafrica.com/tools/headlines/rdf/cameroon/headlines.rdf',                      'label' => 'CAMEROON'],
+                ['url' => 'https://feeds.bbci.co.uk/news/world/africa/rss.xml',                                    'label' => 'AFRICA'],
                 ['url' => 'https://allafrica.com/tools/headlines/rdf/africa/headlines.rdf',                        'label' => 'AFRICA'],
                 ['url' => 'https://www.voanews.com/api/zmpqoiepiq',                                                'label' => 'AFRICA'],
             ],
