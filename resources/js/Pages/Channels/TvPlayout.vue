@@ -820,8 +820,11 @@ const tickerMessage = ref('')
 // Ticker style settings
 const tickerFontSize = ref(props.channel.ticker_font_size ?? 24)
 const tickerSpeed = ref(props.channel.ticker_speed ?? 80)
-const tickerFontColor = ref(props.channel.ticker_font_color ?? 'white')
-const tickerBgColor = ref(props.channel.ticker_bg_color ?? '#000000')
+const namedColors = { white: '#ffffff', black: '#000000', red: '#ff0000', green: '#008000', blue: '#0000ff', yellow: '#ffff00', cyan: '#00ffff', magenta: '#ff00ff', gray: '#808080', grey: '#808080' }
+const toHex = (c) => (c && !c.startsWith('#') ? (namedColors[c.toLowerCase()] ?? '#ffffff') : (c || '#ffffff'))
+
+const tickerFontColor = ref(toHex(props.channel.ticker_font_color))
+const tickerBgColor = ref(toHex(props.channel.ticker_bg_color) ?? '#000000')
 const tickerBgOpacity = ref(props.channel.ticker_bg_opacity ?? 65)
 const tickerPosition = ref(props.channel.ticker_position ?? 'bottom')
 const tickerPositions = [
@@ -844,7 +847,7 @@ const resolutions = [
 // Clock settings
 const clockPosition = ref(props.channel.clock_position || 'top-left')
 const clockFontsize = ref(props.channel.clock_fontsize || 28)
-const clockColor = ref(props.channel.clock_color || 'white')
+const clockColor = ref(toHex(props.channel.clock_color))
 const clockEnabled = ref(props.channel.clock_enabled !== false)
 const clockFormat = ref(props.channel.clock_format || '%H\:%M\:%S')
 const clockMessage = ref('')
@@ -965,8 +968,8 @@ function applyClockPreset(key) {
 // Lowerthird / NOW PLAYING settings
 const lowerthirdPosition = ref(props.channel.lowerthird_position ?? 'bottom-left')
 const lowerthirdFontsize = ref(props.channel.lowerthird_fontsize ?? 20)
-const lowerthirdFontColor = ref(props.channel.lowerthird_font_color ?? '#ffffff')
-const lowerthirdBgColor = ref(props.channel.lowerthird_bg_color ?? '#334155')
+const lowerthirdFontColor = ref(toHex(props.channel.lowerthird_font_color) ?? '#ffffff')
+const lowerthirdBgColor = ref(toHex(props.channel.lowerthird_bg_color) ?? '#334155')
 const lowerthirdBgOpacity = ref(props.channel.lowerthird_bg_opacity ?? 80)
 const lowerthirdEnabled = ref(props.channel.lowerthird_enabled !== false)
 const lowerthirdMessage = ref('')
