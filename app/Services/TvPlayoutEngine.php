@@ -709,7 +709,7 @@ class TvPlayoutEngine
         $channelId = $item->channel_id;
 
         // Run in background — channel plays slate until ready, then rebuilds
-        $cmd = escapeshellarg($ffmpeg)
+        $cmd = $ffmpeg
             . ' -y -loglevel error'
             . ' -protocol_whitelist file,http,https,tcp,tls,crypto'
             . ' -i ' . escapeshellarg($item->filepath)
@@ -720,7 +720,7 @@ class TvPlayoutEngine
             . ' && php ' . escapeshellarg($artisan) . ' tv:rebuild-concat ' . escapeshellarg((string) $channelId)
             . ' || rm -f ' . escapeshellarg($lockFile);
 
-        shell_exec("setsid sh -c {$cmd} </dev/null >/dev/null 2>&1 &");
+        shell_exec('setsid sh -c ' . escapeshellarg($cmd) . ' </dev/null >/dev/null 2>&1 &');
 
         return null; // slate plays while transcoding
     }
