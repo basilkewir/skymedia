@@ -609,7 +609,21 @@ class TvPlayoutEngine
         foreach ($items as $item) {
             $resolved = $this->resolveFilePath($item);
             if ($resolved !== null) {
-                $files[] = ['path' => $resolved, 'duration' => (float) $item->duration];
+                $duration = (float) $item->duration;
+                // HTTP URL items with no duration in DB — probe now and persist so
+                // the concat file gets a correct duration hint (required for advancement).
+                if ($duration <= 0 && (str_starts_with($resolved, 'http://') || str_starts_with($resolved, 'https://'))) {
+                    $ffprobe = trim((string) shell_exec('which ffprobe 2>/dev/null')) ?: 'ffprobe';
+                    $out = [];
+                    exec($ffprobe . ' -v quiet -protocol_whitelist file,http,https,tcp,tls,crypto -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ' . escapeshellarg(str_replace(['[', ']'], ['%5B', '%5D'], $resolved)) . ' 2>/dev/null', $out);
+                    $probed = (float) trim(implode('', $out));
+                    if ($probed > 0) {
+                        $item->update(['duration' => $probed]);
+                        $duration = $probed;
+                        Log::info("[TvPlayout] Probed duration for item {$item->id}: {$probed}s");
+                    }
+                }
+                $files[] = ['path' => $resolved, 'duration' => $duration];
             }
         }
 

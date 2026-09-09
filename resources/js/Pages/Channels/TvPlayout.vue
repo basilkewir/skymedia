@@ -545,14 +545,14 @@
                                 <div>
                                     <label class="text-xs text-slate-500 mb-1 block">Font Color</label>
                                     <div class="flex items-center gap-2">
-                                        <input v-model="tickerFontColor" type="color" class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
+                                        <input v-model="tickerFontColor" type="color" class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" @change="saveTickerSettings()" />
                                         <input v-model="tickerFontColor" type="text" class="flex-1 form-input text-xs font-mono" @change="saveTickerSettings()" />
                                     </div>
                                 </div>
                                 <div>
                                     <label class="text-xs text-slate-500 mb-1 block">Background</label>
                                     <div class="flex items-center gap-2">
-                                        <input v-model="tickerBgColor" type="color" class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
+                                        <input v-model="tickerBgColor" type="color" class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" @change="saveTickerSettings()" />
                                         <input v-model="tickerBgColor" type="text" class="flex-1 form-input text-xs font-mono" @change="saveTickerSettings()" />
                                     </div>
                                 </div>
@@ -773,14 +773,14 @@
                                 <div>
                                     <label class="text-xs text-slate-500 mb-1 block">Font Color</label>
                                     <div class="flex items-center gap-2">
-                                        <input v-model="lowerthirdFontColor" type="color" class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
+                                        <input v-model="lowerthirdFontColor" type="color" class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" @change="saveLowerthirdSettings()" />
                                         <input v-model="lowerthirdFontColor" type="text" class="flex-1 form-input text-xs font-mono" @change="saveLowerthirdSettings()" />
                                     </div>
                                 </div>
                                 <div>
                                     <label class="text-xs text-slate-500 mb-1 block">Background</label>
                                     <div class="flex items-center gap-2">
-                                        <input v-model="lowerthirdBgColor" type="color" class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" />
+                                        <input v-model="lowerthirdBgColor" type="color" class="w-8 h-8 rounded cursor-pointer bg-transparent border border-slate-600" @change="saveLowerthirdSettings()" />
                                         <input v-model="lowerthirdBgColor" type="text" class="flex-1 form-input text-xs font-mono" @change="saveLowerthirdSettings()" />
                                     </div>
                                 </div>
