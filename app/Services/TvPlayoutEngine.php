@@ -1334,13 +1334,21 @@ class TvPlayoutEngine
             }
             $ffBgColor = '0x' . strtoupper($bgHex);
 
+            $tickerBarH = $tickerFontSize + ($tickerBorderW * 2);
             $tickerY = match ($tickerPos) {
                 'top'    => (string) $tickerMargin,
                 'center' => '(h-line_h)/2',
-                default  => "h-line_h-{$tickerMargin}",
+                default  => "h-{$tickerBarH}-{$tickerMargin}",
+            };
+            $tickerBoxY = match ($tickerPos) {
+                'top'    => (string) $tickerMargin,
+                'center' => "(h-{$tickerBarH})/2",
+                default  => "h-{$tickerBarH}-{$tickerMargin}",
             };
 
-            $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedTickerFile}':reload=1:y={$tickerY}:x=w-mod(max(t*{$tickerSpeed}\\,0)\\,w+tw):fontcolor={$tickerFontColor}:fontsize={$tickerFontSize}:box=1:boxcolor={$ffBgColor}@{$tickerBgOpacityFp}:boxborderw={$tickerBorderW}[with_ticker]";
+            // Static full-width background bar via drawbox, then scrolling text on top
+            $filterParts[] = "[{$lastLabel}]drawbox=x=0:y={$tickerBoxY}:w=iw:h={$tickerBarH}:color={$ffBgColor}@{$tickerBgOpacityFp}:t=fill[ticker_bg]";
+            $filterParts[] = "[ticker_bg]drawtext=textfile='{$escapedTickerFile}':reload=1:y={$tickerY}:x=w-mod(max(t*{$tickerSpeed}\\,0)\\,w+tw):fontcolor={$tickerFontColor}:fontsize={$tickerFontSize}:boxborderw=0[with_ticker]";
             $lastLabel = 'with_ticker';
 
             // Optional label prefix (e.g. "BREAKING NEWS") rendered as a separate static drawtext
@@ -1354,7 +1362,7 @@ class TvPlayoutEngine
                 $ffLabelBg = '0x' . strtoupper($labelBgHex);
                 $labelFontSize = $this->px(max(10, min(72, (int) ($channel->ticker_font_size ?? 24))), $s);
                 $escapedLabel = str_replace(['\\', "'", ':', '[', ']'], ['\\\\', "'\\''", '\\:', '\\[', '\\]'], $tickerLabel);
-                $filterParts[] = "[{$lastLabel}]drawtext=text='{$escapedLabel}':y={$tickerY}:x={$tickerMargin}:fontcolor={$labelColor}:fontsize={$labelFontSize}:box=1:boxcolor={$ffLabelBg}@1.0:boxborderw={$tickerBorderW}[with_label]";
+                $filterParts[] = "[{$lastLabel}]drawtext=text='{$escapedLabel}':y={$tickerY}:x={$tickerMargin}:fontcolor={$labelColor}:fontsize={$labelFontSize}:box=1:boxcolor={$ffLabelBg}@1.0:boxborderw={$tickerBorderW}:clip=1[with_label]";
                 $lastLabel = 'with_label';
             }
         }
