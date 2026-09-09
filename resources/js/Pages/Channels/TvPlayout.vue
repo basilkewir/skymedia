@@ -249,6 +249,18 @@
                                     <div class="col-span-3 flex items-center justify-end gap-1">
                                         <button @click="editItemTitle(item)"
                                                 class="px-1.5 py-1 text-xs text-slate-500 hover:text-indigo-400 transition-colors" title="Edit title / group">✎</button>
+                                        <button @click="probeItem(item)"
+                                                :disabled="probeResults[item.id]?.loading"
+                                                class="px-1.5 py-1 text-xs transition-colors"
+                                                :class="{
+                                                    'text-green-400': probeResults[item.id]?.playable === true,
+                                                    'text-red-400':   probeResults[item.id]?.playable === false,
+                                                    'text-amber-400 animate-pulse': probeResults[item.id]?.loading,
+                                                    'text-slate-500 hover:text-cyan-400': !probeResults[item.id],
+                                                }"
+                                                :title="probeResults[item.id]?.playable === true ? probeResults[item.id].summary : probeResults[item.id]?.playable === false ? probeResults[item.id].error : 'Test if this media can play on the server'">
+                                            {{ probeResults[item.id]?.loading ? '…' : probeResults[item.id]?.playable === true ? '✓' : probeResults[item.id]?.playable === false ? '✕' : '▶' }}
+                                        </button>
                                         <button v-if="item.filepath?.startsWith('youtube:')" @click="triggerYouTubeDownload(item)"
                                                 :disabled="downloadStatuses[item.id] === 'downloading' || downloadStatuses[item.id] === 'ready'"
                                                 class="px-1.5 py-1 text-xs transition-colors"
@@ -264,6 +276,14 @@
                                         <button v-if="index < items.length - 1" @click="moveDown(index)"
                                                 class="p-1 text-slate-500 hover:text-white transition-colors" title="Move down">↓</button>
                                         <button @click="removeItem(item)" class="p-1 text-slate-500 hover:text-red-400 transition-colors" title="Remove">✕</button>
+                                    </div>
+                                    <!-- Probe result inline -->
+                                    <div v-if="probeResults[item.id] && !probeResults[item.id].loading"
+                                         class="col-span-12 px-6 pb-2 -mt-1">
+                                        <div :class="probeResults[item.id].playable ? 'text-green-400' : 'text-red-400'" class="text-[10px] font-mono">
+                                            <span v-if="probeResults[item.id].playable">✓ OK — {{ probeResults[item.id].summary }}</span>
+                                            <span v-else>✕ {{ probeResults[item.id].error }}</span>
+                                        </div>
                                     </div>
                                 </div>
                                 <!-- Inline edit row -->
@@ -838,6 +858,7 @@ const items = ref([...props.items])
 const isRunning = ref(props.isRunning)
 const pushRunning = ref(props.channel.push_status === 'live')
 const downloadStatuses = ref({ ...props.downloadStatuses })
+const probeResults = ref({})
 const summary = ref({ ...props.summary })
 const tickerText = ref(props.channel.ticker_text || '')
 const tickerMessage = ref('')
@@ -1461,8 +1482,26 @@ async function confirmAddUrl() {
 }
 
 
-async function triggerYouTubeDownload(item) {
+async function probeItem(item) {
+    probeResults.value[item.id] = { loading: true }
     try {
+        const res = await fetch(route('channels.playout.items.probe', [props.channel.id, item.id]))
+        const data = await res.json()
+        if (data.playable) {
+            const parts = []
+            if (data.duration > 0) parts.push(formatDuration(data.duration))
+            if (data.video) parts.push(data.video)
+            if (data.audio) parts.push(data.audio)
+            probeResults.value[item.id] = { playable: true, summary: parts.join(' · ') || 'OK' }
+        } else {
+            probeResults.value[item.id] = { playable: false, error: data.error || 'Cannot play' }
+        }
+    } catch (e) {
+        probeResults.value[item.id] = { playable: false, error: 'Network error' }
+    }
+}
+
+async function triggerYouTubeDownload(item) {    try {
         const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
         const res = await fetch(route('channels.playout.items.trigger-download', [props.channel.id, item.id]), {
             method: 'POST',

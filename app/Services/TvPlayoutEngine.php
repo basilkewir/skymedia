@@ -80,7 +80,7 @@ class TvPlayoutEngine
         $logFile = $this->ffmpeg->logFile($channel, 'tv_playout');
 
         try {
-            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 6);
+            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 2);
         } catch (\Throwable $e) {
             Log::error("[TvPlayout] {$channel->name} failed to start: {$e->getMessage()}");
             $channel->update(['stream_status' => 'error', 'last_error' => substr($e->getMessage(), 0, 500)]);
@@ -244,7 +244,7 @@ class TvPlayoutEngine
         $logFile = $this->ffmpeg->logFile($channel, 'push');
 
         try {
-            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 6);
+            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 2);
         } catch (\Throwable $e) {
             Log::error("[TvPlayout] {$channel->name} push failed to start: {$e->getMessage()}");
             $channel->update(['push_status' => 'error', 'last_error' => substr($e->getMessage(), 0, 500)]);

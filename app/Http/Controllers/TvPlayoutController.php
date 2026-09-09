@@ -1174,6 +1174,73 @@ class TvPlayoutController extends Controller
         return response()->json(['success' => true, 'message' => 'Download triggered']);
     }
 
+    public function probeItem(Channel $channel, PlaylistItem $item): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+        abort_unless($item->channel_id === $channel->id, 404);
+
+        $path = $item->filepath;
+
+        // YouTube: check if local file exists, otherwise report stream URL status
+        if (str_starts_with($path, 'youtube:')) {
+            $videoId  = \App\Models\PlaylistItem::parseYouTubeId($path);
+            $cacheDir = storage_path('app/youtube_cache');
+            $local    = "{$cacheDir}/{$videoId}.mp4";
+            $urlCache = "{$cacheDir}/{$videoId}.stream_url";
+
+            if (file_exists($local) && filesize($local) > 1_048_576) {
+                $path = $local;
+            } elseif (file_exists($urlCache)) {
+                $lines = explode("\n", trim((string) file_get_contents($urlCache)));
+                $path  = trim($lines[0]);
+            } else {
+                return response()->json([
+                    'playable' => false,
+                    'error'    => 'Not yet downloaded or extracted — trigger download first',
+                ]);
+            }
+        }
+
+        // Run ffprobe
+        try {
+            $cmd = [
+                config('skymedia.ffprobe_binary', 'ffprobe'),
+                '-v', 'error',
+                '-show_entries', 'format=duration:stream=codec_name,codec_type,width,height',
+                '-of', 'json',
+            ];
+            if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
+                array_push($cmd, '-protocol_whitelist', 'file,http,https,tcp,tls,crypto', '-rw_timeout', '10000000');
+            }
+            $cmd[] = $path;
+
+            $proc = \Symfony\Component\Process\Process::create($cmd)->setTimeout(20);
+            $proc->run();
+
+            if (! $proc->isSuccessful()) {
+                return response()->json([
+                    'playable' => false,
+                    'error'    => trim($proc->getErrorOutput()) ?: 'ffprobe failed',
+                ]);
+            }
+
+            $info     = json_decode($proc->getOutput(), true);
+            $duration = (float) ($info['format']['duration'] ?? 0);
+            $video    = collect($info['streams'] ?? [])->firstWhere('codec_type', 'video');
+            $audio    = collect($info['streams'] ?? [])->firstWhere('codec_type', 'audio');
+
+            return response()->json([
+                'playable'   => true,
+                'duration'   => $duration,
+                'video'      => $video ? ($video['codec_name'] . ' ' . ($video['width'] ?? '?') . 'x' . ($video['height'] ?? '?')) : null,
+                'audio'      => $audio ? $audio['codec_name'] : null,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['playable' => false, 'error' => $e->getMessage()]);
+        }
+    }
+
     private function ensureAccess(Channel $channel): void
     {
         $user = auth()->user();
