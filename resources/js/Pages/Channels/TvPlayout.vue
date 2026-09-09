@@ -578,6 +578,20 @@
                         </div>
                     </div>
 
+                    <!-- Channel Timezone -->
+                    <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="text-sm font-semibold text-white">Channel Timezone</span>
+                            <span class="text-[10px] text-slate-500">(used by clock overlay)</span>
+                        </div>
+                        <select v-model="clockTimezone" @change="saveClockSettings()"
+                                class="w-full form-input text-xs font-mono">
+                            <optgroup v-for="group in timezones" :key="group.group" :label="group.group">
+                                <option v-for="tz in group.zones" :key="tz.value" :value="tz.value">{{ tz.label }}</option>
+                            </optgroup>
+                        </select>
+                    </div>
+
                     <!-- Clock Settings -->
                     <div class="bg-slate-900 border border-slate-800 rounded-xl p-6">
                         <div class="flex items-center justify-between mb-3">
@@ -587,16 +601,6 @@
                                              clockEnabled ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-slate-700 text-slate-400 border-slate-600']">
                                 {{ clockEnabled ? 'ON' : 'OFF' }}
                             </button>
-                        </div>
-                        <!-- Timezone always accessible regardless of clock on/off -->
-                        <div class="mb-3">
-                            <label class="text-xs text-slate-500 mb-1 block">Timezone</label>
-                            <select v-model="clockTimezone" @change="saveClockSettings()"
-                                    class="w-full form-input text-xs font-mono">
-                                <optgroup v-for="group in timezones" :key="group.group" :label="group.group">
-                                    <option v-for="tz in group.zones" :key="tz.value" :value="tz.value">{{ tz.label }}</option>
-                                </optgroup>
-                            </select>
                         </div>
                         <div class="space-y-3" :class="{ 'opacity-50 pointer-events-none': !clockEnabled }">
                             <!-- Canvas position picker -->
