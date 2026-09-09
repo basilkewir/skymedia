@@ -792,8 +792,7 @@ class TvPlayoutController extends Controller
 
             $cmd[] = $filepath;
 
-            $proc = new Process($cmd);
-            $proc->setTimeout(30);
+            $proc = Process::create($cmd)->setTimeout(30);
             $proc->run();
 
             $out = trim($proc->getOutput());

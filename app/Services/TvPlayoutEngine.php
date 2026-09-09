@@ -1604,10 +1604,10 @@ class TvPlayoutEngine
 
     private function formatDuration(float $seconds): string
     {
-        $hours = floor($seconds / 3600);
-        $minutes = floor(($seconds / 60) % 60);
-        $secs = floor($seconds % 60);
-        $ms = round(($seconds - floor($seconds)) * 1000);
+        $hours = (int) floor($seconds / 3600);
+        $minutes = (int) floor(($seconds / 60) % 60);
+        $secs = (int) floor($seconds % 60);
+        $ms = (int) round(($seconds - floor($seconds)) * 1000);
 
         return sprintf('%02d:%02d:%02d.%03d', $hours, $minutes, $secs, $ms);
     }
