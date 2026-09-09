@@ -968,13 +968,9 @@ class TvPlayoutEngine
 
         Log::info("[TvPlayout] YouTube {$videoId}: background extraction started");
     }
-     *
-     * YouTube no longer provides muxed (video+audio) streams for most videos.
-     * yt-dlp -g returns two lines when video+audio are separate streams.
-     * We cache the result as "videoUrl" or "videoUrl\naudioUrl" and handle
-     * both cases in buildConcatFile / buildCommand.
-     *
-     * Returns the cache file content string (one or two URLs) or null on failure.
+
+    /**
+     * Extract direct streaming URL(s) from YouTube using yt-dlp -g.
      */
     private function extractStreamUrl(string $videoId): ?string
     {
