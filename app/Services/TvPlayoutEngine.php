@@ -305,9 +305,9 @@ class TvPlayoutEngine
         // Rewrite the concat file on disk first
         $concatFile = $this->buildConcatFile($channel);
 
-        // If buildConcatFile returned a URL or URL manifest (not a local file),
-        // we must restart ffmpeg entirely — SIGUSR1 only reloads concat files on disk.
-        if ($concatFile !== null && (str_starts_with($concatFile, 'http') || str_starts_with($concatFile, 'url_manifest:'))) {
+        // If buildConcatFile returned a URL (not a local file), we must restart
+        // ffmpeg entirely — SIGUSR1 only reloads the concat file on disk.
+        if ($concatFile !== null && str_starts_with($concatFile, 'http')) {
             if ($this->isRunning($channel)) {
                 $this->stop($channel);
             }
@@ -562,14 +562,10 @@ class TvPlayoutEngine
         }
 
         $files = [];
-        $hasUrl = false;
         foreach ($items as $item) {
             $resolved = $this->resolveFilePath($item);
             if ($resolved !== null) {
                 $files[] = $resolved;
-                if (str_starts_with($resolved, 'http')) {
-                    $hasUrl = true;
-                }
             }
         }
 
@@ -588,37 +584,7 @@ class TvPlayoutEngine
             }
         }
 
-        // When ALL items are streaming URLs, write a URL manifest file.
-        // buildCommand will use ffmpeg's concat filter with multiple -i inputs.
-        if ($hasUrl && ! empty($files) && str_starts_with($files[0], 'http')) {
-            $allUrls = true;
-            foreach ($files as $f) {
-                if (! str_starts_with($f, 'http')) {
-                    $allUrls = false;
-                    break;
-                }
-            }
-            if ($allUrls) {
-                // Repeat URLs to fill 24 hours (no -stream_loop for concat filter)
-                $totalDur = $items->sum('duration');
-                $repeat = ($channel->playlist_loop ?? 0) > 0
-                    ? $channel->playlist_loop
-                    : ($totalDur > 0 ? max(10, min((int) ceil(86400 / $totalDur), 500)) : 50);
-
-                $expanded = [];
-                for ($i = 0; $i < $repeat; $i++) {
-                    foreach ($files as $f) {
-                        $expanded[] = $f;
-                    }
-                }
-
-                $manifestPath = $this->concatFilePath($channel) . '.urls';
-                file_put_contents($manifestPath, json_encode($expanded));
-                return 'url_manifest:' . $manifestPath;
-            }
-        }
-
-        // Local files — use concat demuxer
+        // Local files and URLs — use concat demuxer for all
         $totalDuration = $items->sum('duration');
         $repeat = ($channel->playlist_loop ?? 0) > 0
             ? $channel->playlist_loop
@@ -1100,11 +1066,11 @@ class TvPlayoutEngine
         // Scale factor for all overlay pixel values relative to 1080p baseline
         $s = $this->overlayScale($channel);
 
-        // Detect URL manifest (multiple URL items)
-        $isUrlManifest = str_starts_with($concatFile, 'url_manifest:');
-        $isUrl = str_starts_with($concatFile, 'http') || $isUrlManifest;
+        // Detect if the concat file contains URLs (read first entry)
+        $concatContent = file_get_contents($concatFile);
+        $hasUrls = (bool) preg_match('/^file\s+https?:\/\//mi', $concatContent);
 
-        // Base command — skip -stream_loop for URL manifests (urls already repeated to fill 24h)
+        // Base command
         $cmd = [
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
@@ -1112,59 +1078,38 @@ class TvPlayoutEngine
             '-err_detect', 'ignore_err',
         ];
 
-        if (! $isUrlManifest) {
+        if (! $hasUrls) {
             $cmd[] = '-stream_loop';
             $cmd[] = '-1';
         }
 
         $cmd[] = '-re';
 
-        if ($isUrlManifest) {
-            // Multiple URL inputs — each gets its own -i, concat filter joins them
-            $manifestPath = substr($concatFile, strlen('url_manifest:'));
-            $urls = json_decode(file_get_contents($manifestPath), true) ?: [];
-            foreach ($urls as $url) {
-                $cmd[] = '-protocol_whitelist';
-                $cmd[] = 'file,http,https,tcp,tls,crypto';
-                $cmd[] = '-reconnect';
-                $cmd[] = '1';
-                $cmd[] = '-reconnect_streamed';
-                $cmd[] = '1';
-                $cmd[] = '-reconnect_delay_max';
-                $cmd[] = '5';
-                $cmd[] = '-i';
-                $cmd[] = $url;
-            }
-        } elseif ($isUrl) {
-            // Single direct URL input — no concat demuxer needed
-            $cmd[] = '-protocol_whitelist';
-            $cmd[] = 'file,http,https,tcp,tls,crypto';
+        // Concat demuxer — works for both local files and URLs
+        $cmd[] = '-safe';
+        $cmd[] = '0';
+        $cmd[] = '-protocol_whitelist';
+        $cmd[] = 'file,http,https,tcp,tls,crypto';
+
+        if ($hasUrls) {
             $cmd[] = '-reconnect';
             $cmd[] = '1';
             $cmd[] = '-reconnect_streamed';
             $cmd[] = '1';
             $cmd[] = '-reconnect_delay_max';
             $cmd[] = '5';
-        } else {
-            // Local concat file — use concat demuxer
-            $cmd[] = '-safe';
-            $cmd[] = '0';
-            $cmd[] = '-protocol_whitelist';
-            $cmd[] = 'file,http,https,tcp,tls,crypto';
-            $cmd[] = '-f';
-            $cmd[] = 'concat';
         }
 
-        if ($resumeOffset > 0 && ! $isUrl) {
+        $cmd[] = '-f';
+        $cmd[] = 'concat';
+
+        if ($resumeOffset > 0 && ! $hasUrls) {
             $cmd[] = '-ss';
             $cmd[] = (string) $resumeOffset;
         }
 
-        if (! $isUrlManifest) {
-            // Single input (URL or concat file)
-            $cmd[] = '-i';
-            $cmd[] = $concatFile;
-        }
+        $cmd[] = '-i';
+        $cmd[] = $concatFile;
 
         // Logo overlay — only include when logo_enabled is true.
         $this->ensureLogoBlank($channel);
@@ -1192,24 +1137,8 @@ class TvPlayoutEngine
 
         // Build filter_complex
         $filterParts = [];
-        $inputIndex = 0;
-
-        if ($isUrlManifest) {
-            // Multiple URL inputs — concat filter joins them into one stream
-            $manifestPath = substr($concatFile, strlen('url_manifest:'));
-            $urls = json_decode(file_get_contents($manifestPath), true) ?: [];
-            $n = count($urls);
-            $concatInputs = '';
-            for ($i = 0; $i < $n; $i++) {
-                $concatInputs .= "[{$i}:v:0][{$i}:a:0?]";
-            }
-            $filterParts[] = "{$concatInputs}concat=n={$n}:v=1:a=1[out_v][out_a]";
-            $lastLabel = 'out_v';
-            $inputIndex = $n; // skip all URL inputs
-        } else {
-            $lastLabel = '0:v';
-            $inputIndex = 1; // 0 is concat input
-        }
+        $lastLabel = '0:v';
+        $inputIndex = 1; // 0 is concat input
 
         // Output resolution scaling (applied first so overlays render at target size)
         $resolution = $channel->output_resolution ?? '1920x1080';
@@ -1382,12 +1311,10 @@ class TvPlayoutEngine
         // Assemble filter_complex
         $filterComplex = implode(';', $filterParts);
 
-        $audioMap = $isUrlManifest ? '[out_a]?' : '0:a?';
-
         $cmd = array_merge($cmd, [
             '-filter_complex', $filterComplex,
             '-map', "[{$lastLabel}]",
-            '-map', $audioMap,
+            '-map', '0:a?',
         ], $videoEncode, $audioEncode, [
             '-f', 'hls',
             '-hls_time', (string) $segDur,
