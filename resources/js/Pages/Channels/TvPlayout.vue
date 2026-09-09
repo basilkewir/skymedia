@@ -582,15 +582,17 @@
                                 {{ clockEnabled ? 'ON' : 'OFF' }}
                             </button>
                         </div>
+                        <!-- Timezone always accessible regardless of clock on/off -->
+                        <div class="mb-3">
+                            <label class="text-xs text-slate-500 mb-1 block">Timezone</label>
+                            <select v-model="clockTimezone" @change="saveClockSettings()"
+                                    class="w-full form-input text-xs font-mono">
+                                <optgroup v-for="group in timezones" :key="group.group" :label="group.group">
+                                    <option v-for="tz in group.zones" :key="tz.value" :value="tz.value">{{ tz.label }}</option>
+                                </optgroup>
+                            </select>
+                        </div>
                         <div class="space-y-3" :class="{ 'opacity-50 pointer-events-none': !clockEnabled }">
-                            <!-- Timezone selector -->
-                            <div>
-                                <label class="text-xs text-slate-500 mb-1 block">Timezone</label>
-                                <select v-model="clockTimezone" @change="saveClockSettings()"
-                                        class="w-full form-input text-xs font-mono">
-                                    <option v-for="tz in timezones" :key="tz.value" :value="tz.value">{{ tz.label }}</option>
-                                </select>
-                            </div>
                             <!-- Canvas position picker -->
                             <p class="text-[10px] text-slate-500 uppercase tracking-wider">Position <span class="text-slate-600 normal-case">(click canvas or use sliders)</span></p>
                             <div ref="clockCanvas"
@@ -916,33 +918,118 @@ const clockFormatPresets = [
     { label: 'Full Date+Time', value: '%d/%m/%Y %H\:%M\:%S' },
 ]
 const timezones = [
-    { value: 'UTC', label: 'UTC (Coordinated Universal Time)' },
-    { value: 'America/New_York', label: 'Eastern Time (ET)' },
-    { value: 'America/Chicago', label: 'Central Time (CT)' },
-    { value: 'America/Denver', label: 'Mountain Time (MT)' },
-    { value: 'America/Los_Angeles', label: 'Pacific Time (PT)' },
-    { value: 'America/Anchorage', label: 'Alaska Time (AKT)' },
-    { value: 'Pacific/Honolulu', label: 'Hawaii Time (HT)' },
-    { value: 'America/Toronto', label: 'Eastern Time (Canada)' },
-    { value: 'America/Vancouver', label: 'Pacific Time (Canada)' },
-    { value: 'Europe/London', label: 'GMT / London' },
-    { value: 'Europe/Paris', label: 'Central European Time (CET)' },
-    { value: 'Europe/Berlin', label: 'Central European Time (Germany)' },
-    { value: 'Europe/Moscow', label: 'Moscow Time (MSK)' },
-    { value: 'Asia/Dubai', label: 'Gulf Standard Time (GST)' },
-    { value: 'Asia/Kolkata', label: 'India Standard Time (IST)' },
-    { value: 'Asia/Shanghai', label: 'China Standard Time (CST)' },
-    { value: 'Asia/Tokyo', label: 'Japan Standard Time (JST)' },
-    { value: 'Asia/Seoul', label: 'Korea Standard Time (KST)' },
-    { value: 'Asia/Singapore', label: 'Singapore Time (SGT)' },
-    { value: 'Asia/Dubai', label: 'Gulf Standard Time (UAE)' },
-    { value: 'Africa/Lagos', label: 'West Africa Time (WAT)' },
-    { value: 'Africa/Nairobi', label: 'East Africa Time (EAT)' },
-    { value: 'Africa/Cairo', label: 'Eastern European Time (EET)' },
-    { value: 'Africa/Johannesburg', label: 'South Africa Standard Time (SAST)' },
-    { value: 'Australia/Sydney', label: 'Australian Eastern Time (AET)' },
-    { value: 'Australia/Perth', label: 'Australian Western Time (AWT)' },
-    { value: 'Pacific/Auckland', label: 'New Zealand Time (NZST)' },
+    { group: 'UTC', zones: [
+        { value: 'UTC', label: 'UTC +00:00' },
+    ]},
+    { group: 'Africa', zones: [
+        { value: 'Africa/Abidjan',      label: 'Abidjan (GMT+0)' },
+        { value: 'Africa/Accra',        label: 'Accra (GMT+0)' },
+        { value: 'Africa/Addis_Ababa',  label: 'Addis Ababa (EAT+3)' },
+        { value: 'Africa/Algiers',      label: 'Algiers (CET+1)' },
+        { value: 'Africa/Cairo',        label: 'Cairo (EET+2)' },
+        { value: 'Africa/Casablanca',   label: 'Casablanca (WET+0/+1)' },
+        { value: 'Africa/Johannesburg', label: 'Johannesburg (SAST+2)' },
+        { value: 'Africa/Khartoum',     label: 'Khartoum (CAT+3)' },
+        { value: 'Africa/Lagos',        label: 'Lagos (WAT+1)' },
+        { value: 'Africa/Nairobi',      label: 'Nairobi (EAT+3)' },
+        { value: 'Africa/Tripoli',      label: 'Tripoli (EET+2)' },
+        { value: 'Africa/Tunis',        label: 'Tunis (CET+1)' },
+    ]},
+    { group: 'Americas', zones: [
+        { value: 'America/Anchorage',      label: 'Anchorage (AKST-9)' },
+        { value: 'America/Argentina/Buenos_Aires', label: 'Buenos Aires (ART-3)' },
+        { value: 'America/Bogota',         label: 'Bogota (COT-5)' },
+        { value: 'America/Caracas',        label: 'Caracas (VET-4)' },
+        { value: 'America/Chicago',        label: 'Chicago (CST-6)' },
+        { value: 'America/Denver',         label: 'Denver (MST-7)' },
+        { value: 'America/Halifax',        label: 'Halifax (AST-4)' },
+        { value: 'America/Lima',           label: 'Lima (PET-5)' },
+        { value: 'America/Los_Angeles',    label: 'Los Angeles (PST-8)' },
+        { value: 'America/Mexico_City',    label: 'Mexico City (CST-6)' },
+        { value: 'America/New_York',       label: 'New York (EST-5)' },
+        { value: 'America/Phoenix',        label: 'Phoenix (MST-7)' },
+        { value: 'America/Santiago',       label: 'Santiago (CLT-3)' },
+        { value: 'America/Sao_Paulo',      label: 'São Paulo (BRT-3)' },
+        { value: 'America/St_Johns',       label: 'St. Johns (NST-3:30)' },
+        { value: 'America/Toronto',        label: 'Toronto (EST-5)' },
+        { value: 'America/Vancouver',      label: 'Vancouver (PST-8)' },
+        { value: 'Pacific/Honolulu',       label: 'Honolulu (HST-10)' },
+    ]},
+    { group: 'Asia', zones: [
+        { value: 'Asia/Almaty',     label: 'Almaty (ALMT+6)' },
+        { value: 'Asia/Baghdad',    label: 'Baghdad (AST+3)' },
+        { value: 'Asia/Baku',       label: 'Baku (AZT+4)' },
+        { value: 'Asia/Bangkok',    label: 'Bangkok (ICT+7)' },
+        { value: 'Asia/Colombo',    label: 'Colombo (IST+5:30)' },
+        { value: 'Asia/Dhaka',      label: 'Dhaka (BST+6)' },
+        { value: 'Asia/Dubai',      label: 'Dubai (GST+4)' },
+        { value: 'Asia/Ho_Chi_Minh',label: 'Ho Chi Minh (ICT+7)' },
+        { value: 'Asia/Hong_Kong',  label: 'Hong Kong (HKT+8)' },
+        { value: 'Asia/Jakarta',    label: 'Jakarta (WIB+7)' },
+        { value: 'Asia/Jerusalem',  label: 'Jerusalem (IST+2)' },
+        { value: 'Asia/Karachi',    label: 'Karachi (PKT+5)' },
+        { value: 'Asia/Kathmandu',  label: 'Kathmandu (NPT+5:45)' },
+        { value: 'Asia/Kolkata',    label: 'Kolkata (IST+5:30)' },
+        { value: 'Asia/Kuala_Lumpur', label: 'Kuala Lumpur (MYT+8)' },
+        { value: 'Asia/Kuwait',     label: 'Kuwait (AST+3)' },
+        { value: 'Asia/Manila',     label: 'Manila (PHT+8)' },
+        { value: 'Asia/Muscat',     label: 'Muscat (GST+4)' },
+        { value: 'Asia/Riyadh',     label: 'Riyadh (AST+3)' },
+        { value: 'Asia/Seoul',      label: 'Seoul (KST+9)' },
+        { value: 'Asia/Shanghai',   label: 'Shanghai (CST+8)' },
+        { value: 'Asia/Singapore',  label: 'Singapore (SGT+8)' },
+        { value: 'Asia/Taipei',     label: 'Taipei (CST+8)' },
+        { value: 'Asia/Tashkent',   label: 'Tashkent (UZT+5)' },
+        { value: 'Asia/Tehran',     label: 'Tehran (IRST+3:30)' },
+        { value: 'Asia/Tokyo',      label: 'Tokyo (JST+9)' },
+        { value: 'Asia/Yangon',     label: 'Yangon (MMT+6:30)' },
+    ]},
+    { group: 'Atlantic / Pacific', zones: [
+        { value: 'Atlantic/Azores',       label: 'Azores (AZOT-1)' },
+        { value: 'Atlantic/Cape_Verde',   label: 'Cape Verde (CVT-1)' },
+        { value: 'Pacific/Auckland',      label: 'Auckland (NZST+12)' },
+        { value: 'Pacific/Fiji',          label: 'Fiji (FJT+12)' },
+        { value: 'Pacific/Guam',          label: 'Guam (ChST+10)' },
+        { value: 'Pacific/Midway',        label: 'Midway (SST-11)' },
+        { value: 'Pacific/Tongatapu',     label: 'Tonga (TOT+13)' },
+    ]},
+    { group: 'Australia', zones: [
+        { value: 'Australia/Adelaide',  label: 'Adelaide (ACST+9:30)' },
+        { value: 'Australia/Brisbane',  label: 'Brisbane (AEST+10)' },
+        { value: 'Australia/Darwin',    label: 'Darwin (ACST+9:30)' },
+        { value: 'Australia/Hobart',    label: 'Hobart (AEST+10)' },
+        { value: 'Australia/Melbourne', label: 'Melbourne (AEST+10)' },
+        { value: 'Australia/Perth',     label: 'Perth (AWST+8)' },
+        { value: 'Australia/Sydney',    label: 'Sydney (AEST+10)' },
+    ]},
+    { group: 'Europe', zones: [
+        { value: 'Europe/Amsterdam',  label: 'Amsterdam (CET+1)' },
+        { value: 'Europe/Athens',     label: 'Athens (EET+2)' },
+        { value: 'Europe/Belgrade',   label: 'Belgrade (CET+1)' },
+        { value: 'Europe/Berlin',     label: 'Berlin (CET+1)' },
+        { value: 'Europe/Brussels',   label: 'Brussels (CET+1)' },
+        { value: 'Europe/Bucharest',  label: 'Bucharest (EET+2)' },
+        { value: 'Europe/Budapest',   label: 'Budapest (CET+1)' },
+        { value: 'Europe/Copenhagen', label: 'Copenhagen (CET+1)' },
+        { value: 'Europe/Dublin',     label: 'Dublin (GMT+0)' },
+        { value: 'Europe/Helsinki',   label: 'Helsinki (EET+2)' },
+        { value: 'Europe/Istanbul',   label: 'Istanbul (TRT+3)' },
+        { value: 'Europe/Kiev',       label: 'Kyiv (EET+2)' },
+        { value: 'Europe/Lisbon',     label: 'Lisbon (WET+0)' },
+        { value: 'Europe/London',     label: 'London (GMT+0)' },
+        { value: 'Europe/Madrid',     label: 'Madrid (CET+1)' },
+        { value: 'Europe/Minsk',      label: 'Minsk (FET+3)' },
+        { value: 'Europe/Moscow',     label: 'Moscow (MSK+3)' },
+        { value: 'Europe/Oslo',       label: 'Oslo (CET+1)' },
+        { value: 'Europe/Paris',      label: 'Paris (CET+1)' },
+        { value: 'Europe/Prague',     label: 'Prague (CET+1)' },
+        { value: 'Europe/Rome',       label: 'Rome (CET+1)' },
+        { value: 'Europe/Sofia',      label: 'Sofia (EET+2)' },
+        { value: 'Europe/Stockholm',  label: 'Stockholm (CET+1)' },
+        { value: 'Europe/Vienna',     label: 'Vienna (CET+1)' },
+        { value: 'Europe/Warsaw',     label: 'Warsaw (CET+1)' },
+        { value: 'Europe/Zurich',     label: 'Zurich (CET+1)' },
+    ]},
 ]
 const clockCanvas = ref(null)
 const clockCanvasHover = ref(null)
