@@ -31,12 +31,24 @@ class TvPlayoutController extends Controller
         abort_unless($channel->source_type === 'tv_playout', 404);
         $this->ensureAccess($channel);
 
-        $summary = $this->engine->recalculateSchedule($channel);
-
         $items = $channel->playlistItems()
             ->where('is_active', true)
             ->orderBy('sort_order')
             ->get();
+
+        // Build summary from stored scheduled times — do NOT mutate on every page load.
+        // recalculateSchedule is only called explicitly (start, add item, reorder, etc.).
+        $totalDuration = $items->sum('duration');
+        $firstItem = $items->first();
+        $lastItem  = $items->last();
+        $summary = [
+            'total_duration_seconds' => $totalDuration,
+            'formatted_total'        => $this->formatDurationLong((float) $totalDuration),
+            'item_count'             => $items->count(),
+            'anchor_start'           => $firstItem?->scheduled_start?->toIso8601String(),
+            'end_anchor'             => $lastItem?->scheduled_end?->toIso8601String(),
+        ];
+
         $isRunning = $this->engine->isRunning($channel);
 
         // Get download statuses for YouTube items
@@ -55,13 +67,13 @@ class TvPlayoutController extends Controller
         $previewUrl = "http://{$host}:8080/hls/{$channel->slug}/live.m3u8";
 
         return Inertia::render('Channels/TvPlayout', [
-            'channel' => $channel,
-            'items' => $items,
-            'summary' => $summary,
-            'isRunning' => $isRunning,
-            'previewUrl' => $previewUrl,
+            'channel'         => $channel,
+            'items'           => $items,
+            'summary'         => $summary,
+            'isRunning'       => $isRunning,
+            'previewUrl'      => $previewUrl,
             'downloadStatuses' => $downloadStatuses,
-            'isAdmin' => (bool) (auth()->user()->is_admin ?? false),
+            'isAdmin'         => (bool) (auth()->user()->is_admin ?? false),
         ]);
     }
 
@@ -259,31 +271,46 @@ class TvPlayoutController extends Controller
             return response()->json(['success' => false, 'error' => 'This stream URL is already in the playlist.'], 422);
         }
 
-        $duration = 0;
+        // Extract duration from dur= or expire= params (googlevideo URLs use expire=unix_timestamp)
+        $duration = 0.0;
         if (preg_match('/[?&]dur=(\d+(?:\.\d+)?)/', $url, $m)) {
             $duration = (float) $m[1];
+        } elseif (preg_match('/[?&]expire=(\d+)/', $url, $m)) {
+            // expire is an absolute unix timestamp — not a duration, so probe instead
+            $duration = $this->probeDuration($url);
+        }
+
+        // Extract human-readable title from title= query param (googlevideo carries it)
+        $title = 'Stream URL';
+        if (preg_match('/[?&]title=([^&]+)/', $url, $m)) {
+            $title = urldecode(str_replace('_', ' ', $m[1]));
+            $title = substr($title, 0, 200);
         }
 
         $maxOrder = PlaylistItem::where('channel_id', $channel->id)->max('sort_order') ?? 0;
 
         PlaylistItem::create([
             'channel_id' => $channel->id,
-            'title' => 'Stream URL',
-            'filepath' => $url,
-            'duration' => $duration > 0 ? $duration : 18250,
+            'title'      => $title,
+            'filepath'   => $url,
+            'duration'   => $duration > 0 ? $duration : 0,
             'sort_order' => $maxOrder + 1,
         ]);
 
         $this->engine->recalculateSchedule($channel);
 
+        if ($this->engine->isRunning($channel)) {
+            $this->engine->rebuild($channel);
+        }
+
         return response()->json([
             'success' => true,
-            'message' => "Added stream URL ({$this->formatDuration($duration > 0 ? $duration : 18250)})",
+            'message' => "Added: {$title}" . ($duration > 0 ? " ({$this->formatDuration($duration)})" : ''),
         ]);
     }
 
     /**
-     * Add a URL-based video (HLS .m3u8, direct .mp4, etc.) to the playlist.
+     * Add a URL-based video (HLS .m3u8, direct .mp4, googlevideo stream, etc.) to the playlist.
      */
     public function addUrl(Request $request, Channel $channel): JsonResponse
     {
@@ -291,11 +318,28 @@ class TvPlayoutController extends Controller
         $this->ensureAccess($channel);
 
         $request->validate([
-            'url' => 'required|url|max:4000',
+            'url'   => 'required|string|max:8000',
             'title' => 'nullable|string|max:500',
         ]);
 
-        $url = $request->input('url');
+        $url = trim($request->input('url'));
+
+        if (! str_starts_with($url, 'http://') && ! str_starts_with($url, 'https://')) {
+            return response()->json(['success' => false, 'error' => 'URL must start with http:// or https://'], 422);
+        }
+
+        // Route googlevideo direct stream URLs through the stream-URL path
+        // (they carry an expire= param so we extract duration from it)
+        if (preg_match('#googlevideo\.com/videoplayback#i', $url)) {
+            return $this->addStreamUrl($channel, $url);
+        }
+
+        // Also handle YouTube watch URLs pasted into the URL field
+        $videoId = YouTubeMetadataService::extractVideoId($url);
+        if ($videoId !== null) {
+            return $this->addYouTubeById($channel, $videoId);
+        }
+
         $title = $request->input('title') ?: basename(parse_url($url, PHP_URL_PATH) ?: $url);
 
         $exists = PlaylistItem::where('channel_id', $channel->id)
@@ -306,16 +350,16 @@ class TvPlayoutController extends Controller
             return response()->json(['success' => false, 'error' => 'This URL is already in the playlist.'], 422);
         }
 
-        // Probe duration via ffprobe (works for HLS and direct URLs)
+        // Probe duration via ffprobe (works for HLS .m3u8 and direct video URLs)
         $duration = $this->probeDuration($url);
 
         $maxOrder = PlaylistItem::where('channel_id', $channel->id)->max('sort_order') ?? 0;
 
         PlaylistItem::create([
             'channel_id' => $channel->id,
-            'title' => $title,
-            'filepath' => $url,
-            'duration' => $duration > 0 ? $duration : 0,
+            'title'      => $title,
+            'filepath'   => $url,
+            'duration'   => $duration > 0 ? $duration : 0,
             'sort_order' => $maxOrder + 1,
         ]);
 
@@ -516,9 +560,18 @@ class TvPlayoutController extends Controller
             ->orderBy('sort_order')
             ->get();
 
+        $totalDuration = $freshItems->sum('duration');
+        $summary = [
+            'total_duration_seconds' => $totalDuration,
+            'formatted_total'        => $this->formatDurationLong((float) $totalDuration),
+            'item_count'             => $freshItems->count(),
+            'anchor_start'           => $freshItems->first()?->scheduled_start?->toIso8601String(),
+            'end_anchor'             => $freshItems->last()?->scheduled_end?->toIso8601String(),
+        ];
+
         return response()->json([
             'success' => true,
-            'items' => $freshItems,
+            'items'   => $freshItems,
             'summary' => $summary,
         ]);
     }
@@ -565,11 +618,20 @@ class TvPlayoutController extends Controller
             ->orderBy('sort_order')
             ->get();
 
+        $totalDuration = $freshItems->sum('duration');
+        $freshSummary = [
+            'total_duration_seconds' => $totalDuration,
+            'formatted_total'        => $this->formatDurationLong((float) $totalDuration),
+            'item_count'             => $freshItems->count(),
+            'anchor_start'           => $freshItems->first()?->scheduled_start?->toIso8601String(),
+            'end_anchor'             => $freshItems->last()?->scheduled_end?->toIso8601String(),
+        ];
+
         return response()->json([
             'success' => true,
             'message' => 'Playlist schedule recalculated',
-            'items' => $freshItems,
-            'summary' => $summary,
+            'items'   => $freshItems,
+            'summary' => $freshSummary,
         ]);
     }
 
@@ -812,6 +874,15 @@ class TvPlayoutController extends Controller
         $m = floor(($seconds / 60) % 60);
         $s = floor($seconds % 60);
         return $h > 0 ? "{$h}h {$m}m {$s}s" : ($m > 0 ? "{$m}m {$s}s" : "{$s}s");
+    }
+
+    private function formatDurationLong(float $seconds): string
+    {
+        $h  = (int) floor($seconds / 3600);
+        $m  = (int) floor(($seconds / 60) % 60);
+        $s  = (int) floor($seconds % 60);
+        $ms = (int) round(($seconds - floor($seconds)) * 1000);
+        return sprintf('%02d:%02d:%02d.%03d', $h, $m, $s, $ms);
     }
 
     /**

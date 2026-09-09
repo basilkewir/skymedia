@@ -61,6 +61,10 @@
                         </div>
                     </div>
                     <div class="bg-slate-800/60 rounded-lg px-4 py-3">
+                        <div class="text-xs text-slate-500 uppercase tracking-wider">Starts At</div>
+                        <div class="text-lg font-mono text-amber-400 font-bold mt-1">{{ formatTime(summary.anchor_start) }}</div>
+                    </div>
+                    <div class="bg-slate-800/60 rounded-lg px-4 py-3">
                         <div class="text-xs text-slate-500 uppercase tracking-wider">Ends At</div>
                         <div class="text-lg font-mono text-rose-400 font-bold mt-1">{{ formatTime(summary.end_anchor) }}</div>
                     </div>
@@ -133,9 +137,9 @@
                             </div>
                             <!-- URL input (HLS / MP4 / YouTube) -->
                             <div class="flex gap-2">
-                                <input v-model="mediaUrl" type="url"
-                                       placeholder="Paste URL: HLS (.m3u8), MP4, or YouTube"
-                                       class="flex-1 form-input text-xs font-mono" :disabled="addingUrl" maxlength="4000" />
+                                <input v-model="mediaUrl" type="text"
+                                       placeholder="Paste URL: HLS (.m3u8), MP4, YouTube, or direct stream"
+                                       class="flex-1 form-input text-xs font-mono" :disabled="addingUrl" maxlength="8000" />
                                 <button @click="addMediaUrl" :disabled="!mediaUrl || addingUrl"
                                         class="px-3 py-1.5 text-xs bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded-lg hover:bg-indigo-600/30 transition-colors disabled:opacity-40 whitespace-nowrap">
                                     {{ addingUrl ? 'Adding…' : '+ Add URL' }}
@@ -809,6 +813,7 @@ const items = ref([...props.items])
 const isRunning = ref(props.isRunning)
 const pushRunning = ref(props.channel.push_status === 'live')
 const downloadStatuses = ref({ ...props.downloadStatuses })
+const summary = ref({ ...props.summary })
 const tickerText = ref(props.channel.ticker_text || '')
 const tickerMessage = ref('')
 
@@ -1285,7 +1290,7 @@ async function saveReorder() {
         const data = await res.json()
         if (data.success) {
             items.value = data.items
-            Object.assign(props.summary, data.summary)
+            if (data.summary) summary.value = data.summary
         }
     } catch (e) {
         console.error('Reorder failed', e)
@@ -1314,7 +1319,7 @@ async function recalculateSchedule() {
         const data = await res.json()
         if (data.success) {
             items.value = data.items
-            Object.assign(props.summary, data.summary)
+            if (data.summary) summary.value = data.summary
             recalcMessage.value = data.message || 'Playlist updated!'
             setTimeout(() => recalcMessage.value = '', 4000)
         } else {

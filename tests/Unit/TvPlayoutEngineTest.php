@@ -8,7 +8,6 @@ use App\Models\Channel;
 use App\Models\PlaylistItem;
 use App\Services\FFmpegService;
 use App\Services\TvPlayoutEngine;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Tests\TestCase;
 
@@ -33,16 +32,16 @@ class TvPlayoutEngineTest extends TestCase
     private function createTvChannel(): Channel
     {
         $channel = Channel::factory()->create([
-            'source_type'     => 'tv_playout',
-            'dvr_path'        => $this->tempDir . '/channel_' . uniqid(),
-            'segment_duration' => 2,
-            'push_framerate'  => 25,
-            'push_video_bitrate' => 3000,
-            'push_audio_bitrate' => 128,
+            'source_type'           => 'tv_playout',
+            'dvr_path'              => $this->tempDir . '/channel_' . uniqid(),
+            'segment_duration'      => 2,
+            'push_framerate'        => 25,
+            'push_video_bitrate'    => 3000,
+            'push_audio_bitrate'    => 128,
             'push_audio_samplerate' => 48000,
-            'push_audio_channels' => 2,
-            'ticker_text'     => 'Breaking news ticker',
-            'ticker_enabled'  => false,
+            'push_audio_channels'   => 2,
+            'ticker_text'           => 'Breaking news ticker',
+            'ticker_enabled'        => false,
         ]);
 
         if (! is_dir($channel->dvr_directory)) {
@@ -67,7 +66,6 @@ class TvPlayoutEngineTest extends TestCase
         $channel = $this->createTvChannel();
         $engine = app(TvPlayoutEngine::class);
 
-        // No items → start fails
         $this->assertFalse($engine->start($channel));
     }
 
@@ -76,7 +74,6 @@ class TvPlayoutEngineTest extends TestCase
     {
         $channel = $this->createTvChannel();
 
-        // Create a dummy video file
         $videoFile = $channel->dvr_directory . '/test_video.mp4';
         file_put_contents($videoFile, str_repeat('x', 2048));
 
@@ -87,7 +84,6 @@ class TvPlayoutEngineTest extends TestCase
 
         $playlistFile = $channel->dvr_directory . '/tv_playlist.txt';
 
-        // Build concat file via reflection (private method)
         $engine = app(TvPlayoutEngine::class);
         $reflection = new \ReflectionClass($engine);
         $method = $reflection->getMethod('buildConcatFile');
@@ -112,8 +108,14 @@ class TvPlayoutEngineTest extends TestCase
             ->ordered(0)
             ->create(['channel_id' => $channel->id]);
 
-        // Cache a stream URL
-        Cache::put("yt_stream_url_{$item->id}", 'https://example.com/stream.m3u8', now()->addHours(4));
+        // Write a stream URL cache file (the actual on-disk mechanism)
+        $cacheDir = storage_path('app/youtube_cache');
+        if (! is_dir($cacheDir)) {
+            mkdir($cacheDir, 0755, true);
+        }
+        $urlCacheFile = "{$cacheDir}/dQw4w9WgXcQ.stream_url";
+        file_put_contents($urlCacheFile, 'https://example.com/stream.m3u8');
+        touch($urlCacheFile); // ensure mtime is now (age < 7200s)
 
         $engine = app(TvPlayoutEngine::class);
         $reflection = new \ReflectionClass($engine);
@@ -121,6 +123,8 @@ class TvPlayoutEngineTest extends TestCase
         $method->setAccessible(true);
 
         $resolved = $method->invoke($engine, $item);
+
+        @unlink($urlCacheFile);
 
         $this->assertSame('https://example.com/stream.m3u8', $resolved);
     }
@@ -135,7 +139,11 @@ class TvPlayoutEngineTest extends TestCase
             ->ordered(0)
             ->create(['channel_id' => $channel->id]);
 
-        // No cache → should return null
+        // Ensure no cache file exists
+        $cacheDir = storage_path('app/youtube_cache');
+        @unlink("{$cacheDir}/dQw4w9WgXcQ.stream_url");
+        @unlink("{$cacheDir}/dQw4w9WgXcQ.mp4");
+
         $engine = app(TvPlayoutEngine::class);
         $reflection = new \ReflectionClass($engine);
         $method = $reflection->getMethod('resolveFilePath');
@@ -214,17 +222,9 @@ class TvPlayoutEngineTest extends TestCase
     {
         $channel = $this->createTvChannel();
 
-        PlaylistItem::factory()
-            ->ordered(0)
-            ->create(['channel_id' => $channel->id, 'duration' => 60.0]);
-
-        PlaylistItem::factory()
-            ->ordered(1)
-            ->create(['channel_id' => $channel->id, 'duration' => 120.0]);
-
-        PlaylistItem::factory()
-            ->ordered(2)
-            ->create(['channel_id' => $channel->id, 'duration' => 30.5]);
+        PlaylistItem::factory()->ordered(0)->create(['channel_id' => $channel->id, 'duration' => 60.0]);
+        PlaylistItem::factory()->ordered(1)->create(['channel_id' => $channel->id, 'duration' => 120.0]);
+        PlaylistItem::factory()->ordered(2)->create(['channel_id' => $channel->id, 'duration' => 30.5]);
 
         $engine = app(TvPlayoutEngine::class);
         $result = $engine->recalculateSchedule($channel, '2026-09-06 10:00:00');
@@ -232,8 +232,9 @@ class TvPlayoutEngineTest extends TestCase
         $this->assertSame(210.5, $result['total_duration_seconds']);
         $this->assertSame(3, $result['item_count']);
         $this->assertStringContainsString('00:03:30.500', $result['formatted_total']);
+        $this->assertArrayHasKey('anchor_start', $result);
+        $this->assertArrayHasKey('end_anchor', $result);
 
-        // Verify scheduled times were persisted
         $items = $channel->playlistItems()->orderBy('sort_order')->get();
         $this->assertCount(3, $items);
 
@@ -247,13 +248,34 @@ class TvPlayoutEngineTest extends TestCase
     }
 
     /** @test */
+    public function schedule_is_stable_across_page_loads_when_last_live_at_is_set(): void
+    {
+        $channel = $this->createTvChannel();
+        $anchor = now()->subHours(1);
+        $channel->update(['last_live_at' => $anchor]);
+
+        PlaylistItem::factory()->ordered(0)->create(['channel_id' => $channel->id, 'duration' => 60.0]);
+        PlaylistItem::factory()->ordered(1)->create(['channel_id' => $channel->id, 'duration' => 120.0]);
+
+        $engine = app(TvPlayoutEngine::class);
+
+        // First call
+        $result1 = $engine->recalculateSchedule($channel->fresh());
+        // Second call (simulates page reload)
+        $result2 = $engine->recalculateSchedule($channel->fresh());
+
+        // Both calls must produce identical anchor_start
+        $this->assertSame($result1['anchor_start'], $result2['anchor_start']);
+        $this->assertSame($result1['end_anchor'], $result2['end_anchor']);
+    }
+
+    /** @test */
     public function it_writes_ticker_file(): void
     {
         $channel = $this->createTvChannel();
         mkdir($channel->dvr_directory . '/cg', 0755, true);
 
         $engine = app(TvPlayoutEngine::class);
-
         $engine->writeTickerFile($channel);
 
         $tickerFile = $channel->dvr_directory . '/cg/ticker.txt';
@@ -273,7 +295,6 @@ class TvPlayoutEngineTest extends TestCase
 
         $tickerFile = $channel->dvr_directory . '/cg/ticker.txt';
         $this->assertFileExists($tickerFile);
-        // Empty text writes a single space so FFmpeg drawtext doesn't fail
         $this->assertSame(' ', file_get_contents($tickerFile));
     }
 
@@ -296,8 +317,7 @@ class TvPlayoutEngineTest extends TestCase
 
         $metaFile = $channel->dvr_directory . '/cg/current_playing.txt';
         $this->assertFileExists($metaFile);
-        $content = file_get_contents($metaFile);
-        $this->assertStringContainsString('NOW PLAYING: Test Video', $content);
+        $this->assertStringContainsString('NOW PLAYING: Test Video', file_get_contents($metaFile));
     }
 
     /** @test */
@@ -307,7 +327,6 @@ class TvPlayoutEngineTest extends TestCase
         mkdir($channel->dvr_directory . '/cg', 0755, true);
 
         $engine = app(TvPlayoutEngine::class);
-
         $engine->writeMetaFile($channel);
 
         $metaFile = $channel->dvr_directory . '/cg/current_playing.txt';
@@ -322,7 +341,6 @@ class TvPlayoutEngineTest extends TestCase
         mkdir($channel->dvr_directory . '/cg', 0755, true);
 
         $engine = app(TvPlayoutEngine::class);
-
         $engine->updateTicker($channel, 'Updated breaking news!');
 
         $channel->refresh();
@@ -340,6 +358,9 @@ class TvPlayoutEngineTest extends TestCase
         $videoFile = $channel->dvr_directory . '/test.mp4';
         file_put_contents($videoFile, str_repeat('x', 2048));
 
+        // ensureLogoBlank writes logo_blank.png into cg/ — create it first
+        mkdir($channel->dvr_directory . '/cg', 0755, true);
+
         PlaylistItem::factory()
             ->local($videoFile)
             ->ordered(0)
@@ -348,12 +369,10 @@ class TvPlayoutEngineTest extends TestCase
         $engine = app(TvPlayoutEngine::class);
         $reflection = new \ReflectionClass($engine);
 
-        // Build concat file first
         $buildConcat = $reflection->getMethod('buildConcatFile');
         $buildConcat->setAccessible(true);
         $concatFile = $buildConcat->invoke($engine, $channel);
 
-        // Build command
         $buildCmd = $reflection->getMethod('buildCommand');
         $buildCmd->setAccessible(true);
         $cmd = $buildCmd->invoke($engine, $channel, $concatFile);
@@ -362,7 +381,7 @@ class TvPlayoutEngineTest extends TestCase
 
         $this->assertStringContainsString('-f concat', $cmdString);
         $this->assertStringContainsString('-filter_complex', $cmdString);
-        $this->assertStringContainsString('drawtext', $cmdString); // clock overlay
+        $this->assertStringContainsString('drawtext', $cmdString);
         $this->assertStringContainsString('-f hls', $cmdString);
         $this->assertStringContainsString('-c:v libx264', $cmdString);
         $this->assertStringContainsString('-c:a aac', $cmdString);
@@ -383,8 +402,8 @@ class TvPlayoutEngineTest extends TestCase
     {
         $channel = $this->createTvChannel();
         $channel->update([
-            'is_active'    => true,
-            'stream_status' => 'live',
+            'is_active'      => true,
+            'stream_status'  => 'live',
             'playout_status' => 'live',
         ]);
 
@@ -399,24 +418,24 @@ class TvPlayoutEngineTest extends TestCase
     }
 
     /** @test */
-    public function schedule_uses_current_time_when_no_anchor_provided(): void
+    public function schedule_uses_current_time_when_no_anchor_and_never_started(): void
     {
         $channel = $this->createTvChannel();
+        // last_live_at is null — channel never started
 
         PlaylistItem::factory()
             ->ordered(0)
             ->create(['channel_id' => $channel->id, 'duration' => 60.0]);
 
         $engine = app(TvPlayoutEngine::class);
-        $result = $engine->recalculateSchedule($channel);
+        $engine->recalculateSchedule($channel);
 
         $item = $channel->playlistItems()->first();
         $now = now();
 
-        // Should be scheduled within a few seconds of now
         $this->assertTrue(
             $item->scheduled_start->diffInSeconds($now) <= 2,
-            'Scheduled start should be within 2 seconds of now'
+            'Scheduled start should be within 2 seconds of now when channel has never started'
         );
     }
 }

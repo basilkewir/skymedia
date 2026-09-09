@@ -7,11 +7,18 @@ return new class extends Migration
 {
     public function up(): void
     {
-        DB::statement('ALTER TABLE playlist_items MODIFY COLUMN filepath TEXT NOT NULL');
+        $driver = DB::getDriverName();
+        if ($driver === 'mysql' || $driver === 'mariadb') {
+            DB::statement('ALTER TABLE playlist_items MODIFY COLUMN filepath TEXT NOT NULL');
+        }
+        // SQLite TEXT columns already hold unlimited length — no-op
     }
 
     public function down(): void
     {
-        DB::statement('ALTER TABLE playlist_items MODIFY COLUMN filepath VARCHAR(255) NOT NULL');
+        $driver = DB::getDriverName();
+        if ($driver === 'mysql' || $driver === 'mariadb') {
+            DB::statement('ALTER TABLE playlist_items MODIFY COLUMN filepath VARCHAR(255) NOT NULL');
+        }
     }
 };

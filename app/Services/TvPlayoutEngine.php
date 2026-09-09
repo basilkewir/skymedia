@@ -88,13 +88,20 @@ class TvPlayoutEngine
         }
 
         $channel->update([
-            'is_active' => true,
-            'stream_status' => 'live',
-            'playout_status' => 'live',
-            'playout_pid' => $pid,
-            'source_live' => true,
-            'last_live_at' => now()->subSeconds($resumeOffset), // keep schedule anchor correct
-            'playout_resume_offset' => null,
+            'is_active'              => true,
+            'stream_status'          => 'live',
+            'playout_status'         => 'live',
+            'playout_pid'            => $pid,
+            'source_live'            => true,
+            // Anchor: set last_live_at so the schedule stays correct.
+            // When resuming, subtract the offset so item scheduled_start
+            // times remain aligned with wall-clock time.
+            // When starting fresh, only set last_live_at if it isn't already
+            // set (preserves the original start anchor across restarts).
+            'last_live_at'           => $resumeOffset > 0
+                ? now()->subSeconds($resumeOffset)
+                : ($channel->last_live_at ?? now()),
+            'playout_resume_offset'  => null,
         ]);
 
         if ($resumeOffset > 0) {
@@ -497,6 +504,12 @@ class TvPlayoutEngine
 
     /**
      * Recalculate the precise schedule for all playlist items.
+     *
+     * Anchor priority:
+     *   1. Explicit $anchorStartTime (admin override)
+     *   2. last_live_at (set when playout starts; preserved after stop so
+     *      the schedule stays stable across page loads and restarts)
+     *   3. now() — only when the channel has never been started
      */
     public function recalculateSchedule(Channel $channel, ?string $anchorStartTime = null): array
     {
@@ -505,39 +518,42 @@ class TvPlayoutEngine
             ->orderBy('sort_order')
             ->get();
 
-        // Use provided anchor, or playout start time if running, or now
         if ($anchorStartTime) {
-            $currentTimeTracker = Carbon::parse($anchorStartTime);
-        } elseif ($channel->last_live_at && $this->isRunning($channel)) {
-            $currentTimeTracker = $channel->last_live_at->copy();
+            $anchor = Carbon::parse($anchorStartTime);
+        } elseif ($channel->last_live_at) {
+            // Use the stored playout start time so the schedule is stable
+            // whether the channel is running or stopped.
+            $anchor = $channel->last_live_at->copy();
         } else {
-            $currentTimeTracker = Carbon::now();
+            $anchor = Carbon::now();
         }
+
+        $currentTimeTracker = $anchor->copy();
         $totalDuration = 0.0;
 
         foreach ($items as $item) {
-            $start = clone $currentTimeTracker;
+            $start = $currentTimeTracker->copy();
 
-            $wholeSeconds = floor($item->duration);
-            $microseconds = ($item->duration - $wholeSeconds) * 1_000_000;
+            $wholeSeconds = (int) floor($item->duration);
+            $microseconds = (int) (($item->duration - $wholeSeconds) * 1_000_000);
 
-            $end = clone $start;
-            $end->addSeconds((int) $wholeSeconds)->addMicroseconds((int) $microseconds);
+            $end = $start->copy()->addSeconds($wholeSeconds)->addMicroseconds($microseconds);
 
             $item->update([
                 'scheduled_start' => $start,
-                'scheduled_end' => $end,
+                'scheduled_end'   => $end,
             ]);
 
             $totalDuration += $item->duration;
-            $currentTimeTracker = clone $end;
+            $currentTimeTracker = $end->copy();
         }
 
         return [
             'total_duration_seconds' => $totalDuration,
-            'formatted_total' => $this->formatDuration($totalDuration),
-            'item_count' => $items->count(),
-            'end_anchor' => $currentTimeTracker->toIso8601String(),
+            'formatted_total'        => $this->formatDuration($totalDuration),
+            'item_count'             => $items->count(),
+            'anchor_start'           => $anchor->toIso8601String(),
+            'end_anchor'             => $currentTimeTracker->toIso8601String(),
         ];
     }
 
@@ -1445,7 +1461,7 @@ class TvPlayoutEngine
         $isClean = $item && ! $item->hasOverlays();
 
         // When clean group: blank all text overlays so nothing shows on screen
-        file_put_contents($this->metaFilePath($channel), $isClean ? ' ' : ($item ? $item->display_title : 'NO PLAYLIST ITEMS'));
+        file_put_contents($this->metaFilePath($channel), $isClean ? ' ' : ($item ? 'NOW PLAYING: ' . $item->display_title : 'NO PLAYLIST ITEMS'));
 
         if ($isClean) {
             // Blank ticker too so it disappears during clean items
