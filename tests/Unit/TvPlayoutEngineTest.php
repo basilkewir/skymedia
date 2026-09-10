@@ -335,6 +335,70 @@ class TvPlayoutEngineTest extends TestCase
     }
 
     /** @test */
+    public function it_reads_playout_offset_from_progress_file(): void
+    {
+        $channel = $this->createTvChannel();
+
+        $progressFile = $channel->dvr_directory . '/tv_progress.txt';
+        $content = implode("\n", [
+            'frame=120',
+            'fps=25.00',
+            'out_time_us=123456789',
+            'out_time=123.474440',
+            'progress=continue',
+        ]);
+        file_put_contents($progressFile, $content);
+
+        $engine = app(TvPlayoutEngine::class);
+        $offset = $engine->readPlayoutOffset($progressFile);
+
+        $this->assertSame(123.456789, $offset);
+    }
+
+    /** @test */
+    public function it_returns_null_when_progress_file_has_no_output(): void
+    {
+        $channel = $this->createTvChannel();
+        $progressFile = $channel->dvr_directory . '/tv_progress.txt';
+
+        $engine = app(TvPlayoutEngine::class);
+        $this->assertNull($engine->readPlayoutOffset('/nonexistent/progress.txt'));
+
+        file_put_contents($progressFile, "progress=continue\n");
+        $this->assertNull($engine->readPlayoutOffset($progressFile));
+    }
+
+    /** @test */
+    public function it_writes_meta_file_using_actual_playback_offset(): void
+    {
+        $channel = $this->createTvChannel();
+        mkdir($channel->dvr_directory . '/cg', 0755, true);
+
+        // Two items: 100s then 50s (total 150s)
+        PlaylistItem::factory()
+            ->ordered(0)
+            ->create(['channel_id' => $channel->id, 'title' => 'First',   'duration' => 100.0]);
+        PlaylistItem::factory()
+            ->ordered(1)
+            ->create(['channel_id' => $channel->id, 'title' => 'Second',  'duration' => 50.0]);
+
+        $engine = app(TvPlayoutEngine::class);
+        $metaFile = $channel->dvr_directory . '/cg/current_playing.txt';
+
+        // Offset 30s → still First
+        $engine->writeMetaFile($channel->fresh(), 30.0);
+        $this->assertStringContainsString('First', file_get_contents($metaFile));
+
+        // Offset 120s → Second (100 + 20 into second item)
+        $engine->writeMetaFile($channel->fresh(), 120.0);
+        $this->assertStringContainsString('Second', file_get_contents($metaFile));
+
+        // Offset wraps around the loop (150s total) → back to First (150 % 150 = 0)
+        $engine->writeMetaFile($channel->fresh(), 150.0);
+        $this->assertStringContainsString('First', file_get_contents($metaFile));
+    }
+
+    /** @test */
     public function it_updates_ticker_text(): void
     {
         $channel = $this->createTvChannel();
@@ -385,7 +449,83 @@ class TvPlayoutEngineTest extends TestCase
         $this->assertStringContainsString('-f hls', $cmdString);
         $this->assertStringContainsString('-c:v libx264', $cmdString);
         $this->assertStringContainsString('-c:a aac', $cmdString);
-        $this->assertStringContainsString('-stream_loop -1', $cmdString);
+        // Looping must come from the concat file repeats, NOT -stream_loop —
+        // with the concat demuxer -stream_loop re-loops only the last file and
+        // the playlist appears stuck on one media item.
+        $this->assertStringNotContainsString('-stream_loop', $cmdString);
+    }
+
+    /** @test */
+    public function it_loops_the_full_playlist_in_concat_file(): void
+    {
+        $channel = $this->createTvChannel();
+
+        $videoA = $channel->dvr_directory . '/a.mp4';
+        $videoB = $channel->dvr_directory . '/b.mp4';
+        file_put_contents($videoA, str_repeat('x', 2048));
+        file_put_contents($videoB, str_repeat('y', 2048));
+
+        PlaylistItem::factory()->local($videoA)->ordered(0)
+            ->create(['channel_id' => $channel->id, 'duration' => 30.0]);
+        PlaylistItem::factory()->local($videoB)->ordered(1)
+            ->create(['channel_id' => $channel->id, 'duration' => 10.0]);
+
+        // Explicitly loop 3 times
+        $channel->update(['playlist_loop' => 3]);
+
+        $engine = app(TvPlayoutEngine::class);
+        $reflection = new \ReflectionClass($engine);
+        $method = $reflection->getMethod('buildConcatFile');
+        $method->setAccessible(true);
+
+        $concatFile = $method->invoke($engine, $channel->fresh());
+        $content = file_get_contents($concatFile);
+
+        $needleA = "file '" . $videoA . "'";
+        $needleB = "file '" . $videoB . "'";
+
+        // Each pass must contain the FULL playlist in order (a then b), 3 times.
+        $this->assertSame(3, count(explode($needleA, $content)) - 1);
+        $this->assertSame(3, count(explode($needleB, $content)) - 1);
+
+        $firstA = mb_strpos($content, $needleA);
+        $firstB = mb_strpos($content, $needleB);
+        $this->assertTrue($firstA < $firstB);
+        $secondA = mb_strpos($content, $needleA, $firstB);
+        $this->assertTrue($firstB < $secondA);
+        // Order repeated again for the 3rd pass
+        $secondB = mb_strpos($content, $needleB, $secondA);
+        $this->assertTrue($secondA < $secondB);
+    }
+
+    /** @test */
+    public function it_auto_loops_based_on_actual_included_files(): void
+    {
+        $channel = $this->createTvChannel();
+
+        $videoA = $channel->dvr_directory . '/a.mp4';
+        $videoB = $channel->dvr_directory . '/b.mp4';
+        file_put_contents($videoA, str_repeat('x', 2048));
+        file_put_contents($videoB, str_repeat('y', 2048));
+
+        PlaylistItem::factory()->local($videoA)->ordered(0)
+            ->create(['channel_id' => $channel->id, 'duration' => 60.0]);
+        PlaylistItem::factory()->local($videoB)->ordered(1)
+            ->create(['channel_id' => $channel->id, 'duration' => 60.0]);
+
+        // playlist_loop = 0 → auto-fill 24h: 120s playlist → 720 passes
+        $channel->update(['playlist_loop' => 0]);
+
+        $engine = app(TvPlayoutEngine::class);
+        $reflection = new \ReflectionClass($engine);
+        $method = $reflection->getMethod('buildConcatFile');
+        $method->setAccessible(true);
+
+        $concatFile = $method->invoke($engine, $channel->fresh());
+        $content = file_get_contents($concatFile);
+
+        $this->assertSame(720, count(explode("file '" . $videoA . "'", $content)) - 1);
+        $this->assertSame(720, count(explode("file '" . $videoB . "'", $content)) - 1);
     }
 
     /** @test */

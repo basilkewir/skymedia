@@ -29,6 +29,16 @@ class TvPlayoutEngine
     ) {}
 
     /**
+     * Short-lived URL liveness cache (URL → [checked_at, alive]).
+     * Prevents repeated synchronous curl checks every time the concat file
+     * is rebuilt (add item, reorder, job completion...) which used to make
+     * start/rebuild feel slow and heavy for URL-heavy playlists.
+     */
+    private static array $urlHealth = [];
+
+    private const URL_CHECK_TTL = 300;
+
+    /**
      * Start the TV playout engine for a channel.
      */
     public function start(Channel $channel): bool
@@ -116,6 +126,11 @@ class TvPlayoutEngine
             Log::info("[TvPlayout] {$channel->name} started — PID {$pid}");
         }
 
+        // Launch the Now Playing writer — reads ffmpeg's -progress output and
+        // keeps the on-screen overlay title EXACTLY in sync with actual playback
+        // (not wall-clock), so it never shows a different title than the picture.
+        $this->startNowPlayingWriter($channel);
+
         // Start external push if configured
         if (! empty($channel->push_url)) {
             $this->startPush($channel);
@@ -130,6 +145,7 @@ class TvPlayoutEngine
     public function stop(Channel $channel): void
     {
         $this->stopClockWriter($channel);
+        $this->stopNowPlayingWriter($channel);
         $this->stopPush($channel);
 
         $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
@@ -606,7 +622,11 @@ class TvPlayoutEngine
     /**
      * Build the FFmpeg concat playlist text file from database items.
      * Handles both local files and YouTube URLs (via cached stream URLs).
-     * Repeats the playlist enough times for 24h of continuous playout.
+     *
+     * Looping: the FULL playlist (media 1 → media N) is repeated in the file —
+     * auto-loop fills ~24h, an explicit playlist_loop repeats N times. FFmpeg is
+     * never given -stream_loop (it would re-loop only the last file with the
+     * concat demuxer), so the whole list always plays in order then restarts.
      */
     private function buildConcatFile(Channel $channel): ?string
     {
@@ -628,24 +648,12 @@ class TvPlayoutEngine
             }
 
             // For HTTP URLs: check the URL is alive before including it.
-            // Note: Some valid URLs (e.g. token-based downloads) may fail the
-            // curl check due to IP-locking or session requirements. In that case,
-            // skip the item for this build cycle but do NOT delete it — it may
+            // Note: Some valid URLs (e.g. token-based downloads, HLS streams) may
+            // fail the curl check due to IP-locking or session requirements. In that
+            // case, skip the item for this build cycle but do NOT delete it — it may
             // become valid again on the next build.
             if (str_starts_with($resolved, 'http://') || str_starts_with($resolved, 'https://')) {
-                // Encode brackets for curl — they are valid in URLs but break some servers
-                $curlUrl = str_replace(['[', ']'], ['%5B', '%5D'], $resolved);
-                $code = (int) trim((string) shell_exec(
-                    'curl -s -o /dev/null -w "%{http_code}" --max-time 5 -L --head ' . escapeshellarg($curlUrl) . ' 2>/dev/null'
-                ));
-                // Some servers block HEAD — retry with a small GET range
-                if ($code >= 400 || $code === 0) {
-                    $code = (int) trim((string) shell_exec(
-                        'curl -s -o /dev/null -w "%{http_code}" --max-time 5 -L -r 0-1023 ' . escapeshellarg($curlUrl) . ' 2>/dev/null'
-                    ));
-                }
-                if ($code >= 400 || $code === 0) {
-                    Log::warning("[TvPlayout] {$channel->name}: URL check failed for '{$item->display_title}' (HTTP {$code}) — skipping for this build cycle");
+                if (! $this->urlIsAlive($resolved, $channel->name, $item->display_title)) {
                     continue;
                 }
             }
@@ -687,10 +695,31 @@ class TvPlayoutEngine
             }
         }
 
-        $totalDuration = $items->sum('duration');
-        $repeat = ($channel->playlist_loop ?? 0) > 0
-            ? $channel->playlist_loop
-            : ($totalDuration > 0 ? max(10, min((int) ceil(86400 / $totalDuration), 500)) : 50);
+        // Total duration of the files ACTUALLY included in this build (skipped items
+        // with no playable duration are excluded — counting them here would
+        // under-fill the auto-loop).
+        $filesDuration = 0.0;
+        foreach ($files as $entry) {
+            $filesDuration += (float) $entry['duration'];
+        }
+
+        $loopCount = (int) ($channel->playlist_loop ?? 0);
+        if ($loopCount > 0) {
+            // Explicit loop count — full pass-throughs of the whole playlist.
+            $repeat = $loopCount;
+        } elseif ($filesDuration > 0) {
+            // Auto-loop: fill at least 24h of continuous playout by repeating the
+            // FULL playlist (media 1 → last → media 1 → …) until the time window
+            // is covered. The repeat cap scales with playlist size so the concat
+            // file stays bounded, while still filling the full window for typical
+            // playlists (e.g. 30s jingles → ~2880 passes → 24h).
+            $linesPerPass = max(1, count($files) * 2); // "file X" + "duration Y"
+            $maxRepeats   = max(1, (int) floor(20_000 / $linesPerPass));
+            $repeat = max(1, min((int) ceil(86400 / $filesDuration), $maxRepeats));
+        } else {
+            // No duration info (e.g. slate fallback) — repeat conservatively.
+            $repeat = 50;
+        }
 
         $concatPath = $this->concatFilePath($channel);
 
@@ -715,6 +744,59 @@ class TvPlayoutEngine
         file_put_contents($concatPath, implode("\n", $lines));
 
         return $concatPath;
+    }
+
+    /**
+     * Check whether an HTTP(S) URL is currently reachable, with a short TTL cache.
+     *
+     * Repeated synchronous curl checks on every concat rebuild made start/rebuild
+     * slow and heavy for URL-heavy playlists. Results are cached per-URL for
+     * URL_CHECK_TTL seconds so consecutive rebuilds are instant.
+     *
+     * The check itself is tolerant: HLS manifests are fetched with a small range
+     * request, direct files retry with a GET-range when the server blocks HEAD,
+     * and brackets are percent-encoded so CDN token URLs resolve correctly.
+     */
+    private function urlIsAlive(string $url, string $channelName, string $itemTitle): bool
+    {
+        $now = time();
+        $cached = self::$urlHealth[$url] ?? null;
+        if ($cached !== null && ($now - $cached['at']) < self::URL_CHECK_TTL) {
+            return (bool) $cached['alive'];
+        }
+
+        // Encode brackets — valid in URLs but break some servers / range parsers
+        $curlUrl = str_replace(['[', ']'], ['%5B', '%5D'], $url);
+        $isHls  = preg_match('/\.(m3u8|m3u|mpd)(\?|$)/i', $url);
+        $alive  = false;
+
+        if ($isHls) {
+            // HLS: fetch the first 4KB of the manifest
+            $code = (int) trim((string) shell_exec(
+                'curl -s -o /dev/null -w "%{http_code}" --max-time 10 -L -r 0-4095 ' . escapeshellarg($curlUrl) . ' 2>/dev/null'
+            ));
+            $alive = $code >= 200 && $code < 400;
+        } else {
+            // Direct file: HEAD first (fast), fall back to a small GET range
+            $code = (int) trim((string) shell_exec(
+                'curl -s -o /dev/null -w "%{http_code}" --max-time 5 -L --head ' . escapeshellarg($curlUrl) . ' 2>/dev/null'
+            ));
+            if ($code < 200 || $code >= 400) {
+                $code = (int) trim((string) shell_exec(
+                    'curl -s -o /dev/null -w "%{http_code}" --max-time 5 -L -r 0-1023 ' . escapeshellarg($curlUrl) . ' 2>/dev/null'
+                ));
+            }
+            $alive = $code >= 200 && $code < 400;
+        }
+
+        // Cache regardless of outcome so a failing URL is only curled once per TTL.
+        self::$urlHealth[$url] = ['at' => $now, 'alive' => $alive];
+
+        if (! $alive) {
+            Log::warning("[TvPlayout] {$channelName}: URL check failed for '{$itemTitle}' (HTTP {$code}) — skipping for this build cycle");
+        }
+
+        return $alive;
     }
 
     /**
@@ -1288,30 +1370,30 @@ class TvPlayoutEngine
         $dvrDir = $channel->dvr_directory;
         $segPattern = "{$dvrDir}/tv_seg_%010d.ts";
         $m3u8Out = "{$dvrDir}/live.m3u8";
-        $segDur = max(2, (int) ($channel->segment_duration ?? 2));
+        // Default to 4s segments (was 2s). Longer segments = smoother manifests,
+        // far less disk I/O and fewer keyframe churn events on VBR URL sources.
+        $segDur = max(2, (int) ($channel->segment_duration ?? 4));
 
         // Scale factor for all overlay pixel values relative to 1080p baseline
         $s = $this->overlayScale($channel);
 
-        // Detect if the concat file contains URLs (read first entry)
-        $concatContent = file_get_contents($concatFile);
-        $hasUrls = (bool) preg_match('/^file\s+[\'"]?https?:\/\//mi', $concatContent);
-
-        // Base command
         $cmd = [
             $this->ffmpeg->getBin(),
             '-y', '-loglevel', 'warning', '-stats',
+            // Write machine-readable progress (out_time_us etc.) so the Now Playing
+            // overlay can be derived from ACTUAL playback instead of wall-clock.
+            '-progress', $this->nowPlayingProgressFile($channel),
             '-fflags', '+genpts+igndts+discardcorrupt+flush_packets',
             '-err_detect', 'ignore_err',
         ];
 
-        // -stream_loop only works for local-file concat lists; URL-based lists
-        // are looped by repeating entries in the ffconcat file itself.
-        if (! $hasUrls) {
-            $cmd[] = '-stream_loop';
-            $cmd[] = '-1';
-        }
-
+        // Looping is handled INSIDE the concat file itself — the whole playlist
+        // (file1 → file2 → … → fileN) is repeated $repeat times below.
+        //
+        // -stream_loop is deliberately NOT used: with the concat demuxer it loops
+        // at the stream level after the list ends, which re-reads only the LAST
+        // file — making playback appear stuck on a single media item. Repeating
+        // the full list guarantees the loop always restarts at media 1.
         $cmd[] = '-re';
 
         // Concat demuxer — works for both local files and URLs
@@ -1323,7 +1405,7 @@ class TvPlayoutEngine
         $cmd[] = '-f';
         $cmd[] = 'concat';
 
-        if ($resumeOffset > 0 && ! $hasUrls) {
+        if ($resumeOffset > 0) {
             $cmd[] = '-ss';
             $cmd[] = (string) $resumeOffset;
         }
@@ -1525,15 +1607,20 @@ class TvPlayoutEngine
             '-preset', 'veryfast',
             '-tune', 'zerolatency',
             '-b:v', "{$bitrate}k",
-            '-maxrate', (int) ($bitrate * 1.2) . 'k',
-            '-bufsize', (int) ($bitrate * 2) . 'k',
+            // Roomier rate control: 1.6× maxrate + 4× buffer lets the encoder
+            // ride out bitrate spikes (action scenes, VBR URL sources) without
+            // starving frames and causing visible stutter.
+            '-maxrate', (int) round($bitrate * 1.6) . 'k',
+            '-bufsize', (int) ($bitrate * 4) . 'k',
             '-pix_fmt', 'yuv420p',
             '-g', (string) ($fps * 2),
             '-keyint_min', (string) ($fps * 2),
             '-sc_threshold', '0',
             '-force_key_frames', 'expr:gte(t,n_forced*2)',
             '-bf', '0',
-            '-threads', '2',
+            // Auto-threading: the overlay filter chain (logo + ticker + clock +
+            // lower-third) is expensive; pinning to 2 threads starves it on the VPS.
+            '-threads', '0',
         ];
 
         // Audio encoding
@@ -1670,6 +1757,96 @@ class TvPlayoutEngine
     }
 
     // ═══════════════════════════════════════════════════════════════════
+    //  NOW PLAYING WRITER
+    //  Keeps the on-screen title EXACTLY synced to actual ffmpeg playback
+    //  by reading the -progress output file every second.
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Read the last out_time_us value from ffmpeg's -progress file.
+     * Returns seconds (float) or null when no progress has been written yet.
+     */
+    public function readPlayoutOffset(string $progressFile): ?float
+    {
+        if (! file_exists($progressFile)) {
+            return null;
+        }
+        // The file is small (rewritten each progress tick); tail it for speed.
+        $content = (string) @file_get_contents($progressFile);
+        $lines = explode("\n", $content);
+        $us = 0;
+        foreach (array_reverse($lines) as $line) {
+            $line = trim($line);
+            if (str_starts_with($line, 'out_time_us=')) {
+                $us = (int) substr($line, strlen('out_time_us='));
+                break;
+            }
+        }
+        return $us > 0 ? ($us / 1_000_000.0) : null;
+    }
+
+    /**
+     * Launch a background writer (`php artisan tv:now-playing-writer {id}`)
+     * that polls the ffmpeg -progress file each second and rewrites the CG
+     * meta file so the overlay always matches the actual on-air picture.
+     */
+    private function startNowPlayingWriter(Channel $channel): void
+    {
+        $pidFile = $this->nowPlayingWriterPidFile($channel);
+
+        // Kill any existing writer for this channel — including stale processes
+        // from previous restarts.
+        $oldPid = (int) @file_get_contents($pidFile);
+        if ($oldPid > 0) {
+            exec("kill {$oldPid} 2>/dev/null");
+        }
+        exec("pgrep -f " . escapeshellarg("tv:now-playing-writer {$channel->id}") . " 2>/dev/null", $orphans);
+        foreach ($orphans as $orphanPid) {
+            $orphanPid = (int) trim($orphanPid);
+            if ($orphanPid > 0 && $orphanPid !== $oldPid) {
+                exec("kill {$orphanPid} 2>/dev/null");
+            }
+        }
+
+        $artisan = base_path('artisan');
+        $phpExe  = trim((string) shell_exec('command -v php 2>/dev/null')) ?: 'php';
+        $shell = "setsid sh -c "
+            . escapeshellarg($phpExe . ' ' . escapeshellarg($artisan) . ' tv:now-playing-writer ' . $channel->id)
+            . ' </dev/null >/dev/null 2>&1 & echo $!';
+
+        $pid = (int) trim((string) shell_exec($shell));
+        if ($pid > 0) {
+            $pidsDir = dirname($pidFile);
+            if (! is_dir($pidsDir)) {
+                mkdir($pidsDir, 0775, true);
+            }
+            if (file_exists($pidFile) && ! is_writable($pidFile)) {
+                @unlink($pidFile);
+            }
+            @file_put_contents($pidFile, $pid);
+            Log::info("[TvPlayout] {$channel->name} now-playing writer started — PID {$pid}");
+        }
+    }
+
+    /**
+     * Stop the background now-playing writer for a channel.
+     */
+    private function stopNowPlayingWriter(Channel $channel): void
+    {
+        $pidFile = $this->nowPlayingWriterPidFile($channel);
+        $pid = (int) @file_get_contents($pidFile);
+        if ($pid > 0) {
+            exec("kill {$pid} 2>/dev/null");
+        }
+        @unlink($pidFile);
+        exec("pgrep -f " . escapeshellarg("tv:now-playing-writer {$channel->id}") . " 2>/dev/null", $orphans);
+        foreach ($orphans as $orphanPid) {
+            $orphanPid = (int) trim($orphanPid);
+            if ($orphanPid > 0) exec("kill {$orphanPid} 2>/dev/null");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     //  CG FILE MANAGEMENT
     // ═══════════════════════════════════════════════════════════════════
 
@@ -1707,8 +1884,14 @@ class TvPlayoutEngine
      * Write the current playing metadata file for on-screen overlay.
      * When the current item's media_group is 'clean', blanks all CG text files
      * so overlays show nothing without requiring an FFmpeg restart.
+     *
+     * @param ?float $playbackOffset Seconds into the looping playlist as reported
+     *        by ffmpeg's -progress output (ACTUAL playback). When null, falls back
+     *        to wall-clock scheduling via last_live_at. Always using the actual
+     *        offset keeps the overlay title perfectly locked to the picture even
+     *        when ffmpeg buffered at start or dropped frames under load.
      */
-    public function writeMetaFile(Channel $channel): void
+    public function writeMetaFile(Channel $channel, ?float $playbackOffset = null): void
     {
         $channel = $channel->fresh();
 
@@ -1722,10 +1905,15 @@ class TvPlayoutEngine
         if ($items->isNotEmpty()) {
             $totalDuration = (float) $items->sum('duration');
 
-            if ($totalDuration > 0 && $channel->last_live_at) {
+            $offset = null;
+            if ($playbackOffset !== null && $totalDuration > 0) {
+                $offset = fmod((float) $playbackOffset, $totalDuration);
+            } elseif ($totalDuration > 0 && $channel->last_live_at) {
                 $elapsed = (float) $channel->last_live_at->diffInSeconds(now(), true);
                 $offset  = fmod($elapsed, $totalDuration);
+            }
 
+            if ($offset !== null) {
                 $cursor = 0.0;
                 foreach ($items as $candidate) {
                     $dur = (float) $candidate->duration;
@@ -1836,6 +2024,16 @@ class TvPlayoutEngine
     private function clockWriterPidFile(Channel $channel): string
     {
         return storage_path('app/pids/clock_writer_' . $channel->id . '.pid');
+    }
+
+    private function nowPlayingProgressFile(Channel $channel): string
+    {
+        return $channel->dvr_directory . '/tv_progress.txt';
+    }
+
+    private function nowPlayingWriterPidFile(Channel $channel): string
+    {
+        return storage_path('app/pids/nowplaying_writer_' . $channel->id . '.pid');
     }
 
     private function formatDuration(float $seconds): string

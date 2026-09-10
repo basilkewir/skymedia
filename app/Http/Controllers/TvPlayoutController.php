@@ -423,10 +423,11 @@ class TvPlayoutController extends Controller
         $mediaType = 'url';
         $duration = 0.0;
 
-        // Detect if URL is a direct file download (has a media file extension)
+        // Detect URL type
         $isDirectFile = preg_match('/\.(mkv|mp4|avi|mov|webm|ts|flv|m4v|wmv|mpg|mpeg)(\?|$)/i', $url);
+        $isStreamingUrl = preg_match('/\.(m3u8|m3u|mpd)(\?|$)/i', $url);
 
-        if ($forceDownload || $isDirectFile) {
+        if ($forceDownload || ($isDirectFile && ! $isStreamingUrl)) {
             // For direct file downloads or explicit download request — try downloading first
             $duration = $this->downloadFile($url, $directory, $title, $filepath);
             if ($duration > 0) {
@@ -434,15 +435,17 @@ class TvPlayoutController extends Controller
             }
         }
 
-        if ($duration <= 0 && ! $forceDownload) {
+        if ($duration <= 0 && ! $forceDownload && ! $isStreamingUrl) {
             // Try probing the URL directly (works for HLS, direct streams, etc.)
+            // Skip for streaming URLs as they often have no fixed duration
             $duration = $this->probeDuration($url);
         }
 
-        if ($duration <= 0 && ! $isDirectFile) {
-            // For non-file URLs (HLS, etc.) that can't be probed, use a default duration
+        if ($duration <= 0 && ($isStreamingUrl || ! $isDirectFile)) {
+            // For HLS/live streams and non-file URLs, use a default duration
             // FFmpeg will handle the actual playback and duration detection
-            $duration = 7200.0; // 2 hours default for live/unknown streams
+            // Live streams will loop until the next playlist item
+            $duration = $isStreamingUrl ? 7200.0 : 7200.0; // 2 hours default
         }
 
         if ($duration <= 0) {
@@ -461,6 +464,7 @@ class TvPlayoutController extends Controller
             'duration'   => $duration,
             'sort_order' => $maxOrder + 1,
             'media_type' => $mediaType,
+            'is_active'  => true,
         ]);
 
         $this->engine->recalculateSchedule($channel);
@@ -511,7 +515,8 @@ class TvPlayoutController extends Controller
         $filepath = $directory . '/' . $filename;
 
         // Download the file using curl (handles redirects, tokens, etc.)
-        $encodedUrl = $this->encodeUrlBrackets($url);
+        // Encode brackets for curl — they are valid in URLs but break some servers
+        $encodedUrl = str_replace(['[', ']'], ['%5B', '%5D'], $url);
         $cmd = 'curl -L --max-time 300 -o ' . escapeshellarg($filepath) . ' ' . escapeshellarg($encodedUrl) . ' 2>&1';
         exec($cmd, $output, $returnCode);
 
