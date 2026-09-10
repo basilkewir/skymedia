@@ -1306,14 +1306,42 @@ class TvPlayoutController extends Controller
     {
         abort_unless($channel->source_type === 'tv_playout', 404);
         $this->ensureAccess($channel);
+        abort_unless($item->channel_id === $channel->id, 404);
 
-        if (! $item->isYouTube()) {
-            return response()->json(['success' => false, 'error' => 'Not a YouTube item'], 422);
+        if ($item->isYouTube()) {
+            $this->engine->triggerYouTubeDownload($item);
+            return response()->json(['success' => true, 'message' => 'Download triggered']);
         }
 
-        $this->engine->triggerYouTubeDownload($item);
+        // HTTP URL item — download to disk in background
+        $url = $item->filepath;
+        if (! str_starts_with($url, 'http://') && ! str_starts_with($url, 'https://')) {
+            return response()->json(['success' => false, 'error' => 'Item is already a local file'], 422);
+        }
 
-        return response()->json(['success' => true, 'message' => 'Download triggered']);
+        $directory = $channel->dvr_directory . '/tv_media';
+        if (! is_dir($directory)) {
+            mkdir($directory, 0755, true);
+        }
+
+        $noQuery  = strtok($url, '?');
+        $urlExt   = '';
+        if ($noQuery && preg_match('/\.(mkv|mp4|avi|mov|webm|ts|flv|m4v|wmv|mpg|mpeg)$/i', $noQuery, $m)) {
+            $urlExt = '.' . strtolower($m[1]);
+        }
+        $safeName = preg_replace('/[^a-zA-Z0-9._-]/', '_', $item->title);
+        $safeName = rtrim(substr($safeName, 0, 100), '._');
+        if ($urlExt && ! str_ends_with(strtolower($safeName), $urlExt)) {
+            $safeName .= $urlExt;
+        }
+        if (! preg_match('/\.[a-zA-Z0-9]{2,4}$/', $safeName)) {
+            $safeName .= '.mp4';
+        }
+        $destPath = $directory . '/' . time() . '_' . $safeName;
+
+        \App\Jobs\DownloadUrlToFile::dispatch($item->id, $url, $destPath);
+
+        return response()->json(['success' => true, 'message' => 'Download queued']);
     }
 
     public function probeItem(Channel $channel, PlaylistItem $item): JsonResponse
@@ -1672,12 +1700,12 @@ class TvPlayoutController extends Controller
                     ->first();
 
                 $files[] = [
-                    'filename'    => $filename,
-                    'filepath'    => $filepath,
-                    'size'        => $size,
-                    'size_human'  => $this->formatBytes($size),
-                    'modified'    => date('Y-m-d H:i:s', $modified),
-                    'in_playlist' => $playlistItem !== null,
+                    'filename'         => $filename,
+                    'filepath'         => $filepath,
+                    'size'             => $size,
+                    'size_human'       => $this->formatBytes($size),
+                    'modified'         => date('Y-m-d H:i:s', $modified),
+                    'in_playlist'      => $playlistItem !== null,
                     'playlist_item_id' => $playlistItem?->id,
                 ];
             }
@@ -1691,6 +1719,58 @@ class TvPlayoutController extends Controller
             'files'   => $files,
             'count'   => count($files),
         ]);
+    }
+
+    /**
+     * Add an existing media file (from tv_media directory) to the playlist.
+     */
+    public function addMediaToPlaylist(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $request->validate(['filename' => 'required|string']);
+
+        $filename  = basename($request->input('filename'));
+        $directory = $channel->dvr_directory . '/tv_media';
+        $filepath  = $directory . '/' . $filename;
+
+        $realDir  = realpath($directory);
+        $realFile = realpath($filepath);
+        if ($realFile === false || ! str_starts_with($realFile, $realDir)) {
+            return response()->json(['success' => false, 'error' => 'Invalid file path'], 400);
+        }
+        if (! file_exists($filepath)) {
+            return response()->json(['success' => false, 'error' => 'File not found'], 404);
+        }
+
+        // Already in playlist?
+        if (PlaylistItem::where('channel_id', $channel->id)->where('filepath', $filepath)->exists()) {
+            return response()->json(['success' => false, 'error' => 'Already in playlist'], 422);
+        }
+
+        $duration = $this->probeDuration($filepath);
+        if ($duration <= 0) {
+            return response()->json(['success' => false, 'error' => 'Could not read media duration'], 422);
+        }
+
+        $maxOrder = PlaylistItem::where('channel_id', $channel->id)->max('sort_order') ?? 0;
+        PlaylistItem::create([
+            'channel_id' => $channel->id,
+            'title'      => $filename,
+            'filepath'   => $filepath,
+            'duration'   => $duration,
+            'sort_order' => $maxOrder + 1,
+            'media_type' => 'local',
+            'is_active'  => true,
+        ]);
+
+        $this->engine->recalculateSchedule($channel);
+        if ($this->engine->isRunning($channel)) {
+            $this->engine->rebuild($channel);
+        }
+
+        return response()->json(['success' => true, 'message' => "Added: {$filename}"]);
     }
 
     /**

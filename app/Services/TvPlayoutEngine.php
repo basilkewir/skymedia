@@ -648,13 +648,16 @@ class TvPlayoutEngine
             }
 
             // For HTTP URLs: check the URL is alive before including it.
-            // Note: Some valid URLs (e.g. token-based downloads, HLS streams) may
-            // fail the curl check due to IP-locking or session requirements. In that
-            // case, skip the item for this build cycle but do NOT delete it — it may
-            // become valid again on the next build.
+            // Skip the alive check for direct-file URLs (mp4, mkv, etc.) that already
+            // have a stored duration — token-based download URLs often fail HEAD/range
+            // checks (IP-locking, redirect-only servers) even when ffmpeg can play them.
             if (str_starts_with($resolved, 'http://') || str_starts_with($resolved, 'https://')) {
-                if (! $this->urlIsAlive($resolved, $channel->name, $item->display_title)) {
-                    continue;
+                $isDirectFileUrl = (bool) preg_match('/\.(mkv|mp4|avi|mov|webm|ts|flv|m4v|wmv|mpg|mpeg)(\?|$)/i', $resolved);
+                $hasDuration = (float) $item->duration > 0;
+                if (! ($isDirectFileUrl && $hasDuration)) {
+                    if (! $this->urlIsAlive($resolved, $channel->name, $item->display_title)) {
+                        continue;
+                    }
                 }
             }
 

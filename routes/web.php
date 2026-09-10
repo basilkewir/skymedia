@@ -102,6 +102,7 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('channels/{channel}/playout/jingles/insert', [TvPlayoutController::class, 'insertJingle'])->name('channels.playout.jingles.insert');
     Route::delete('channels/{channel}/playout/jingles/{jingle}', [TvPlayoutController::class, 'destroyJingle'])->name('channels.playout.jingles.destroy');
     Route::get('channels/{channel}/playout/media', [TvPlayoutController::class, 'listMedia'])->name('channels.playout.media.list');
+    Route::post('channels/{channel}/playout/media/add-to-playlist', [TvPlayoutController::class, 'addMediaToPlaylist'])->name('channels.playout.media.add-to-playlist');
     Route::delete('channels/{channel}/playout/media', [TvPlayoutController::class, 'deleteMedia'])->name('channels.playout.media.delete');
 
 

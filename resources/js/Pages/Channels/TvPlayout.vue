@@ -171,7 +171,11 @@
                                         <span class="flex-1 truncate text-slate-300 font-mono">{{ f.filename }}</span>
                                         <span class="text-[10px] text-slate-500 font-mono">{{ f.size_human }}</span>
                                         <span class="text-[10px] text-slate-500">{{ f.modified }}</span>
-                                        <span v-if="f.in_playlist" class="text-[10px] text-amber-400" title="In playlist">●</span>
+                                        <span v-if="f.in_playlist" class="text-[10px] text-amber-400" title="In playlist">● In playlist</span>
+                                        <button v-else @click="addMediaFileToPlaylist(f)"
+                                                class="px-1.5 py-0.5 text-[10px] bg-teal-600/20 text-teal-400 border border-teal-500/30 rounded hover:bg-teal-600/30 transition-colors whitespace-nowrap">
+                                            + Add
+                                        </button>
                                         <button @click="deleteMedia(f)" class="text-slate-600 hover:text-red-400 transition-colors" title="Delete file">✕</button>
                                     </div>
                                 </div>
@@ -363,7 +367,7 @@
                                                 :title="probeResults[item.id]?.playable === true ? probeResults[item.id].summary : probeResults[item.id]?.playable === false ? probeResults[item.id].error : 'Test if this media can play on the server'">
                                             {{ probeResults[item.id]?.loading ? '…' : probeResults[item.id]?.playable === true ? '✓' : probeResults[item.id]?.playable === false ? '✕' : '▶' }}
                                         </button>
-                                        <button v-if="item.filepath?.startsWith('youtube:')" @click="triggerYouTubeDownload(item)"
+                                        <button v-if="item.filepath?.startsWith('youtube:') || (item.filepath?.startsWith('http') && item.media_type !== 'local')" @click="triggerDownload(item)"
                                                 :disabled="downloadStatuses[item.id] === 'downloading' || downloadStatuses[item.id] === 'ready'"
                                                 class="px-1.5 py-1 text-xs transition-colors"
                                                 :class="{
@@ -1832,7 +1836,8 @@ async function probeItem(item) {
     }
 }
 
-async function triggerYouTubeDownload(item) {    try {
+async function triggerDownload(item) {
+    try {
         const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
         const res = await fetch(route('channels.playout.items.trigger-download', [props.channel.id, item.id]), {
             method: 'POST',
@@ -1856,12 +1861,22 @@ let pollInterval = null
 onMounted(() => {
     pollInterval = setInterval(async () => {
         const hasActive = Object.values(downloadStatuses.value).some(s => s === 'downloading' || s === 'queued')
-        if (!hasActive) return
+        // Also check if any URL items are marked downloading (not in downloadStatuses yet)
+        const hasUrlDownloading = items.value.some(i =>
+            downloadStatuses.value[i.id] === 'downloading' ||
+            (i.filepath?.startsWith('http') && i.media_type !== 'local' && downloadStatuses.value[i.id] === 'downloading')
+        )
+        if (!hasActive && !hasUrlDownloading) return
         try {
             const res = await fetch(route('channels.playout.download-status', props.channel.id))
             const data = await res.json()
             if (data.statuses) {
                 downloadStatuses.value = { ...downloadStatuses.value, ...data.statuses }
+                // If a URL item finished downloading (status became 'ready'), reload items
+                const justFinished = Object.entries(data.statuses).some(
+                    ([id, status]) => status === 'ready' && downloadStatuses.value[id] !== 'ready'
+                )
+                if (justFinished) router.reload({ only: ['items', 'summary'] })
             }
         } catch (e) { /* ignore */ }
     }, 5000)
@@ -2354,6 +2369,43 @@ const jingleUploadProgress = ref(0)
 const showJinglePicker = ref(null)
 const jingleInserting = ref(false)
 const showJingleManager = ref(false)
+
+const showMediaManager = ref(false)
+const mediaFiles = ref([])
+
+function toggleMediaManager() {
+    showMediaManager.value = !showMediaManager.value
+    if (showMediaManager.value && mediaFiles.value.length === 0) loadMediaFiles()
+}
+
+async function loadMediaFiles() {
+    const res = await fetch(route('channels.playout.media.list', props.channel.id))
+    const data = await res.json()
+    if (data.success) mediaFiles.value = data.files
+}
+
+async function addMediaFileToPlaylist(f) {
+    const res = await fetch(route('channels.playout.media.add-to-playlist', props.channel.id), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
+        body: JSON.stringify({ filename: f.filename }),
+    })
+    const data = await res.json()
+    if (data.success) { router.reload({ only: ['items', 'summary'] }); await loadMediaFiles() }
+    else alert(data.error)
+}
+
+async function deleteMedia(f) {
+    if (!confirm(`Delete "${f.filename}" from disk?`)) return
+    const res = await fetch(route('channels.playout.media.delete', props.channel.id), {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
+        body: JSON.stringify({ filename: f.filename }),
+    })
+    const data = await res.json()
+    if (data.success) { router.reload({ only: ['items', 'summary'] }); await loadMediaFiles() }
+    else alert(data.error)
+}
 
 async function loadJingles() {
     try {
