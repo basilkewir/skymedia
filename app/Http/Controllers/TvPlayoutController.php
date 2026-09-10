@@ -1332,36 +1332,45 @@ class TvPlayoutController extends Controller
         $items = [];
         $seen  = [];
 
-        foreach ($feeds as $feed) {
-            if (count($items) >= 20) break;
-            try {
-                $response = Http::timeout(6)->withHeaders(['User-Agent' => 'SkyMedia/1.0'])->get($feed['url']);
-                if (! $response->successful()) continue;
+        // Split feeds into Cameroon-specific and Africa-general
+        $cameroonFeeds = array_filter($feeds, fn ($f) => in_array($f['label'], ['CAMEROON']));
+        $africaFeeds   = array_filter($feeds, fn ($f) => ! in_array($f['label'], ['CAMEROON']));
 
-                $xml = @simplexml_load_string($response->body(), 'SimpleXMLElement', LIBXML_NOCDATA);
-                if ($xml === false) continue;
+        $fetchFromFeeds = function (array $feedList, int $limit) use (&$items, &$seen, $textColors): void {
+            foreach ($feedList as $feed) {
+                if (count($items) >= $limit) break;
+                try {
+                    $response = Http::timeout(6)->withHeaders(['User-Agent' => 'SkyMedia/1.0'])->get($feed['url']);
+                    if (! $response->successful()) continue;
 
-                // Support both RSS 2.0 (<channel><item>) and RDF (<item>)
-                $xmlItems = $xml->channel->item ?? $xml->item ?? [];
+                    $xml = @simplexml_load_string($response->body(), 'SimpleXMLElement', LIBXML_NOCDATA);
+                    if ($xml === false) continue;
 
-                foreach ($xmlItems as $entry) {
-                    if (count($items) >= 20) break;
-                    $title = trim(strip_tags((string) ($entry->title ?? '')));
-                    if ($title === '' || isset($seen[$title])) continue;
-                    $seen[$title] = true;
+                    $xmlItems = $xml->channel->item ?? $xml->item ?? [];
 
-                    $colorIdx = count($items) % count($textColors);
-                    $items[] = [
-                        'text'     => $title,
-                        'color'    => $textColors[$colorIdx],
-                        'bg_color' => null,  // use channel default bg
-                        'label'    => $feed['label'],
-                    ];
+                    foreach ($xmlItems as $entry) {
+                        if (count($items) >= $limit) break;
+                        $title = trim(strip_tags((string) ($entry->title ?? '')));
+                        if ($title === '' || isset($seen[$title])) continue;
+                        $seen[$title] = true;
+
+                        $colorIdx = count($items) % count($textColors);
+                        $items[] = [
+                            'text'     => $title,
+                            'color'    => $textColors[$colorIdx],
+                            'bg_color' => null,
+                            'label'    => $feed['label'],
+                        ];
+                    }
+                } catch (\Throwable) {
+                    continue;
                 }
-            } catch (\Throwable) {
-                continue;
             }
-        }
+        };
+
+        // Fetch up to 10 Cameroon headlines first, then fill remaining 10 with Africa
+        $fetchFromFeeds(array_values($cameroonFeeds), 10);
+        $fetchFromFeeds(array_values($africaFeeds), 20);
 
         if (empty($items)) {
             return response()->json(['success' => false, 'error' => 'Could not fetch news — all feeds unavailable'], 422);

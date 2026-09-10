@@ -1356,7 +1356,10 @@ class TvPlayoutEngine
             if (strlen($bgHex) === 3) {
                 $bgHex = $bgHex[0].$bgHex[0].$bgHex[1].$bgHex[1].$bgHex[2].$bgHex[2];
             }
-            $ffBgColor = '0x' . strtoupper($bgHex);
+            // Encode opacity into the hex color as RRGGBBAA so drawbox renders correctly
+            $alphaHex = strtoupper(dechex((int) round($tickerBgOpacity / 100 * 255)));
+            $alphaHex = str_pad($alphaHex, 2, '0', STR_PAD_LEFT);
+            $ffBgColor = '0x' . strtoupper($bgHex) . $alphaHex;
 
             $tickerBarH = $tickerFontSize + ($tickerBorderW * 2);
             $tickerY = match ($tickerPos) {
@@ -1371,7 +1374,7 @@ class TvPlayoutEngine
             };
 
             // Static full-width background bar via drawbox, then scrolling text on top
-            $filterParts[] = "[{$lastLabel}]drawbox=x=0:y={$tickerBoxY}:w=iw:h={$tickerBarH}:color={$ffBgColor}@{$tickerBgOpacityFp}:t=fill[ticker_bg]";
+            $filterParts[] = "[{$lastLabel}]drawbox=x=0:y={$tickerBoxY}:w=iw:h={$tickerBarH}:color={$ffBgColor}:t=fill[ticker_bg]";
             $filterParts[] = "[ticker_bg]drawtext=textfile='{$escapedTickerFile}':reload=1:y={$tickerY}:x=w-mod(max(t*{$tickerSpeed}\\,0)\\,w+tw):fontcolor={$tickerFontColor}:fontsize={$tickerFontSize}:boxborderw=0[with_ticker]";
             $lastLabel = 'with_ticker';
 
