@@ -174,7 +174,7 @@ class TvPlayoutEngine
 
         $elapsed = (float) $channel->last_live_at->diffInSeconds(now(), true);
         // Modulo so we land in the correct position within the current loop cycle
-        $offset = (int) fmod($elapsed, $totalDuration);
+        $offset = (int) round(fmod($elapsed, $totalDuration));
 
         $channel->update(['playout_resume_offset' => $offset]);
         Log::info("[TvPlayout] {$channel->name} captured resume offset {$offset}s (elapsed {$elapsed}s, total {$totalDuration}s)");
@@ -554,9 +554,18 @@ class TvPlayoutEngine
         if ($anchorStartTime) {
             $anchor = Carbon::parse($anchorStartTime);
         } elseif ($channel->last_live_at) {
-            // Use the stored playout start time so the schedule is stable
-            // whether the channel is running or stopped.
-            $anchor = $channel->last_live_at->copy();
+            $totalDuration = $items->sum('duration');
+            if ($totalDuration > 0) {
+                // Re-anchor last_live_at so the Now Playing clock stays correct
+                // after playlist changes (add/remove/reorder items).
+                $elapsed  = (float) $channel->last_live_at->diffInSeconds(now(), true);
+                $offset   = fmod($elapsed, $totalDuration);
+                $newAnchor = Carbon::now()->subSeconds($offset);
+                $channel->update(['last_live_at' => $newAnchor]);
+                $anchor = $newAnchor;
+            } else {
+                $anchor = $channel->last_live_at->copy();
+            }
         } else {
             $anchor = Carbon::now();
         }
@@ -614,23 +623,37 @@ class TvPlayoutEngine
         $files = [];
         foreach ($items as $item) {
             $resolved = $this->resolveFilePath($item);
-            if ($resolved !== null) {
-                $duration = (float) $item->duration;
-                // HTTP URL items with no duration in DB — probe now and persist so
-                // the concat file gets a correct duration hint (required for advancement).
-                if ($duration <= 0 && (str_starts_with($resolved, 'http://') || str_starts_with($resolved, 'https://'))) {
-                    $ffprobe = trim((string) shell_exec('which ffprobe 2>/dev/null')) ?: 'ffprobe';
-                    $out = [];
-                    exec($ffprobe . ' -v quiet -protocol_whitelist file,http,https,tcp,tls,crypto -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ' . escapeshellarg(str_replace(['[', ']'], ['%5B', '%5D'], $resolved)) . ' 2>/dev/null', $out);
-                    $probed = (float) trim(implode('', $out));
-                    if ($probed > 0) {
-                        $item->update(['duration' => $probed]);
-                        $duration = $probed;
-                        Log::info("[TvPlayout] Probed duration for item {$item->id}: {$probed}s");
-                    }
-                }
-                $files[] = ['path' => $resolved, 'duration' => $duration];
+            if ($resolved === null) {
+                continue;
             }
+
+            // For HTTP URLs: check the URL is alive before including it.
+            // Dead/expired URLs (4xx/5xx) are removed from the playlist automatically.
+            if (str_starts_with($resolved, 'http://') || str_starts_with($resolved, 'https://')) {
+                $code = (int) trim((string) shell_exec(
+                    'curl -s -o /dev/null -w "%{http_code}" --max-time 5 --head ' . escapeshellarg($resolved) . ' 2>/dev/null'
+                ));
+                if ($code >= 400 || $code === 0) {
+                    Log::warning("[TvPlayout] {$channel->name}: removing expired/dead URL item '{$item->display_title}' (HTTP {$code})");
+                    $item->delete();
+                    continue;
+                }
+            }
+
+            $duration = (float) $item->duration;
+            // HTTP URL items with no duration in DB — probe now and persist.
+            if ($duration <= 0 && (str_starts_with($resolved, 'http://') || str_starts_with($resolved, 'https://'))) {
+                $ffprobe = trim((string) shell_exec('which ffprobe 2>/dev/null')) ?: 'ffprobe';
+                $out = [];
+                exec($ffprobe . ' -v quiet -protocol_whitelist file,http,https,tcp,tls,crypto -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ' . escapeshellarg(str_replace(['[', ']'], ['%5B', '%5D'], $resolved)) . ' 2>/dev/null', $out);
+                $probed = (float) trim(implode('', $out));
+                if ($probed > 0) {
+                    $item->update(['duration' => $probed]);
+                    $duration = $probed;
+                    Log::info("[TvPlayout] Probed duration for item {$item->id}: {$probed}s");
+                }
+            }
+            $files[] = ['path' => $resolved, 'duration' => $duration];
         }
 
         if ($files === []) {
@@ -1339,8 +1362,8 @@ class TvPlayoutEngine
         // Ticker (scrolling text)
         $tickerText = trim((string) $channel->ticker_text);
         if ($channel->ticker_enabled && $tickerText !== '') {
-            $tickerFile = $this->tickerFilePath($channel);
-            $escapedTickerFile = str_replace("'", "'\\''", $tickerFile);
+            $cgDir = $this->cgDirectory($channel);
+            $tickerItems = $channel->ticker_items ?? [];
 
             $tickerSpeed    = $this->px(max(10, min(500, (int) ($channel->ticker_speed ?? 80))), $s);
             $tickerFontSize = $this->px(max(10, min(72,  (int) ($channel->ticker_font_size ?? 24))), $s);
@@ -1360,19 +1383,27 @@ class TvPlayoutEngine
 
             $tickerBarH = $tickerFontSize + ($tickerBorderW * 2);
             $tickerY = match ($tickerPos) {
-                'top'    => (string) $tickerMargin,
-                'center' => '(h-line_h)/2',
-                default  => "h-{$tickerBarH}-{$tickerMargin}",
+                'top'    => "{$tickerMargin}+({$tickerBarH}-th)/2",
+                'center' => '(h-th)/2',
+                default  => "h-{$tickerBarH}-{$tickerMargin}+({$tickerBarH}-th)/2",
             };
             $tickerBoxY = match ($tickerPos) {
                 'top'    => (string) $tickerMargin,
-                'center' => "(h-{$tickerBarH})/2",
-                default  => "h-{$tickerBarH}-{$tickerMargin}",
+                'center' => "(ih-{$tickerBarH})/2",
+                default  => "ih-{$tickerBarH}-{$tickerMargin}",
             };
 
-            // Static full-width background bar via drawbox, then scrolling text on top
-            $filterParts[] = "[{$lastLabel}]drawbox=x=0:y={$tickerBoxY}:w=iw:h={$tickerBarH}:color={$ffBgColor}:t=fill[ticker_bg]";
-            $filterParts[] = "[ticker_bg]drawtext=textfile='{$escapedTickerFile}':reload=1:y={$tickerY}:x=w-mod(max(t*{$tickerSpeed}\\,0)\\,w+tw):fontcolor={$tickerFontColor}:fontsize={$tickerFontSize}:boxborderw=0[with_ticker]";
+            $padY = max(0, (int) round(($tickerBarH - $tickerFontSize) / 2));
+
+            // Full-width background bar using drawbox
+            $filterParts[] = "[{$lastLabel}]drawbox=x=0:y={$tickerBoxY}:w=iw:h={$tickerBarH}:color={$ffBgColor}@{$tickerBgOpacityFp}:t=fill[ticker_bar]";
+            $lastLabel = 'ticker_bar';
+
+            // Single scrolling drawtext using the combined ticker.txt file
+            // All items are concatenated with separators in writeTickerFile()
+            $tickerFile = $this->tickerFilePath($channel);
+            $escapedTickerFile = str_replace("'", "'\\''", $tickerFile);
+            $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedTickerFile}':reload=1:y={$tickerY}:x=w-mod(max(t*{$tickerSpeed}\\,0)\\,w+tw):fontcolor={$tickerFontColor}:fontsize={$tickerFontSize}[with_ticker]";
             $lastLabel = 'with_ticker';
 
             // Optional label prefix (e.g. "BREAKING NEWS") rendered as a separate static drawtext
@@ -1386,7 +1417,7 @@ class TvPlayoutEngine
                 $ffLabelBg = '0x' . strtoupper($labelBgHex);
                 $labelFontSize = $this->px(max(10, min(72, (int) ($channel->ticker_font_size ?? 24))), $s);
                 $escapedLabel = str_replace(['\\', "'", ':', '[', ']'], ['\\\\', "'\\''", '\\:', '\\[', '\\]'], $tickerLabel);
-                $filterParts[] = "[{$lastLabel}]drawtext=text='{$escapedLabel}':y={$tickerY}:x={$tickerMargin}:fontcolor={$labelColor}:fontsize={$labelFontSize}:box=1:boxcolor={$ffLabelBg}@1.0:boxborderw={$tickerBorderW}:clip=1[with_label]";
+                $filterParts[] = "[{$lastLabel}]drawtext=text='{$escapedLabel}':y=h-{$tickerBarH}-{$tickerBarH}-{$tickerMargin}-4:x={$tickerMargin}:fontcolor={$labelColor}:fontsize={$labelFontSize}:box=1:boxcolor={$ffLabelBg}@1.0:boxborderw={$tickerBorderW}[with_label]";
                 $lastLabel = 'with_label';
             }
         }
@@ -1507,9 +1538,9 @@ class TvPlayoutEngine
         ], $videoEncode, $audioEncode, [
             '-f', 'hls',
             '-hls_time', (string) $segDur,
-            '-hls_list_size', '60',
+            '-hls_list_size', '6',
             '-hls_flags', 'delete_segments+omit_endlist+append_list',
-            '-hls_delete_threshold', '100',
+            '-hls_delete_threshold', '3',
             '-hls_segment_type', 'mpegts',
             '-hls_segment_filename', $segPattern,
             '-hls_allow_cache', '0',
@@ -1628,23 +1659,32 @@ class TvPlayoutEngine
 
     /**
      * Write the ticker text file from ticker_items JSON array or fallback to ticker_text.
-     * Items are joined with a separator so they scroll as one continuous line.
+     * When per-item files exist, each item is written to its own file for per-item styling.
      */
     public function writeTickerFile(Channel $channel): void
     {
         $items = $channel->ticker_items ?? [];
+
         if (! empty($items)) {
-            $parts = array_map(fn ($item) => trim((string) ($item['text'] ?? '')), $items);
+            $parts = array_map(fn ($i) => trim((string) ($i['text'] ?? '')), $items);
             $parts = array_filter($parts);
             $text = implode('   •   ', $parts);
         } else {
             $text = trim((string) $channel->ticker_text);
         }
-        // FFmpeg drawtext processes % as a format specifier even in textfile= mode.
-        // Replace % with the unicode fullwidth percent sign (U+FF05) which renders
-        // identically on screen but is not treated as a format specifier by ffmpeg.
         $text = str_replace('%', '％', $text ?: ' ');
         file_put_contents($this->tickerFilePath($channel), $text);
+    }
+
+    /**
+     * Remove per-item ticker files (used when blanking the ticker for clean items).
+     */
+    public function clearTickerItemFiles(Channel $channel): void
+    {
+        $cgDir = $this->cgDirectory($channel);
+        foreach (glob("{$cgDir}/ticker_*.txt") as $f) {
+            file_put_contents($f, ' ');
+        }
     }
 
     /**
@@ -1654,6 +1694,8 @@ class TvPlayoutEngine
      */
     public function writeMetaFile(Channel $channel): void
     {
+        $channel = $channel->fresh();
+
         $items = PlaylistItem::where('channel_id', $channel->id)
             ->where('is_active', true)
             ->orderBy('sort_order')
@@ -1662,10 +1704,7 @@ class TvPlayoutEngine
         $item = null;
 
         if ($items->isNotEmpty()) {
-            // Compute position in the looping playlist using elapsed wall-clock time
-            // since last_live_at modulo total duration. This stays accurate across
-            // any number of loop cycles, unlike scheduled_start/end which go stale.
-            $totalDuration = $items->sum('duration');
+            $totalDuration = (float) $items->sum('duration');
 
             if ($totalDuration > 0 && $channel->last_live_at) {
                 $elapsed = (float) $channel->last_live_at->diffInSeconds(now(), true);
@@ -1674,9 +1713,7 @@ class TvPlayoutEngine
                 $cursor = 0.0;
                 foreach ($items as $candidate) {
                     $dur = (float) $candidate->duration;
-                    if ($dur <= 0) {
-                        continue;
-                    }
+                    if ($dur <= 0) continue;
                     if ($offset < $cursor + $dur) {
                         $item = $candidate;
                         break;
@@ -1685,7 +1722,6 @@ class TvPlayoutEngine
                 }
             }
 
-            // Fallback: first item (e.g. duration data missing or channel just started)
             if (! $item) {
                 $item = $items->first();
             }
@@ -1697,6 +1733,7 @@ class TvPlayoutEngine
 
         if ($isClean) {
             file_put_contents($this->tickerFilePath($channel), ' ');
+            $this->clearTickerItemFiles($channel);
         } else {
             $this->writeTickerFile($channel);
         }

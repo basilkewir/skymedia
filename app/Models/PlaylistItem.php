@@ -17,6 +17,7 @@ class PlaylistItem extends Model
         'title',
         'custom_title',
         'media_group',
+        'media_type',
         'filepath',
         'duration',
         'sort_order',
@@ -30,7 +31,16 @@ class PlaylistItem extends Model
 
     public function hasOverlays(): bool
     {
+        if ($this->media_type === 'jingle') {
+            return false;
+        }
+
         return ! in_array($this->media_group ?? 'default', self::CLEAN_GROUPS, true);
+    }
+
+    public function isJingle(): bool
+    {
+        return $this->media_type === 'jingle';
     }
 
     protected $casts = [

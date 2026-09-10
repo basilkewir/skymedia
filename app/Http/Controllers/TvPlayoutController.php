@@ -1384,9 +1384,209 @@ class TvPlayoutController extends Controller
         ]);
     }
 
+    // ── Jingle management ─────────────────────────────────────────────────────
+
+    /**
+     * Upload a jingle file to the channel's jingle library.
+     */
+    public function uploadJingle(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $request->validate([
+            'media' => 'required|file|max:524288|mimes:mp4,mov,mkv,webm,ts,mpeg,mpg,avi',
+        ]);
+
+        $file = $request->file('media');
+        $directory = $channel->dvr_directory . '/jingles';
+        if (! is_dir($directory)) {
+            mkdir($directory, 0755, true);
+        }
+
+        // Capture metadata BEFORE move() — the temporary path no longer exists
+        // after the file has been moved into the jingles directory.
+        $originalName = $file->getClientOriginalName();
+        $mime = (string) $file->getClientMimeType();
+        $size = $file->getSize();
+
+        $filename = time() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '_', $originalName);
+        $filepath = $directory . '/' . $filename;
+        $file->move($directory, $filename);
+
+        $duration = $this->probeDuration($filepath);
+        if ($duration <= 0) {
+            @unlink($filepath);
+            return response()->json(['success' => false, 'error' => 'Could not read media duration. File may be corrupt or unsupported.'], 422);
+        }
+
+        $jingle = \App\Models\ChannelMedia::create([
+            'channel_id' => $channel->id,
+            'type'       => 'jingle',
+            'name'       => $originalName,
+            'filepath'   => $filepath,
+            'mime_type'  => $mime,
+            'filesize'   => $size,
+            'sort_order' => \App\Models\ChannelMedia::where('channel_id', $channel->id)->where('type', 'jingle')->max('sort_order') + 1,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => "Jingle uploaded: {$originalName}",
+            'jingle'  => $jingle,
+        ]);
+    }
+
+    /**
+     * List available jingles for a channel.
+     */
+    public function listJingles(Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $jingles = \App\Models\ChannelMedia::where('channel_id', $channel->id)
+            ->where('type', 'jingle')
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->get();
+
+        return response()->json(['jingles' => $jingles]);
+    }
+
+    /**
+     * Insert a jingle from the library into the playlist at a specific position.
+     */
+    public function insertJingle(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $data = $request->validate([
+            'jingle_id' => 'required|exists:channel_media,id',
+            'position'  => 'required|integer|min:0',
+        ]);
+
+        $jingleMedia = \App\Models\ChannelMedia::where('id', $data['jingle_id'])
+            ->where('channel_id', $channel->id)
+            ->where('type', 'jingle')
+            ->firstOrFail();
+
+        $jingleName     = $jingleMedia->name;
+        $jingleFilepath = $jingleMedia->filepath;
+
+        if (! file_exists($jingleFilepath)) {
+            return response()->json(['success' => false, 'error' => 'Jingle file not found on disk.'], 422);
+        }
+
+        $duration = $this->probeDuration($jingleFilepath);
+        if ($duration <= 0) {
+            return response()->json(['success' => false, 'error' => 'Could not read jingle duration.'], 422);
+        }
+
+        $position = $data['position'];
+
+        // Shift existing items at or after the position
+        PlaylistItem::where('channel_id', $channel->id)
+            ->where('sort_order', '>=', $position)
+            ->orderBy('sort_order', 'desc')
+            ->each(function ($item) use ($position) {
+                $item->update(['sort_order' => $item->sort_order + 1]);
+            });
+
+        $item = PlaylistItem::create([
+            'channel_id'  => $channel->id,
+            'title'       => $jingleName,
+            'filepath'    => $jingleFilepath,
+            'duration'    => $duration,
+            'sort_order'  => $position,
+            'media_group' => 'clean',
+            'media_type'  => 'jingle',
+        ]);
+
+        $this->engine->recalculateSchedule($channel);
+
+        if ($this->engine->isRunning($channel)) {
+            $this->engine->rebuild($channel);
+        }
+
+        $freshItems = $channel->playlistItems()
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->get();
+
+        $totalDuration = $freshItems->sum('duration');
+        $summary = [
+            'formatted_total' => $this->formatDurationLong((float) $totalDuration),
+            'item_count'      => $freshItems->count(),
+            'anchor_start'    => $freshItems->first()?->scheduled_start?->toIso8601String(),
+            'end_anchor'      => $freshItems->last()?->scheduled_end?->toIso8601String(),
+        ];
+
+        return response()->json([
+            'success' => true,
+            'message' => "Jingle inserted: {$jingleMedia->name}",
+            'items'   => $freshItems,
+            'summary' => $summary,
+        ]);
+    }
+
+    /**
+     * Delete a jingle from the library.
+     */
+    public function destroyJingle(Channel $channel, \App\Models\ChannelMedia $jingle): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        abort_unless($jingle->channel_id === $channel->id && $jingle->type === 'jingle', 404);
+
+        if (file_exists($jingle->filepath)) {
+            @unlink($jingle->filepath);
+        }
+
+        $jingle->delete();
+
+        return response()->json(['success' => true, 'message' => 'Jingle deleted']);
+    }
+
     private function ensureAccess(Channel $channel): void
     {
         $user = auth()->user();
         abort_unless($user && (($user->is_admin ?? false) || $channel->user_id === $user->id), 403);
+    }
+
+    /**
+     * Start the push process for a TV playout channel.
+     */
+    public function startPush(Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $ok = $this->engine->startPush($channel);
+
+        return response()->json([
+            'success' => $ok,
+            'message' => $ok ? 'Push started' : 'Push failed — check push URL and stream key',
+            'push_running' => $this->engine->isPushRunning($channel),
+        ]);
+    }
+
+    /**
+     * Stop the push process for a TV playout channel.
+     */
+    public function stopPush(Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $this->engine->stopPush($channel);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Push stopped',
+            'push_running' => false,
+        ]);
     }
 }

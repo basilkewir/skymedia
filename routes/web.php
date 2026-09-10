@@ -95,6 +95,13 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::get('channels/{channel}/playout/download-status', [TvPlayoutController::class, 'downloadStatus'])->name('channels.playout.download-status');
     Route::post('channels/{channel}/playout/items/{item}/trigger-download', [TvPlayoutController::class, 'triggerDownload'])->name('channels.playout.items.trigger-download');
     Route::get('channels/{channel}/playout/items/{item}/probe', [TvPlayoutController::class, 'probeItem'])->name('channels.playout.items.probe');
+    Route::post('channels/{channel}/playout/push/start', [TvPlayoutController::class, 'startPush'])->name('channels.playout.push.start');
+    Route::post('channels/{channel}/playout/push/stop', [TvPlayoutController::class, 'stopPush'])->name('channels.playout.push.stop');
+    Route::post('channels/{channel}/playout/jingles', [TvPlayoutController::class, 'uploadJingle'])->name('channels.playout.jingles.store');
+    Route::get('channels/{channel}/playout/jingles', [TvPlayoutController::class, 'listJingles'])->name('channels.playout.jingles.list');
+    Route::post('channels/{channel}/playout/jingles/insert', [TvPlayoutController::class, 'insertJingle'])->name('channels.playout.jingles.insert');
+    Route::delete('channels/{channel}/playout/jingles/{jingle}', [TvPlayoutController::class, 'destroyJingle'])->name('channels.playout.jingles.destroy');
+
 
     // ── Channels CRUD resource ────────────────────────────────────────────────
     Route::resource('channels', ChannelController::class);

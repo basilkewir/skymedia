@@ -9,6 +9,7 @@ use App\Models\PlaylistItem;
 use App\Models\Setting;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Testing\File;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -215,10 +216,33 @@ class TvPlayoutControllerTest extends TestCase
         $this->assertTrue($this->channel->fresh()->ticker_enabled);
     }
 
-    /** @test */
+        /** @test */
     public function unauthenticated_user_cannot_access_playout(): void
     {
         $this->get(route('channels.playout', $this->channel))
             ->assertRedirect('/login');
+    }
+
+                /** @test */
+    public function upload_jingle_creates_channel_media_record(): void
+    {
+        $videoPath = '/tmp/test_jingle.mp4';
+        $this->assertFileExists($videoPath);
+
+        // Use File::createWithContent to create a proper test UploadedFile
+        $content = file_get_contents($videoPath);
+        $uploadedFile = \Illuminate\Http\Testing\File::createWithContent('test_jingle.mp4', $content);
+
+        $this->actingAs($this->admin)
+            ->post(route('channels.playout.jingles.store', $this->channel), [
+                'media' => $uploadedFile,
+            ])
+            ->assertOk()
+            ->assertJson(['success' => true]);
+
+        $this->assertDatabaseHas('channel_media', [
+            'channel_id' => $this->channel->id,
+            'type'       => 'jingle',
+        ]);
     }
 }

@@ -38,6 +38,16 @@
                                 class="px-4 py-1.5 text-xs font-semibold bg-red-600/20 text-red-400 border border-red-500/30 rounded-lg hover:bg-red-600/30 transition-colors">
                             ■ Stop Playout
                         </button>
+                        <template v-if="channel.push_url">
+                            <button v-if="!pushRunning" @click="startPush"
+                                    class="px-4 py-1.5 text-xs font-semibold bg-cyan-600/20 text-cyan-400 border border-cyan-500/30 rounded-lg hover:bg-cyan-600/30 transition-colors">
+                                ▶ Start Push
+                            </button>
+                            <button v-else @click="stopPush"
+                                    class="px-4 py-1.5 text-xs font-semibold bg-orange-600/20 text-orange-400 border border-orange-500/30 rounded-lg hover:bg-orange-600/30 transition-colors">
+                                ■ Stop Push
+                            </button>
+                        </template>
                         <Link :href="route('channels.show', channel.id)"
                               class="px-3 py-1.5 text-xs text-slate-300 border border-slate-700 rounded-lg hover:border-slate-500 transition-colors">
                             ← Back
@@ -128,12 +138,40 @@
                                     <h2 class="text-sm font-semibold text-white">Playlist Rundown</h2>
                                     <p class="text-xs text-slate-500 mt-0.5">Drag to reorder. FFmpeg reads this sequence continuously.</p>
                                 </div>
-                                <label class="px-3 py-1.5 text-xs bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded-lg hover:bg-indigo-600/30 transition-colors cursor-pointer" :class="uploading ? 'opacity-60 pointer-events-none' : ''">
-                                    {{ uploading ? `Uploading ${uploadProgress}%` : '+ Add Media' }}
-                                    <input type="file" accept="video/*,.mkv,.ts,.mov,.webm" @change="uploadMedia"
-                                           class="hidden" :disabled="uploading" />
-                                </label>
+                                <div class="flex items-center gap-2">
+                                    <button @click="showJingleManager = !showJingleManager"
+                                            class="px-3 py-1.5 text-xs bg-amber-600/20 text-amber-400 border border-amber-500/30 rounded-lg hover:bg-amber-600/30 transition-colors">
+                                        ♪ Jingle Library
+                                    </button>
+                                    <label class="px-3 py-1.5 text-xs bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded-lg hover:bg-indigo-600/30 transition-colors cursor-pointer" :class="uploading ? 'opacity-60 pointer-events-none' : ''">
+                                        {{ uploading ? `Uploading ${uploadProgress}%` : '+ Add Media' }}
+                                        <input type="file" accept="video/*,.mkv,.ts,.mov,.webm" @change="uploadMedia"
+                                               class="hidden" :disabled="uploading" />
+                                    </label>
+                                </div>
                             </div>
+                            <!-- Per-channel Jingle Library Manager -->
+                            <div v-if="showJingleManager" class="mt-3 p-3 bg-slate-800/60 border border-amber-500/20 rounded-lg">
+                                <div class="flex items-center justify-between mb-2">
+                                    <span class="text-xs font-semibold text-amber-400">♪ Jingle Library — {{ channel.name }}</span>
+                                    <label class="px-2 py-1 text-[10px] bg-amber-600/20 text-amber-400 border border-amber-500/30 rounded cursor-pointer hover:bg-amber-600/30 transition-colors" :class="jingleUploading ? 'opacity-60 pointer-events-none' : ''">
+                                        {{ jingleUploading ? `Uploading ${jingleUploadProgress}%` : '+ Upload Jingle' }}
+                                        <input type="file" accept="video/*,.mkv,.ts,.mov,.webm" @change="uploadJingle" class="hidden" :disabled="jingleUploading" />
+                                    </label>
+                                </div>
+                                <p class="text-[10px] text-slate-500 mb-2">Upload jingles once — insert them anywhere in the playlist without re-uploading.</p>
+                                <div v-if="jingles.length === 0" class="text-xs text-slate-600 py-2 text-center border border-dashed border-slate-700 rounded">No jingles uploaded yet</div>
+                                <div v-else class="space-y-1 max-h-48 overflow-y-auto">
+                                    <div v-for="j in jingles" :key="j.id" class="flex items-center gap-2 px-2 py-1.5 bg-slate-800 rounded text-xs">
+                                        <span class="text-amber-400">♪</span>
+                                        <span class="flex-1 truncate text-slate-300">{{ j.name }}</span>
+                                        <span class="text-[10px] text-slate-500 font-mono">{{ j.duration ? Math.floor(j.duration) + 's' : '' }}</span>
+                                        <span class="text-[10px] text-slate-500 font-mono">{{ j.filesize ? (j.filesize / 1024 / 1024).toFixed(1) + 'MB' : '' }}</span>
+                                        <button @click="deleteJingle(j)" class="text-slate-600 hover:text-red-400 transition-colors" title="Remove from library">✕</button>
+                                    </div>
+                                </div>
+                            </div>
+
                             <div v-if="uploading" class="mt-2">
                                 <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
                                     <div class="bg-indigo-500 h-full rounded-full transition-all duration-300" :style="{ width: uploadProgress + '%' }"></div>
@@ -214,6 +252,35 @@
 
                         <!-- Playlist items -->
                         <div class="divide-y divide-slate-800/50">
+                            <!-- Insert Jingle at top -->
+                            <div class="relative h-0 group">
+                                <div class="absolute inset-x-0 top-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                                    <button @click="showJinglePicker = showJinglePicker === 0 ? null : 0"
+                                            class="px-2 py-0.5 text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-full hover:bg-amber-500/30 transition-colors whitespace-nowrap">
+                                        + Jingle
+                                    </button>
+                                </div>
+                                <!-- Jingle picker dropdown -->
+                                <div v-if="showJinglePicker === 0"
+                                     class="absolute left-1/2 -translate-x-1/2 top-1 mt-1 w-72 bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-20 p-2">
+                                    <p class="text-[10px] text-slate-500 mb-2 px-1">Insert jingle at position 1:</p>
+                                    <div v-if="jingles.length === 0" class="text-xs text-slate-500 px-1 py-2">No jingles — use ♪ Jingle Library to upload.</div>
+                                    <div v-else class="max-h-48 overflow-y-auto space-y-1">
+                                        <button v-for="j in jingles" :key="j.id"
+                                                @click="insertJingle(j.id)"
+                                                :disabled="jingleInserting"
+                                                class="w-full flex items-center gap-2 px-2 py-1.5 text-xs text-left rounded hover:bg-slate-700 transition-colors disabled:opacity-50">
+                                            <span class="text-amber-400">♪</span>
+                                            <span class="truncate flex-1 text-slate-300">{{ j.name }}</span>
+                                            <span class="text-[10px] text-slate-500 font-mono">{{ j.filesize ? (j.filesize / 1024 / 1024).toFixed(1) + 'MB' : '' }}</span>
+                                        </button>
+                                    </div>
+                                    <button @click="showJinglePicker = null"
+                                            class="w-full mt-1 px-2 py-1 text-[10px] text-slate-500 hover:text-slate-300 text-center">
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
                             <div v-for="(item, index) in items" :key="item.id"
                                  class="hover:bg-slate-800/20 transition-colors"
                                  draggable="true"
@@ -238,7 +305,9 @@
                                                   }">
                                                 {{ downloadStatuses[item.id] === 'ready' ? 'YT ✓' : downloadStatuses[item.id] === 'downloading' ? 'YT ⬇' : downloadStatuses[item.id] === 'queued' ? 'YT …' : downloadStatuses[item.id] === 'failed' ? 'YT ✕' : 'YT' }}
                                             </span>
-                                            <span v-if="item.media_group === 'clean'"
+                                            <span v-if="item.media_type === 'jingle'"
+                                                  class="inline-block px-1.5 py-0.5 bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[10px] rounded flex-shrink-0" title="Jingle — no overlays">♪ JINGLE</span>
+                                            <span v-else-if="item.media_group === 'clean'"
                                                   class="inline-block px-1.5 py-0.5 bg-slate-600/60 text-slate-400 text-[10px] rounded flex-shrink-0" title="No overlays">CLEAN</span>
                                             <span class="truncate">{{ item.display_title || item.custom_title || item.title }}</span>
                                         </div>
@@ -323,6 +392,35 @@
                                         <button @click="saveItemEdit" :disabled="editSaving"
                                                 class="ml-auto px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50 transition-colors">
                                             {{ editSaving ? 'Saving…' : '✓ Save' }}
+                                        </button>
+                                    </div>
+                                </div>
+                                <!-- Insert Jingle bar between items -->
+                                <div class="relative h-0 -my-px group">
+                                    <div class="absolute inset-x-0 top-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                                        <button @click="showJinglePicker = showJinglePicker === index + 1 ? null : index + 1"
+                                                class="px-2 py-0.5 text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-full hover:bg-amber-500/30 transition-colors whitespace-nowrap">
+                                            + Jingle
+                                        </button>
+                                    </div>
+                                    <!-- Jingle picker dropdown -->
+                                    <div v-if="showJinglePicker === index + 1"
+                                         class="absolute left-1/2 -translate-x-1/2 top-1 mt-1 w-72 bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-20 p-2">
+                                        <p class="text-[10px] text-slate-500 mb-2 px-1">Insert jingle at position {{ index + 2 }}:</p>
+                                        <div v-if="jingles.length === 0" class="text-xs text-slate-500 px-1 py-2">No jingles — use ♪ Jingle Library to upload.</div>
+                                        <div v-else class="max-h-48 overflow-y-auto space-y-1">
+                                            <button v-for="j in jingles" :key="j.id"
+                                                    @click="insertJingle(j.id)"
+                                                    :disabled="jingleInserting"
+                                                    class="w-full flex items-center gap-2 px-2 py-1.5 text-xs text-left rounded hover:bg-slate-700 transition-colors disabled:opacity-50">
+                                                <span class="text-amber-400">♪</span>
+                                                <span class="truncate flex-1 text-slate-300">{{ j.name }}</span>
+                                                <span class="text-[10px] text-slate-500 font-mono">{{ j.filesize ? (j.filesize / 1024 / 1024).toFixed(1) + 'MB' : '' }}</span>
+                                            </button>
+                                        </div>
+                                        <button @click="showJinglePicker = null"
+                                                class="w-full mt-1 px-2 py-1 text-[10px] text-slate-500 hover:text-slate-300 text-center">
+                                            Cancel
                                         </button>
                                     </div>
                                 </div>
@@ -877,6 +975,9 @@
 import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { Link, router } from '@inertiajs/vue3'
 import AppLayout from '@/Layouts/AppLayout.vue'
+
+// ── Inline jingle picker list component ─────────────────────────────────────
+
 
 const props = defineProps({
     channel: Object,
@@ -1798,6 +1899,43 @@ async function stopPlayout() {
     }
 }
 
+async function startPush() {
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.playout.push.start', props.channel.id), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+        })
+        const data = await res.json()
+        if (data.push_running !== undefined) pushRunning.value = data.push_running
+        if (!data.success) alert(data.message || 'Push failed')
+    } catch (e) {
+        console.error('Push start failed', e)
+    }
+}
+
+async function stopPush() {
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.playout.push.stop', props.channel.id), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+        })
+        const data = await res.json()
+        pushRunning.value = false
+    } catch (e) {
+        console.error('Push stop failed', e)
+    }
+}
+
 async function pollStatus() {
     try {
         const res = await fetch(route('channels.playout.status', props.channel.id))
@@ -2146,14 +2284,26 @@ function setupPreview() {
     import('hls.js').then(({ default: Hls }) => {
         if (!Hls.isSupported()) return
         hlsPlayer = new Hls({
-            liveSyncDurationCount: 3,
-            maxBufferLength: 30,
+            liveSyncDurationCount: 2,
+            liveMaxLatencyDurationCount: 4,
+            maxBufferLength: 8,
+            maxMaxBufferLength: 12,
             enableWorker: true,
             manifestLoadingMaxRetry: 10,
             fragLoadingMaxRetry: 10,
+            startPosition: -1,
         })
         hlsPlayer.loadSource(props.previewUrl)
         hlsPlayer.attachMedia(previewPlayer.value)
+        hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => {
+            const video = previewPlayer.value
+            if (!video) return
+            if (video.duration === Infinity || video.seekable.length > 0) {
+                const end = video.seekable.end(video.seekable.length - 1)
+                if (end > 0) video.currentTime = end
+            }
+            video.play().catch(() => {})
+        })
         hlsPlayer.on(Hls.Events.ERROR, (_evt, data) => {
             if (!data.fatal) return
             if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
@@ -2167,9 +2317,100 @@ function setupPreview() {
     })
 }
 
+// ── Jingle library (per-channel) ────────────────────────────────────────────
+const jingles = ref([])
+const jingleUploading = ref(false)
+const jingleUploadProgress = ref(0)
+const showJinglePicker = ref(null)
+const jingleInserting = ref(false)
+const showJingleManager = ref(false)
+
+async function loadJingles() {
+    try {
+        const res = await fetch(route('channels.playout.jingles.list', props.channel.id))
+        const data = await res.json()
+        jingles.value = data.jingles || []
+    } catch (e) {
+        console.error('Failed to load jingles', e)
+    }
+}
+
+async function uploadJingle(event) {
+    const file = event.target.files[0]
+    if (!file) return
+    jingleUploading.value = true
+    jingleUploadProgress.value = 0
+    try {
+        const form = new FormData()
+        form.append('media', file)
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest()
+            xhr.open('POST', route('channels.playout.jingles.store', props.channel.id))
+            xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest')
+            if (csrfToken) xhr.setRequestHeader('X-XSRF-TOKEN', decodeURIComponent(csrfToken))
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    jingleUploadProgress.value = Math.round((e.loaded / e.total) * 100)
+                }
+            })
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) resolve()
+                else reject(new Error(xhr.statusText))
+            }
+            xhr.onerror = () => reject(new Error('Network error'))
+            xhr.send(form)
+        })
+        await loadJingles()
+    } catch (e) {
+        console.error('Jingle upload failed', e)
+    } finally {
+        jingleUploading.value = false
+        jingleUploadProgress.value = 0
+        event.target.value = ''
+    }
+}
+
+async function deleteJingle(jingle) {
+    if (!confirm(`Delete jingle "${jingle.name}"?`)) return
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        await fetch(route('channels.playout.jingles.destroy', [props.channel.id, jingle.id]), {
+            method: 'DELETE',
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '' },
+        })
+        await loadJingles()
+    } catch (e) {
+        console.error('Delete jingle failed', e)
+    }
+}
+
+async function insertJingle(jingleId) {
+    jingleInserting.value = true
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.playout.jingles.insert', props.channel.id), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '' },
+            body: JSON.stringify({ jingle_id: jingleId, position: showJinglePicker.value }),
+        })
+        const data = await res.json()
+        if (data.success) {
+            items.value = data.items
+            if (data.summary) summary.value = data.summary
+            showJinglePicker.value = null
+        }
+    } catch (e) {
+        console.error('Insert jingle failed', e)
+    } finally {
+        jingleInserting.value = false
+    }
+}
+
 onMounted(() => {
     setupPreview()
     statusTimer = setInterval(pollStatus, 5000)
+    loadJingles()
 })
 
 onUnmounted(() => {

@@ -614,9 +614,9 @@ class StreamManager
                 if ($channel->stream_status !== 'live') {
                     $channel->update(['stream_status' => 'live', 'playout_status' => 'live', 'source_live' => true]);
                 }
-                if (! $channel->last_live_at || now()->diffInSeconds($channel->last_live_at) > 60) {
-                    $channel->update(['last_live_at' => now()]);
-                }
+                // NOTE: Do NOT update last_live_at here — it anchors the playlist
+                // position timer for Now Playing title. It is set once in start()
+                // and must not be refreshed, otherwise the title drifts.
                 // Push watchdog: restart push if it died
                 $engine->ensurePushRunning($channel->fresh());
             }
