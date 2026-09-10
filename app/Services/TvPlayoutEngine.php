@@ -653,6 +653,12 @@ class TvPlayoutEngine
                     Log::info("[TvPlayout] Probed duration for item {$item->id}: {$probed}s");
                 }
             }
+            // Skip items with no playable duration (e.g. images) — including them
+            // without a duration hint causes ffmpeg's concat demuxer to hang.
+            if ($duration <= 0) {
+                Log::warning("[TvPlayout] {$channel->name}: skipping item {$item->id} '{$item->display_title}' — no playable duration");
+                continue;
+            }
             $files[] = ['path' => $resolved, 'duration' => $duration];
         }
 
