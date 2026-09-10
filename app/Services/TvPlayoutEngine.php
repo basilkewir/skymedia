@@ -628,22 +628,24 @@ class TvPlayoutEngine
             }
 
             // For HTTP URLs: check the URL is alive before including it.
-            // Dead/expired URLs (4xx/5xx) are removed from the playlist automatically.
+            // Note: Some valid URLs (e.g. token-based downloads) may fail the
+            // curl check due to IP-locking or session requirements. In that case,
+            // skip the item for this build cycle but do NOT delete it — it may
+            // become valid again on the next build.
             if (str_starts_with($resolved, 'http://') || str_starts_with($resolved, 'https://')) {
                 // Encode brackets for curl — they are valid in URLs but break some servers
                 $curlUrl = str_replace(['[', ']'], ['%5B', '%5D'], $resolved);
                 $code = (int) trim((string) shell_exec(
-                    'curl -s -o /dev/null -w "%{http_code}" --max-time 5 --head ' . escapeshellarg($curlUrl) . ' 2>/dev/null'
+                    'curl -s -o /dev/null -w "%{http_code}" --max-time 5 -L --head ' . escapeshellarg($curlUrl) . ' 2>/dev/null'
                 ));
                 // Some servers block HEAD — retry with a small GET range
                 if ($code >= 400 || $code === 0) {
                     $code = (int) trim((string) shell_exec(
-                        'curl -s -o /dev/null -w "%{http_code}" --max-time 5 -r 0-1023 ' . escapeshellarg($curlUrl) . ' 2>/dev/null'
+                        'curl -s -o /dev/null -w "%{http_code}" --max-time 5 -L -r 0-1023 ' . escapeshellarg($curlUrl) . ' 2>/dev/null'
                     ));
                 }
                 if ($code >= 400 || $code === 0) {
-                    Log::warning("[TvPlayout] {$channel->name}: removing expired/dead URL item '{$item->display_title}' (HTTP {$code})");
-                    $item->delete();
+                    Log::warning("[TvPlayout] {$channel->name}: URL check failed for '{$item->display_title}' (HTTP {$code}) — skipping for this build cycle");
                     continue;
                 }
             }
