@@ -1411,13 +1411,13 @@ class TvPlayoutEngine
         $cmd[] = '-f';
         $cmd[] = 'concat';
 
+        $cmd[] = '-i';
+        $cmd[] = $concatFile;
+
         if ($resumeOffset > 0) {
             $cmd[] = '-ss';
             $cmd[] = (string) $resumeOffset;
         }
-
-        $cmd[] = '-i';
-        $cmd[] = $concatFile;
 
         // Logo overlay — only include when logo_enabled is true.
         $this->ensureLogoBlank($channel);
