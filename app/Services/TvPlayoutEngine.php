@@ -1356,10 +1356,7 @@ class TvPlayoutEngine
             if (strlen($bgHex) === 3) {
                 $bgHex = $bgHex[0].$bgHex[0].$bgHex[1].$bgHex[1].$bgHex[2].$bgHex[2];
             }
-            // Encode opacity into the hex color as RRGGBBAA so drawbox renders correctly
-            $alphaHex = strtoupper(dechex((int) round($tickerBgOpacity / 100 * 255)));
-            $alphaHex = str_pad($alphaHex, 2, '0', STR_PAD_LEFT);
-            $ffBgColor = '0x' . strtoupper($bgHex) . $alphaHex;
+            $ffBgColor = '0x' . strtoupper($bgHex);
 
             $tickerBarH = $tickerFontSize + ($tickerBorderW * 2);
             $tickerY = match ($tickerPos) {
