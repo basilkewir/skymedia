@@ -299,12 +299,11 @@
                                         <button @click="cancelEdit" class="text-xs text-slate-500 hover:text-white flex-shrink-0">✕ Cancel</button>
                                     </div>
                                     <div class="flex items-center gap-2 mb-2">
-                                        <input v-model="editTitle" type="text"
+                                        <input ref="editInputRef" v-model="editTitle" type="text"
                                                placeholder="Display title"
                                                class="flex-1 form-input text-xs"
                                                @keydown.enter="saveItemEdit"
-                                               @keydown.escape="cancelEdit"
-                                               @vue:mounted="el => { el.focus(); el.select() }" />
+                                               @keydown.escape="cancelEdit" />
                                         <button @click="editTitle = item.title" type="button"
                                                 class="px-2 py-1 text-[10px] text-slate-500 hover:text-slate-300 border border-slate-700 rounded flex-shrink-0" title="Reset to original filename">
                                             Reset
@@ -875,7 +874,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { Link, router } from '@inertiajs/vue3'
 import AppLayout from '@/Layouts/AppLayout.vue'
 
@@ -1246,15 +1245,20 @@ const mediaGroups = [
 ]
 
 // Inline item editor
-const editingItem = ref(null)  // item being edited
+const editingItem = ref(null)
 const editTitle = ref('')
 const editGroup = ref('default')
 const editSaving = ref(false)
+const editInputRef = ref(null)
 
 function editItemTitle(item) {
     editingItem.value = item
     editTitle.value = item.custom_title || item.title
     editGroup.value = item.media_group || 'default'
+    nextTick(() => {
+        editInputRef.value?.focus()
+        editInputRef.value?.select()
+    })
 }
 
 function cancelEdit() {
