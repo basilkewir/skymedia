@@ -770,8 +770,22 @@ class TvPlayoutController extends Controller
         $anchor = $data['start_time'] ?? null;
         $summary = $this->engine->recalculateSchedule($channel, $anchor);
 
+        // If a new anchor was explicitly set, update last_live_at so ffmpeg
+        // seeks to the correct position in the playlist.
+        if ($anchor) {
+            $channel->update([
+                'last_live_at'          => \Carbon\Carbon::parse($anchor),
+                'playout_resume_offset' => null,
+            ]);
+        }
+
         if ($this->engine->isRunning($channel)) {
-            $this->engine->rebuild($channel);
+            if ($anchor) {
+                // fromAnchor=true skips captureOffset so start() computes -ss from new last_live_at
+                $this->engine->restartWithResume($channel->fresh(), true);
+            } else {
+                $this->engine->rebuild($channel);
+            }
         }
 
         $freshItems = $channel->playlistItems()

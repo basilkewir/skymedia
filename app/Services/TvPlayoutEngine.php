@@ -201,14 +201,17 @@ class TvPlayoutEngine
      * Used by all overlay-settings updates so the playlist time is preserved.
      * The push process is also restarted so it picks up the new HLS output.
      */
-    public function restartWithResume(Channel $channel): void
+    public function restartWithResume(Channel $channel, bool $fromAnchor = false): void
     {
         if (! $this->isRunning($channel)) {
             return;
         }
 
-        // 1. Capture where we are before killing the process
-        $this->captureOffset($channel);
+        // When restarting from a new anchor, skip captureOffset so start()
+        // computes -ss from the updated last_live_at instead.
+        if (! $fromAnchor) {
+            $this->captureOffset($channel);
+        }
 
         // 2. Stop only the playout ffmpeg (not the push — push will be restarted by startPush)
         $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
