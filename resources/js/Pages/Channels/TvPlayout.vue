@@ -999,7 +999,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { Link, router } from '@inertiajs/vue3'
 import AppLayout from '@/Layouts/AppLayout.vue'
 
@@ -1022,6 +1022,9 @@ const pushRunning = ref(props.channel.push_status === 'live')
 const downloadStatuses = ref({ ...props.downloadStatuses })
 const probeResults = ref({})
 const summary = ref({ ...props.summary })
+watch(() => props.items, (val) => { items.value = [...val] })
+watch(() => props.summary, (val) => { summary.value = { ...val } })
+watch(() => props.downloadStatuses, (val) => { downloadStatuses.value = { ...val } })
 const tickerText = ref(props.channel.ticker_text || '')
 const tickerMessage = ref('')
 
