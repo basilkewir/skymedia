@@ -387,11 +387,13 @@ class TvPlayoutController extends Controller
         $this->ensureAccess($channel);
 
         $request->validate([
-            'url'   => 'required|string|max:8000',
-            'title' => 'nullable|string|max:500',
+            'url'      => 'required|string|max:8000',
+            'title'    => 'nullable|string|max:500',
+            'download' => 'nullable|boolean',
         ]);
 
         $url = trim($request->input('url'));
+        $forceDownload = $request->boolean('download', false);
 
         if (! str_starts_with($url, 'http://') && ! str_starts_with($url, 'https://')) {
             return response()->json(['success' => false, 'error' => 'URL must start with http:// or https://'], 422);
@@ -411,25 +413,54 @@ class TvPlayoutController extends Controller
 
         $title = $request->input('title') ?: $this->titleFromUrl($url);
 
-        $exists = PlaylistItem::where('channel_id', $channel->id)
-            ->where('filepath', $url)
-            ->exists();
-
-        if ($exists) {
-            return response()->json(['success' => false, 'error' => 'This URL is already in the playlist.'], 422);
+        // Prepare download directory
+        $directory = $channel->dvr_directory . '/tv_media';
+        if (! is_dir($directory)) {
+            mkdir($directory, 0755, true);
         }
 
-        // Probe duration via ffprobe (works for HLS .m3u8 and direct video URLs)
-        $duration = $this->probeDuration($url);
+        $filepath = null;
+        $mediaType = 'url';
+        $duration = 0.0;
+
+        // Detect if URL is a direct file download (has a media file extension)
+        $isDirectFile = preg_match('/\.(mkv|mp4|avi|mov|webm|ts|flv|m4v|wmv|mpg|mpeg)(\?|$)/i', $url);
+
+        if ($forceDownload || $isDirectFile) {
+            // For direct file downloads or explicit download request — try downloading first
+            $duration = $this->downloadFile($url, $directory, $title, $filepath);
+            if ($duration > 0) {
+                $mediaType = 'local';
+            }
+        }
+
+        if ($duration <= 0 && ! $forceDownload) {
+            // Try probing the URL directly (works for HLS, direct streams, etc.)
+            $duration = $this->probeDuration($url);
+        }
+
+        if ($duration <= 0 && ! $isDirectFile) {
+            // For non-file URLs (HLS, etc.) that can't be probed, use a default duration
+            // FFmpeg will handle the actual playback and duration detection
+            $duration = 7200.0; // 2 hours default for live/unknown streams
+        }
+
+        if ($duration <= 0) {
+            // Direct file download failed and we can't probe it — still add it with a
+            // default duration so ffmpeg can try to play it. The concat builder will
+            // probe it again during build and skip if still inaccessible.
+            $duration = 7200.0; // 2 hours default — ffmpeg will detect actual duration during playback
+        }
 
         $maxOrder = PlaylistItem::where('channel_id', $channel->id)->max('sort_order') ?? 0;
 
-        PlaylistItem::create([
+        $item = PlaylistItem::create([
             'channel_id' => $channel->id,
             'title'      => $title,
-            'filepath'   => $url,
-            'duration'   => $duration > 0 ? $duration : 0,
+            'filepath'   => $filepath ?? $url,
+            'duration'   => $duration,
             'sort_order' => $maxOrder + 1,
+            'media_type' => $mediaType,
         ]);
 
         $this->engine->recalculateSchedule($channel);
@@ -438,10 +469,67 @@ class TvPlayoutController extends Controller
             $this->engine->rebuild($channel);
         }
 
+        $locationLabel = $mediaType === 'local' ? 'Downloaded' : 'Linked';
         return response()->json([
-            'success' => true,
-            'message' => "Added: {$title}" . ($duration > 0 ? " ({$this->formatDuration($duration)})" : ''),
+            'success'    => true,
+            'message'    => "{$locationLabel} and added: {$title} ({$this->formatDuration($duration)})",
+            'item_id'    => $item->id,
+            'media_type' => $mediaType,
         ]);
+    }
+
+    /**
+     * Download a URL to the local tv_media directory.
+     * Returns the probed duration on success, 0.0 on failure.
+     */
+    private function downloadFile(string $url, string $directory, string $title, ?string &$filepath): float
+    {
+        // Extract extension from URL (strip query string first)
+        $noQuery = strtok($url, '?');
+        $urlExt = '';
+        if ($noQuery && preg_match('/\.(mkv|mp4|avi|mov|webm|ts|flv|m4v|wmv|mpg|mpeg|m4a|mp3|aac|ogg)(\?|$)/i', $noQuery, $m)) {
+            $urlExt = '.' . strtolower($m[1]);
+        }
+
+        // Generate a safe filename from the title, preserving extension
+        $safeName = preg_replace('/[^a-zA-Z0-9._-]/', '_', $title);
+        $safeName = substr($safeName, 0, 100); // Limit length
+        // Remove any trailing dots or underscores
+        $safeName = rtrim($safeName, '._');
+
+        // Append extension from URL if not already in the safe name
+        if ($urlExt && ! str_ends_with(strtolower($safeName), $urlExt)) {
+            $safeName .= $urlExt;
+        }
+
+        // Fallback to generic extension if still missing
+        if (! preg_match('/\.[a-zA-Z0-9]{2,4}$/', $safeName)) {
+            $safeName .= '.mp4';
+        }
+
+        $filename = time() . '_' . $safeName;
+        $filepath = $directory . '/' . $filename;
+
+        // Download the file using curl (handles redirects, tokens, etc.)
+        $encodedUrl = $this->encodeUrlBrackets($url);
+        $cmd = 'curl -L --max-time 300 -o ' . escapeshellarg($filepath) . ' ' . escapeshellarg($encodedUrl) . ' 2>&1';
+        exec($cmd, $output, $returnCode);
+
+        if ($returnCode !== 0 || ! file_exists($filepath) || filesize($filepath) < 1024) {
+            @unlink($filepath);
+            $filepath = null;
+            return 0.0;
+        }
+
+        // Probe exact duration
+        $duration = $this->probeDuration($filepath);
+        if ($duration <= 0) {
+            @unlink($filepath);
+            $filepath = null;
+            return 0.0;
+        }
+
+        return $duration;
     }
 
     /**
@@ -1548,6 +1636,117 @@ class TvPlayoutController extends Controller
         $jingle->delete();
 
         return response()->json(['success' => true, 'message' => 'Jingle deleted']);
+    }
+
+    /**
+     * List all media files (downloaded URLs and uploaded files) for the media manager.
+     */
+    public function listMedia(Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $directory = $channel->dvr_directory . '/tv_media';
+        $files = [];
+
+        if (is_dir($directory)) {
+            $iterator = new \DirectoryIterator($directory);
+            foreach ($iterator as $fileInfo) {
+                if ($fileInfo->isDot() || $fileInfo->isDir()) {
+                    continue;
+                }
+
+                $filename = $fileInfo->getFilename();
+                $filepath = $fileInfo->getPathname();
+                $size = $fileInfo->getSize();
+                $modified = $fileInfo->getMTime();
+
+                // Check if this file is referenced by any playlist item
+                $playlistItem = PlaylistItem::where('channel_id', $channel->id)
+                    ->where('filepath', $filepath)
+                    ->first();
+
+                $files[] = [
+                    'filename'    => $filename,
+                    'filepath'    => $filepath,
+                    'size'        => $size,
+                    'size_human'  => $this->formatBytes($size),
+                    'modified'    => date('Y-m-d H:i:s', $modified),
+                    'in_playlist' => $playlistItem !== null,
+                    'playlist_item_id' => $playlistItem?->id,
+                ];
+            }
+        }
+
+        // Sort by modified time, newest first
+        usort($files, fn ($a, $b) => strcmp($b['modified'], $a['modified']));
+
+        return response()->json([
+            'success' => true,
+            'files'   => $files,
+            'count'   => count($files),
+        ]);
+    }
+
+    /**
+     * Delete a media file from disk and remove from playlist.
+     */
+    public function deleteMedia(Request $request, Channel $channel): JsonResponse
+    {
+        abort_unless($channel->source_type === 'tv_playout', 404);
+        $this->ensureAccess($channel);
+
+        $request->validate([
+            'filename' => 'required|string',
+        ]);
+
+        $filename = basename($request->input('filename')); // Prevent path traversal
+        $directory = $channel->dvr_directory . '/tv_media';
+        $filepath = $directory . '/' . $filename;
+
+        // Security check: ensure the file is within the tv_media directory
+        $realDir = realpath($directory);
+        $realFile = realpath($filepath);
+        if ($realFile === false || ! str_starts_with($realFile, $realDir)) {
+            return response()->json(['success' => false, 'error' => 'Invalid file path'], 400);
+        }
+
+        if (! file_exists($filepath)) {
+            return response()->json(['success' => false, 'error' => 'File not found'], 404);
+        }
+
+        // Remove from playlist first
+        PlaylistItem::where('channel_id', $channel->id)
+            ->where('filepath', $filepath)
+            ->delete();
+
+        // Delete the file
+        @unlink($filepath);
+
+        // Recalculate schedule and rebuild if running
+        $this->engine->recalculateSchedule($channel);
+        if ($this->engine->isRunning($channel)) {
+            $this->engine->rebuild($channel);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => "Deleted: {$filename}",
+        ]);
+    }
+
+    /**
+     * Format bytes to human-readable size.
+     */
+    private function formatBytes(int $bytes): string
+    {
+        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        $i = 0;
+        while ($bytes >= 1024 && $i < count($units) - 1) {
+            $bytes /= 1024;
+            $i++;
+        }
+        return sprintf('%.2f %s', $bytes, $units[$i]);
     }
 
     private function ensureAccess(Channel $channel): void

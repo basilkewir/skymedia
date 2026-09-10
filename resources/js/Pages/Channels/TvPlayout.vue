@@ -143,6 +143,10 @@
                                             class="px-3 py-1.5 text-xs bg-amber-600/20 text-amber-400 border border-amber-500/30 rounded-lg hover:bg-amber-600/30 transition-colors">
                                         ♪ Jingle Library
                                     </button>
+                                    <button @click="toggleMediaManager"
+                                            class="px-3 py-1.5 text-xs bg-teal-600/20 text-teal-400 border border-teal-500/30 rounded-lg hover:bg-teal-600/30 transition-colors">
+                                        📁 Media Manager
+                                    </button>
                                     <label class="px-3 py-1.5 text-xs bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded-lg hover:bg-indigo-600/30 transition-colors cursor-pointer" :class="uploading ? 'opacity-60 pointer-events-none' : ''">
                                         {{ uploading ? `Uploading ${uploadProgress}%` : '+ Add Media' }}
                                         <input type="file" accept="video/*,.mkv,.ts,.mov,.webm" @change="uploadMedia"
@@ -150,6 +154,29 @@
                                     </label>
                                 </div>
                             </div>
+
+                            <!-- Media Manager Panel -->
+                            <div v-if="showMediaManager" class="mt-3 p-3 bg-slate-800/60 border border-teal-500/20 rounded-lg">
+                                <div class="flex items-center justify-between mb-2">
+                                    <span class="text-xs font-semibold text-teal-400">📁 Media Manager — {{ channel.name }}</span>
+                                    <button @click="loadMediaFiles" class="px-2 py-1 text-[10px] bg-teal-600/20 text-teal-400 border border-teal-500/30 rounded cursor-pointer hover:bg-teal-600/30 transition-colors">
+                                        ↻ Refresh
+                                    </button>
+                                </div>
+                                <p class="text-[10px] text-slate-500 mb-2">Downloaded and uploaded media files stored on the server.</p>
+                                <div v-if="mediaFiles.length === 0" class="text-xs text-slate-600 py-2 text-center border border-dashed border-slate-700 rounded">No media files on disk</div>
+                                <div v-else class="space-y-1 max-h-64 overflow-y-auto">
+                                    <div v-for="f in mediaFiles" :key="f.filename" class="flex items-center gap-2 px-2 py-1.5 bg-slate-800 rounded text-xs">
+                                        <span class="text-teal-400">📄</span>
+                                        <span class="flex-1 truncate text-slate-300 font-mono">{{ f.filename }}</span>
+                                        <span class="text-[10px] text-slate-500 font-mono">{{ f.size_human }}</span>
+                                        <span class="text-[10px] text-slate-500">{{ f.modified }}</span>
+                                        <span v-if="f.in_playlist" class="text-[10px] text-amber-400" title="In playlist">●</span>
+                                        <button @click="deleteMedia(f)" class="text-slate-600 hover:text-red-400 transition-colors" title="Delete file">✕</button>
+                                    </div>
+                                </div>
+                            </div>
+
                             <!-- Per-channel Jingle Library Manager -->
                             <div v-if="showJingleManager" class="mt-3 p-3 bg-slate-800/60 border border-amber-500/20 rounded-lg">
                                 <div class="flex items-center justify-between mb-2">
