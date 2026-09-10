@@ -152,7 +152,7 @@ class ChannelController extends Controller
         return redirect()->route('channels.show', $channel)->with('success', 'Channel created');
     }
 
-    public function show(Channel $channel): \Symfony\Component\HttpFoundation\Response
+    public function show(Channel $channel): Response
     {
         $this->ensureChannelAccess($channel);
 

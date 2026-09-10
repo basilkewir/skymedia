@@ -49,14 +49,6 @@ class Channel extends Model
         'check_interval', 'max_retries',
     ];
 
-    protected $hidden = [
-        'push_password',
-        'push_username',
-        'youtube_cookies',
-        'youtube_po_token',
-        'rtmp_input_key',
-    ];
-
     protected $attributes = [
         // No default quota — null means unlimited
     ];

@@ -75,4 +75,45 @@ class ManagedChannelAccessTest extends TestCase
         $this->actingAs($manager)->get(route('logs.index'))->assertForbidden();
         $this->actingAs($manager)->get(route('dvr.index'))->assertForbidden();
     }
+
+    public function test_editing_channel_preserves_push_settings(): void
+    {
+        $user = User::factory()->create(['is_admin' => true]);
+        $channel = Channel::factory()->create([
+            'user_id' => $user->id,
+            'source_type' => 'rtmp',
+            'push_url' => 'rtmp://forwarding.example/live',
+            'push_stream_key' => 'secret-key-123',
+            'push_username' => 'pushuser',
+            'push_password' => 'pushpass',
+            'rtmp_input_key' => 'ingest-key-abc',
+        ]);
+
+        // The edit page must expose push fields so they round-trip on save
+        $this->actingAs($user)
+            ->get(route('channels.edit', $channel))
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('channel.push_url', 'rtmp://forwarding.example/live')
+                ->where('channel.push_stream_key', 'secret-key-123')
+                ->where('channel.rtmp_input_key', 'ingest-key-abc'));
+
+        $this->actingAs($user)
+            ->put(route('channels.update', $channel), [
+                'name' => 'Renamed Channel',
+                'source_type' => 'rtmp',
+                'source_url' => $channel->source_url,
+                'push_url' => 'rtmp://forwarding.example/live',
+                'push_stream_key' => 'secret-key-123',
+                'push_username' => 'pushuser',
+                'push_password' => 'pushpass',
+            ])
+            ->assertRedirect();
+
+        $channel->refresh();
+        $this->assertSame('secret-key-123', $channel->push_stream_key);
+        $this->assertSame('pushuser', $channel->push_username);
+        $this->assertSame('pushpass', $channel->push_password);
+        $this->assertSame('ingest-key-abc', $channel->rtmp_input_key);
+    }
 }
