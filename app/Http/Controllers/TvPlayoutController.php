@@ -13,7 +13,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Process;
+use Symfony\Component\Process\Process;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -923,7 +923,8 @@ class TvPlayoutController extends Controller
 
             $cmd[] = $filepath;
 
-            $proc = Process::create($cmd)->setTimeout(30);
+            $proc = new Process($cmd);
+            $proc->setTimeout(30);
             $proc->run();
 
             $out = trim($proc->getOutput());
@@ -1264,7 +1265,8 @@ class TvPlayoutController extends Controller
             }
             $cmd[] = $path;
 
-            $proc = \Symfony\Component\Process\Process::create($cmd)->setTimeout(20);
+            $proc = new Process($cmd);
+            $proc->setTimeout(20);
             $proc->run();
 
             if (! $proc->isSuccessful()) {
