@@ -623,47 +623,15 @@ class TvPlayoutEngine
             return;
         }
 
-        // CG alive AND branded.m3u8 fresh → leave it alone.
+        // If CG is running, let it write its own branded.m3u8 — do NOT overwrite.
         $cgPid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'cg_playout'));
-        if ($cgPid > 0
-            && $this->ffmpeg->isRunning($cgPid)
-            && file_exists($branded)
-            && time() - filemtime($branded) < 30) {
+        if ($cgPid > 0 && $this->ffmpeg->isRunning($cgPid)) {
             return;
         }
 
-        // Recently synced — don't churn the file.
-        if (file_exists($branded) && time() - filemtime($branded) < 10) {
-            return;
-        }
-        // Copy raw.m3u8 to branded.m3u8 as-is (flat paths: both at DVR root,
-        // so segment names like raw_....ts resolve correctly from either playlist)
+        // CG is down → fall back to raw.m3u8 (flat paths: both at DVR root)
         try {
             copy($rawFn, $branded);
-            @chmod($branded, 0666);
-        } catch (\Throwable $e) {
-            Log::error("[TvPlayout] {$channel->name}: branded fallback write failed: {$e->getMessage()}");
-            return;
-        }
-        Log::warning("[TvPlayout] {$channel->name}: branded.m3u8 fell back to RAW stream (CG unavailable)");
-
-        // Rewrite raw.m3u8 → branded.m3u8: bare segment names become
-        // raw/raw_....ts so they resolve relative to {dvr}/ via nginx alias
-        // (/hls/{slug}/raw/raw_....ts) or the PHP HlsController fallback.
-        $lines = explode("\n", (string) file_get_contents($rawFn));
-        foreach ($lines as $k => $line) {
-            $seg = trim($line);
-            if (preg_match('/^raw_\\d+\\.ts$/', $seg)) {
-                $lines[$k] = 'raw/' . $seg;
-            }
-        }
-
-        // Never let a failed fallback write crash the caller (e.g. start()).
-        // The DVR files may be owned by root or www-data depending on which
-        // process started the channel; make them world-writable so either
-        // user can always overwrite the playlists.
-        try {
-            file_put_contents($branded, implode("\n", $lines));
             @chmod($branded, 0666);
         } catch (\Throwable $e) {
             Log::error("[TvPlayout] {$channel->name}: branded fallback write failed: {$e->getMessage()}");
@@ -673,40 +641,7 @@ class TvPlayoutEngine
     }
 
     /**
-     * Rebuild the concat file seamlessly — send SIGUSR1 to the running ffmpeg
-     * process so it reloads the concat demuxer without any output gap.
-     * Falls back to a full restart only if the process is not running.
-     */
-    public function rebuild(Channel $channel): bool
-    {
-        $this->recalculateSchedule($channel);
-        $this->writeMetaFile($channel);
-
-        $concatPath = $this->concatFilePath($channel);
-
-        // Snapshot whether the current concat is slate-only before rewriting it
-        $wasSlateOnly = false;
-        if (file_exists($concatPath)) {
-            $existing = file_get_contents($concatPath);
-            $wasSlateOnly = str_contains($existing, 'slate.mp4') &&
-                            ! preg_match('/^file\s+[^\n]*(?<!slate\.mp4)[^\n]*$/m', $existing);
-        }
-
-        // Rewrite the concat file on disk
-        $concatFile = $this->buildConcatFile($channel);
-
-        // If buildConcatFile returned a URL (not a local file), restart entirely
-        if ($concatFile !== null && str_starts_with($concatFile, 'http')) {
-            if ($this->isRunning($channel)) {
-                $this->stop($channel);
-            }
-            return $this->start($channel->fresh());
-        }
-
-        if ($this->isRunning($channel)) {
-            // If we were playing slate and now have real content, restart so the
-            // new content starts immediately rather than waiting for the slate loop
-            // to exhaust (which could take hours).
+     * Rebuild the concat file seamlesslyt (which could take hours).
             $newContent = $concatFile ? file_get_contents($concatFile) : '';
             $nowHasReal = $concatFile !== null &&
                           ! (str_contains($newContent, 'slate.mp4') &&
