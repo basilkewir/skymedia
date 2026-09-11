@@ -1771,8 +1771,8 @@ class TvPlayoutEngine
         // NOTE: Do NOT use -re with HLS input — HLS is already a timed stream
         // and -re causes ffmpeg to read at native frame rate, which conflicts
         // with the HLS playlist timing and can cause ffmpeg to crash.
-        $cmd[] = '-safe';
-        $cmd[] = '0';
+        // NOTE: Do NOT use -safe with HLS input — -safe is a concat demuxer option
+        // and will cause "Option safe not found" errors with the HLS demuxer.
         $cmd[] = '-protocol_whitelist';
         $cmd[] = 'file,http,https,tcp,tls,crypto';
         $cmd[] = '-f';
