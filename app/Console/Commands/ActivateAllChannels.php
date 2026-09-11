@@ -47,6 +47,23 @@ class ActivateAllChannels extends Command
                         $needsStart = true;
                         $this->line("  [{$channel->name}] playout PID {$channel->pid} runs OLD code — restarting with new pipeline");
                     }
+
+                    // Duplicate-writer detection: a healthy channel has at most a
+                    // playout (raw_%010d) + CG (branded_%010d) writer. If MORE
+                    // ffmpeg processes touch this channel's DVR dir, the playlist
+                    // is being corrupted by multiple writers (CPU saturation +
+                    // frozen output) — force a restart to sweep the duplicates.
+                    if (!$needsStart) {
+                        // pgrep -f matches ERE; the DVR path (/var/skymedia/dvr/{slug})
+                        // contains no regex metacharacters, so a plain pattern works.
+                        $writerLines = [];
+                        exec("pgrep -f " . escapeshellarg("ffmpeg.*" . $channel->dvr_directory . ".*_%010d\\.ts") . " 2>/dev/null", $writerLines);
+                        $writerPids = array_filter($writerLines, fn ($w) => (int) trim($w) > 0);
+                        if (count($writerPids) > 2) {
+                            $needsStart = true;
+                            $this->line("  [{$channel->name}] " . count($writerPids) . " HLS writers detected (expected ≤2) — restarting to sweep duplicates");
+                        }
+                    }
                 }
             }
 

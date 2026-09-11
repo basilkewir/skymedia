@@ -350,10 +350,11 @@ class TvPlayoutEngine
             if ($pid <= 0 || in_array((string) $pid, $keep)) {
                 continue;
             }
-            // Our own segment writers (raw_%010d / branded_%010d) are never orphans
-            if (str_contains($line, 'raw_%010d') || str_contains($line, 'branded_%010d')) {
-                continue;
-            }
+            // NOTE: we deliberately DO NOT exempt raw_%010d/branded_%010d writers
+            // here. A duplicate playout writing the same raw.m3u8 as our tracked
+            // process is exactly what freezes the output (two writers, two
+            // different -ss offsets, one playlist). Only the three tracked PIDs
+            // are allowed to touch this channel's DVR dir.
             Log::warning("[TvPlayout] {$channel->name}: killing orphaned ffmpeg PID {$pid} ({$line})");
             exec("kill -9 {$pid} 2>/dev/null");
         }
