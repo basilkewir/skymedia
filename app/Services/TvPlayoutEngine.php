@@ -1777,12 +1777,6 @@ class TvPlayoutEngine
         $cmd[] = 'file,http,https,tcp,tls,crypto';
         $cmd[] = '-f';
         $cmd[] = 'hls';
-        $cmd[] = '-hls_time';
-        $cmd[] = '2';
-        $cmd[] = '-hls_list_size';
-        $cmd[] = '3';
-        $cmd[] = '-hls_start_number_source';
-        $cmd[] = 'epoch';
         $cmd[] = '-i';
         $cmd[] = $rawM3u8;
 
