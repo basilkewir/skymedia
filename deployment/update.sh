@@ -192,6 +192,13 @@ fi
 nginx -t && systemctl reload nginx
 ok "Nginx reloaded"
 
+# Copy updated nginx HLS config if it exists in deployment/
+if [ -f "${APP_DIR}/deployment/nginx-skymedia.conf" ]; then
+    cp "${APP_DIR}/deployment/nginx-skymedia.conf" /etc/nginx/sites-enabled/skymedia
+    nginx -t && systemctl reload nginx
+    ok "Nginx HLS config updated from deployment/nginx-skymedia.conf"
+fi
+
 info "Re-activating streams..."
 "${PHP}" artisan streams:activate-all 2>/dev/null || warn "No active channels or streams:activate-all error"
 
