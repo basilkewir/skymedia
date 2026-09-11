@@ -1688,7 +1688,7 @@ class TvPlayoutEngine
         // playlist resolve correctly when the CG ffmpeg reads this playlist.
         // (ffmpeg writes segment entries as basenames relative to the playlist.)
         $m3u8Out    = "{$rawDir}/raw.m3u8";
-        $segDur     = 2;
+        $segDur     = 4;
 
         $cmd = [
             $this->ffmpeg->getBin(),
@@ -1716,9 +1716,9 @@ class TvPlayoutEngine
             '-c:a', 'copy',
             '-f', 'hls',
             '-hls_time', (string) $segDur,
-            '-hls_list_size', '3',
+            '-hls_list_size', '5',
             '-hls_flags', 'delete_segments+omit_endlist+append_list',
-            '-hls_delete_threshold', '1',
+            '-hls_delete_threshold', '2',
             '-hls_segment_type', 'mpegts',
             '-hls_segment_filename', $segPattern,
             '-hls_allow_cache', '0',
@@ -1752,7 +1752,7 @@ class TvPlayoutEngine
         $rawM3u8    = "{$rawDir}/raw.m3u8";
         $segPattern = "{$brandedDir}/branded_%010d.ts";
         $m3u8Out    = "{$brandedDir}/branded.m3u8";
-        $segDur     = 2;
+        $segDur     = 4;
 
         // Scale factor for all overlay pixel values relative to 1080p baseline
         $s = $this->overlayScale($channel);
@@ -1809,11 +1809,12 @@ class TvPlayoutEngine
         $lastLabel = '0:v';
         $inputIndex = 1; // 0 is concat input
 
-        // Output resolution scaling (applied first so overlays render at target size)
-        // Default to 854x480 for smooth playback on limited CPU
-        $resolution = $channel->output_resolution ?? '854x480';
+        // Output resolution scaling (applied first so overlays render at target size).
+        // fast_bilinear: lanczos measured ~3x CPU cost per frame — a major
+        // contributor to the encoder falling below real-time.
+        $resolution = $channel->output_resolution ?? '1920x1080';
         if ($resolution !== 'auto' && preg_match('/^(\d+)[x:](\d+)$/', $resolution, $rm)) {
-            $filterParts[] = "[{$lastLabel}]scale={$rm[1]}:{$rm[2]}:flags=lanczos,setsar=1[resolved]";
+            $filterParts[] = "[{$lastLabel}]scale={$rm[1]}:{$rm[2]}:flags=fast_bilinear,setsar=1[resolved]";
             $lastLabel = 'resolved';
         }
 
@@ -1968,22 +1969,30 @@ class TvPlayoutEngine
 
         // Video encoding
         $fps = max(1, (int) ($channel->push_framerate ?? 25));
-        $bitrate = (int) ($channel->push_video_bitrate ?? 1500);
+        $bitrate = (int) ($channel->push_video_bitrate ?? 3000);
 
         $videoEncode = [
             '-c:v', 'libx264',
+            // ultrafast is CRITICAL: the VPS CPU cannot sustain veryfast at
+            // real-time with the overlay filter chain (logo+ticker+clock+L3).
+            // veryfast measured 0.5x speed with dropped frames → 5s freezes.
             '-preset', 'ultrafast',
             '-tune', 'zerolatency',
             '-b:v', "{$bitrate}k",
-            '-maxrate', (int) round($bitrate * 1.5) . 'k',
-            '-bufsize', (int) ($bitrate * 3) . 'k',
+            // Roomier rate control: 1.6× maxrate + 4× buffer lets the encoder
+            // ride out bitrate spikes (action scenes, VBR URL sources) without
+            // starving frames and causing visible stutter.
+            '-maxrate', (int) round($bitrate * 1.6) . 'k',
+            '-bufsize', (int) ($bitrate * 4) . 'k',
             '-pix_fmt', 'yuv420p',
             '-g', (string) ($fps * 2),
             '-keyint_min', (string) ($fps * 2),
             '-sc_threshold', '0',
             '-force_key_frames', 'expr:gte(t,n_forced*2)',
             '-bf', '0',
-            '-threads', '2',
+            // Auto-threading: the overlay filter chain (logo + ticker + clock +
+            // lower-third) is expensive; pinning to 2 threads starves it on the VPS.
+            '-threads', '0',
         ];
 
         // Audio encoding
@@ -2004,9 +2013,9 @@ class TvPlayoutEngine
         ], $videoEncode, $audioEncode, [
             '-f', 'hls',
             '-hls_time', (string) $segDur,
-            '-hls_list_size', '3',
+            '-hls_list_size', '5',
             '-hls_flags', 'delete_segments+omit_endlist+append_list',
-            '-hls_delete_threshold', '1',
+            '-hls_delete_threshold', '2',
             '-hls_segment_type', 'mpegts',
             '-hls_segment_filename', $segPattern,
             '-hls_allow_cache', '0',
@@ -2389,7 +2398,7 @@ class TvPlayoutEngine
         return storage_path('app/pids/clock_writer_' . $channel->id . '.pid');
     }
 
-    private function nowPlayingProgressFile(Channel $channel): string
+    public function nowPlayingProgressFile(Channel $channel): string
     {
         return $channel->dvr_directory . '/tv_progress.txt';
     }

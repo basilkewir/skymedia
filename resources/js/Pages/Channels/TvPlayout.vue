@@ -2378,6 +2378,18 @@ function toggleMediaManager() {
     if (showMediaManager.value && mediaFiles.value.length === 0) loadMediaFiles()
 }
 
+// CSRF headers for fetch() calls. Laravel accepts X-XSRF-TOKEN (from the
+// encrypted XSRF-TOKEN cookie) or X-CSRF-TOKEN (from the meta tag).
+// Both sources are optional — returns {} when neither exists so fetch()
+// never crashes on pages without the meta tag.
+function csrfHeaders() {
+    const fromCookie = document.cookie.split('; ').find(r => r.startsWith('XSRF-TOKEN='))?.split('=')[1]
+    if (fromCookie) return { 'X-XSRF-TOKEN': decodeURIComponent(fromCookie), 'X-Requested-With': 'XMLHttpRequest' }
+    const meta = document.querySelector('meta[name="csrf-token"]')
+    if (meta?.content) return { 'X-CSRF-TOKEN': meta.content, 'X-Requested-With': 'XMLHttpRequest' }
+    return {}
+}
+
 async function loadMediaFiles() {
     const res = await fetch(route('channels.playout.media.list', props.channel.id))
     const data = await res.json()
@@ -2387,7 +2399,7 @@ async function loadMediaFiles() {
 async function addMediaFileToPlaylist(f) {
     const res = await fetch(route('channels.playout.media.add-to-playlist', props.channel.id), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
+        headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
         body: JSON.stringify({ filename: f.filename }),
     })
     const data = await res.json()
@@ -2399,7 +2411,7 @@ async function deleteMedia(f) {
     if (!confirm(`Delete "${f.filename}" from disk?`)) return
     const res = await fetch(route('channels.playout.media.delete', props.channel.id), {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
+        headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
         body: JSON.stringify({ filename: f.filename }),
     })
     const data = await res.json()
