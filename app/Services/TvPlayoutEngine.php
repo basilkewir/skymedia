@@ -89,6 +89,24 @@ class TvPlayoutEngine
         }
 
         // ── Part 1: Playout FFmpeg (raw HLS, NO overlays, stream copy) ──
+        // 1a. If a playout process is already tracked & running, stop it FIRST
+        //     so we never end up with two writers on the same DVR dir
+        //     (that saturates CPU and freezes the output).
+        $playoutPidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
+        $existingPid    = $this->ffmpeg->readPid($playoutPidFile);
+        if ($existingPid > 0 && $this->ffmpeg->isRunning($existingPid)) {
+            Log::info("[TvPlayout] {$channel->name}: stopping existing playout PID {$existingPid} before restart");
+            $this->ffmpeg->stopProcess($existingPid);
+        }
+        $this->ffmpeg->clearPid($playoutPidFile);
+
+        // 1b. Kill any ORPHANED ffmpeg still writing to this channel's DVR dir
+        //     from a previous deployment (e.g. old combined playout writing
+        //     live.m3u8/tv_seg_*.ts). Those leak CPU and make the stream freeze.
+        //     We keep only our own tracked playout/CG/push PIDs.
+        $this->killOrphanedPlayouts($channel);
+        $this->cleanStaleHls($channel);
+
         $resumeOffset = $this->computeResumeOffset($channel);
         $playoutCmd   = $this->buildPlayoutCommand($channel, $concatFile, $resumeOffset);
         $playoutPidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
@@ -108,6 +126,10 @@ class TvPlayoutEngine
 
         // ── Part 2: CG FFmpeg (overlays → branded HLS) ──
         $cgPid = $this->startCg($channel);
+
+        // Make branded.m3u8 available IMMEDIATELY (fallback → raw) so viewers
+        // have signal from the very first second, before CG writes its own.
+        $this->syncBrandedFallback($channel);
 
         $channel->update([
             'is_active'              => true,
@@ -216,6 +238,8 @@ class TvPlayoutEngine
             $pid = $this->ffmpeg->startProcess($cgCmd, $cgPidFile, $cgLogFile, 2);
         } catch (\Throwable $e) {
             Log::error("[TvPlayout] {$channel->name} CG failed to start: {$e->getMessage()}");
+            // Never leave viewers without signal — fall back to RAW under branded.m3u8
+            $this->syncBrandedFallback($channel);
             return 0;
         }
 
@@ -295,6 +319,68 @@ class TvPlayoutEngine
         }
 
         return $resumeOffset;
+    }
+
+    /**
+     * Kill any ffmpeg process writing to this channel's DVR directory that is
+     * NOT one of our tracked processes (tv_playout / cg_playout / push).
+     *
+     * Prevents orphaned ffmpeg from previous deployments (old combined playout
+     * writing live.m3u8 / tv_seg_*.ts) from running alongside the new pipeline —
+     * those leak CPU and make the output freeze. Called on every channel start.
+     */
+    public function killOrphanedPlayouts(Channel $channel): void
+    {
+        $dvr  = $channel->dvr_directory;
+        $keep = [
+            (string) $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'tv_playout')),
+            (string) $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'cg_playout')),
+            (string) $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'push')),
+        ];
+
+        $lines = [];
+        exec("ps -eo pid,args 2>/dev/null", $lines);
+        foreach ($lines as $line) {
+            $line = trim($line);
+            // Only ffmpeg processes touching THIS channel's DVR directory
+            if (! str_contains($line, 'ffmpeg') || ! str_contains($line, $dvr)) {
+                continue;
+            }
+            $pid = (int) preg_replace('/^(\\d+)\\s+.*$/', '$1', $line);
+            if ($pid <= 0 || in_array((string) $pid, $keep)) {
+                continue;
+            }
+            // Our own segment writers (raw_%010d / branded_%010d) are never orphans
+            if (str_contains($line, 'raw_%010d') || str_contains($line, 'branded_%010d')) {
+                continue;
+            }
+            Log::warning("[TvPlayout] {$channel->name}: killing orphaned ffmpeg PID {$pid} ({$line})");
+            exec("kill -9 {$pid} 2>/dev/null");
+        }
+    }
+
+    /**
+     * Remove stale HLS playlists/segments left over from previous deployments
+     * (live.m3u8, output.m3u8, tv_seg_*.ts, index.m3u8) so viewers can never
+     * latch onto a frozen/stale stream while the new pipeline starts up.
+     */
+    private function cleanStaleHls(Channel $channel): void
+    {
+        $dvr = $channel->dvr_directory;
+        if (! is_dir($dvr)) {
+            return;
+        }
+
+        foreach (['live.m3u8', 'output.m3u8', 'live2.m3u8', 'index.m3u8'] as $name) {
+            $f = "{$dvr}/{$name}";
+            if (file_exists($f)) {
+                @unlink($f);
+            }
+        }
+
+        foreach (glob("{$dvr}/tv_seg_*.ts") ?: [] as $f) { @unlink($f); }
+        foreach (glob("{$dvr}/live_*.ts") ?: [] as $f)   { @unlink($f); }
+        foreach (glob("{$dvr}/output_*.ts") ?: [] as $f) { @unlink($f); }
     }
 
     /**
@@ -480,6 +566,55 @@ class TvPlayoutEngine
 
         Log::warning("[TvPlayout] {$channel->name}: CG overlay died — restarting");
         $this->restartCg($channel);
+
+        // If CG still isn't producing branded.m3u8, fall back to serving the
+        // RAW stream (no overlays) under the branded.m3u8 name so viewers
+        // NEVER lose signal even during a CG outage.
+        $this->syncBrandedFallback($channel);
+    }
+
+    /**
+     * Write a fallback branded.m3u8 that points at the RAW (no-overlay) stream
+     * whenever the CG process is down or hasn't produced a fresh playlist.
+     * Keeps the public /hls/{slug}/branded.m3u8 URL always playing — the
+     * "playout never stops" guarantee.
+     */
+    public function syncBrandedFallback(Channel $channel): void
+    {
+        $dvr     = $channel->dvr_directory;
+        $rawFn   = "{$dvr}/raw.m3u8";
+        $branded = "{$dvr}/branded.m3u8";
+        if (! file_exists($rawFn)) {
+            return;
+        }
+
+        // CG alive AND branded.m3u8 fresh → leave it alone.
+        $cgPid = $this->ffmpeg->readPid($this->ffmpeg->pidFile($channel, 'cg_playout'));
+        if ($cgPid > 0
+            && $this->ffmpeg->isRunning($cgPid)
+            && file_exists($branded)
+            && time() - filemtime($branded) < 30) {
+            return;
+        }
+
+        // Recently synced — don't churn the file.
+        if (file_exists($branded) && time() - filemtime($branded) < 10) {
+            return;
+        }
+
+        // Rewrite raw.m3u8 → branded.m3u8: bare segment names become
+        // raw/raw_....ts so they resolve relative to {dvr}/ via nginx alias
+        // (/hls/{slug}/raw/raw_....ts) or the PHP HlsController fallback.
+        $lines = explode("\n", (string) file_get_contents($rawFn));
+        foreach ($lines as $k => $line) {
+            $seg = trim($line);
+            if (preg_match('/^raw_\\d+\\.ts$/', $seg)) {
+                $lines[$k] = 'raw/' . $seg;
+            }
+        }
+
+        file_put_contents($branded, implode("\n", $lines));
+        Log::warning("[TvPlayout] {$channel->name}: branded.m3u8 fell back to RAW stream (CG unavailable)");
     }
 
     /**
@@ -1565,7 +1700,12 @@ class TvPlayoutEngine
     {
         $rawDir     = $this->rawHlsDir($channel);
         $segPattern = "{$rawDir}/raw_%010d.ts";
-        $m3u8Out    = "{$rawDir}/raw.m3u8";
+        // PLAYLIST IS FLAT at the DVR root so nginx alias
+        //   /hls/{slug}/{file} → {dvr}/{file}
+        // and the HlsController resolve it. Segments stay in {dvr}/raw/ and are
+        // referenced relative to the playlist (raw/raw_....ts), which the alias
+        // also resolves correctly.
+        $m3u8Out    = $channel->dvr_directory . '/raw.m3u8';
         $segDur     = 2;
 
         $cmd = [
@@ -1623,9 +1763,13 @@ class TvPlayoutEngine
     {
         $rawDir     = $this->rawHlsDir($channel);
         $brandedDir = $this->brandedHlsDir($channel);
-        $rawM3u8    = "{$rawDir}/raw.m3u8";
+        // Both playlists live FLAT at the DVR root (nginx alias + HlsController
+        // resolve /hls/{slug}/{file} → {dvr}/{file}); segments live in
+        // {dvr}/raw/ and {dvr}/branded/ and are referenced relative to their
+        // playlists, which the alias resolves too.
+        $rawM3u8    = $channel->dvr_directory . '/raw.m3u8';
         $segPattern = "{$brandedDir}/branded_%010d.ts";
-        $m3u8Out    = "{$brandedDir}/branded.m3u8";
+        $m3u8Out    = $channel->dvr_directory . '/branded.m3u8';
         $segDur     = 2;
 
         // Scale factor for all overlay pixel values relative to 1080p baseline

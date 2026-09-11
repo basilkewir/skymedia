@@ -33,6 +33,21 @@ class ActivateAllChannels extends Command
                     $needsStart = true;
                     $this->line("  [{$channel->name}] stuck as {$channel->stream_status} with dead PIDs — restarting");
                 }
+
+                // TV playout: if the playout PID is ALIVE but running OLD code
+                // (writing live.m3u8/tv_seg_*.ts instead of the new raw.m3u8),
+                // it is an orphan from a previous deployment — restart the
+                // channel so the new pipeline takes over and old writers die.
+                if (!$needsStart && $channel->isTvPlayout() && $ingestAlive) {
+                    $argsOut = [];
+                    exec("ps -p {$channel->pid} -o args= 2>/dev/null", $argsOut);
+                    $args = trim(implode(' ', $argsOut));
+                    $isNewCode = str_contains($args, 'raw_%010d') || str_contains($args, 'raw.m3u8');
+                    if ($args !== '' && !$isNewCode) {
+                        $needsStart = true;
+                        $this->line("  [{$channel->name}] playout PID {$channel->pid} runs OLD code — restarting with new pipeline");
+                    }
+                }
             }
 
             if ($needsStart) {

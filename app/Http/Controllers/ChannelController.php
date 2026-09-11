@@ -202,7 +202,9 @@ class ChannelController extends Controller
             'isAdmin' => $isAdmin,
             'previewUrl' => $channel->logo_media_id || $channel->ticker_enabled
                 ? $this->brandedPreviewUrl($channel)
-                : route('hls.serve', [$channel, 'output.m3u8']),
+                : ($channel->isTvPlayout()
+                    ? route('hls.serve', [$channel, 'branded.m3u8'])
+                    : route('hls.serve', [$channel, 'output.m3u8'])),
         ]);
     }
 
@@ -722,6 +724,16 @@ class ChannelController extends Controller
 
     private function brandedPreviewUrl(Channel $channel): string
     {
+        // TV playout channels serve their branded HLS from the app's own nginx:
+        //   /hls/{slug}/branded.m3u8 → {dvr}/{slug}/branded.m3u8 (flat, MediaMTX-free)
+        if ($channel->isTvPlayout()) {
+            $host = config('skymedia.server_ip');
+            if ($host === 'localhost') {
+                $host = parse_url((string) config('app.url'), PHP_URL_HOST) ?: 'localhost';
+            }
+            return "http://{$host}:8080/hls/{$channel->slug}/branded.m3u8";
+        }
+
         $host = config('skymedia.server_ip');
         if ($host === 'localhost') {
             $host = parse_url((string) config('app.url'), PHP_URL_HOST) ?: 'localhost';
