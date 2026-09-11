@@ -46,6 +46,9 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::delete('channels/{channel}/fallback-vod', [ChannelController::class, 'removeFallbackVod'])->name('channels.fallback-vod.remove');
     Route::get('channels/{channel}/content', [ChannelContentController::class, 'index'])->name('channels.content');
     Route::post('channels/{channel}/content/upload', [ChannelContentController::class, 'upload'])->name('channels.content.upload');
+    Route::post('channels/{channel}/content/preview-url', [ChannelContentController::class, 'previewUrl'])->name('channels.content.preview-url');
+    Route::post('channels/{channel}/content/download', [ChannelContentController::class, 'downloadFromUrl'])->name('channels.content.download');
+    Route::get('channels/{channel}/content/download-status', [ChannelContentController::class, 'downloadStatus'])->name('channels.content.download-status');
     Route::put('channels/{channel}/content', [ChannelContentController::class, 'update'])->name('channels.content.update');
     Route::delete('channels/{channel}/content/{media}', [ChannelContentController::class, 'destroy'])->name('channels.content.destroy');
 

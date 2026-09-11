@@ -2,15 +2,19 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\DownloadMediaToMp4;
 use App\Models\Channel;
 use App\Models\ChannelMedia;
 use App\Services\PlayoutService;
 use App\Services\PushService;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Log;
 use Inertia\Inertia;
 use Inertia\Response;
+use Symfony\Component\Process\Process;
 
 class ChannelContentController extends Controller
 {
@@ -80,6 +84,190 @@ class ChannelContentController extends Controller
             $this->playout->switchToFallback($channel->fresh());
         }
         return back()->with('success', strtoupper($data['type']) . ' uploaded');
+    }
+
+    /**
+     * Preview a remote media URL (HLS .m3u8, direct MP4, etc.) by probing
+     * it with ffprobe.  Returns the inferred title, duration and whether the
+     * stream is reachable.
+     */
+    public function previewUrl(Request $request, Channel $channel): JsonResponse
+    {
+        $this->access($channel);
+
+        $request->validate(['url' => 'required|string|max:8000']);
+        $url = trim($request->input('url'));
+
+        if (! str_starts_with($url, 'http://') && ! str_starts_with($url, 'https://')) {
+            return response()->json(['success' => false, 'error' => 'URL must start with http:// or https://'], 422);
+        }
+
+        $duration = $this->probeUrl($url);
+        $title    = $request->input('title') ?: $this->titleFromUrl($url);
+        $isHls    = str_contains($url, '.m3u8') || str_contains($url, '/hls');
+
+        return response()->json([
+            'success'  => true,
+            'title'    => $title,
+            'duration' => $duration,
+            'playable' => $duration > 0,
+            'type'     => $isHls ? 'hls' : 'url',
+        ]);
+    }
+
+    /**
+     * Queue a URL download + MP4 transcode into the channel's content library.
+     */
+    public function downloadFromUrl(Request $request, Channel $channel): JsonResponse
+    {
+        $this->access($channel);
+
+        $request->validate([
+            'url'   => 'required|string|max:8000',
+            'title' => 'nullable|string|max:500',
+        ]);
+
+        $url = trim($request->input('url'));
+
+        if (! str_starts_with($url, 'http://') && ! str_starts_with($url, 'https://')) {
+            return response()->json(['success' => false, 'error' => 'URL must start with http:// or https://'], 422);
+        }
+
+        // Prevent duplicate downloads of the same URL.
+        $exists = $channel->media()
+            ->where('filepath', $url)
+            ->where('type', 'vod')
+            ->exists();
+        if ($exists) {
+            return response()->json(['success' => false, 'error' => 'This URL is already being downloaded or has already been added.'], 422);
+        }
+
+        // Basic quota guard.
+        if ($channel->hasStorageQuota()
+            && $channel->storage_used_bytes >= $channel->storage_quota_bytes) {
+            return response()->json(['success' => false, 'error' => 'Channel storage quota is full. Remove some media to free up space.'], 422);
+        }
+
+        $title = $request->input('title') ?: $this->titleFromUrl($url);
+
+        $dir = $channel->dvr_directory . '/content';
+        if (! is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+
+        $safeName   = preg_replace('/[^a-zA-Z0-9._-]/', '_', $title);
+        $safeName   = rtrim(substr($safeName, 0, 100), '._');
+        $outputPath = $dir . '/' . time() . '_' . $safeName . '.mp4';
+
+        $maxOrder = (int) $channel->media()->max('sort_order') + 1;
+
+        $media = $channel->media()->create([
+            'type'       => 'vod',
+            'name'       => $title,
+            'filepath'   => $url,           // temporary — job updates to local path
+            'mime_type'  => 'application/x-downloading',
+            'filesize'   => 0,
+            'sort_order' => $maxOrder,
+            'is_active'  => false,          // activated once download completes
+        ]);
+
+        DownloadMediaToMp4::dispatch($media->id, $url, $outputPath);
+
+        Log::info("[ContentDownload] Media {$media->id}: queued URL download → {$outputPath}");
+
+        return response()->json([
+            'success'  => true,
+            'message'  => "Downloading and converting to MP4: {$title}",
+            'media_id' => $media->id,
+        ]);
+    }
+
+    /**
+     * Return the download status for every VOD being fetched from a URL.
+     *
+     *   "downloading" — lock file exists (job is actively running)
+     *   "queued"      — no lock file yet (job not yet picked up)
+     *   "ready"       — local file exists on disk
+     */
+    public function downloadStatus(Channel $channel): JsonResponse
+    {
+        $this->access($channel);
+
+        $statuses = [];
+        foreach ($channel->media as $media) {
+            if (str_starts_with($media->filepath, 'http://') || str_starts_with($media->filepath, 'https://')) {
+                $lockFile = $channel->dvr_directory . '/content/download_' . $media->id . '.lock';
+                $statuses[$media->id] = file_exists($lockFile) ? 'downloading' : 'queued';
+            } elseif (file_exists($media->filepath)) {
+                $statuses[$media->id] = 'ready';
+            }
+        }
+
+        return response()->json(['statuses' => $statuses]);
+    }
+
+    /**
+     * Probe a remote URL for duration via ffprobe.
+     * Uses protocol_whitelist so HLS playlists resolve, plus browser headers
+     * for CDN compatibility.
+     */
+    private function probeUrl(string $url): float
+    {
+        try {
+            $cmd = [
+                config('skymedia.ffprobe_binary', 'ffprobe'),
+                '-v', 'quiet',
+                '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+            ];
+
+            if (str_starts_with($url, 'http://') || str_starts_with($url, 'https://')) {
+                $cmd[] = '-protocol_whitelist';
+                $cmd[] = 'file,http,https,tcp,tls,crypto';
+                $cmd[] = '-rw_timeout';
+                $cmd[] = '30000000'; // 30 s
+
+                $ua = trim((string) config('skymedia.http_user_agent', ''));
+                if ($ua !== '') {
+                    $cmd[] = '-user_agent';
+                    $cmd[] = $ua;
+                }
+
+                if (str_starts_with(strtolower($url), 'https://')
+                    && config('skymedia.hls_tls_verify', false) === false) {
+                    $cmd[] = '-tls_verify';
+                    $cmd[] = '0';
+                }
+
+                $url = str_replace(['[', ']'], ['%5B', '%5D'], $url);
+            }
+
+            $cmd[] = $url;
+
+            $proc = new Process($cmd);
+            $proc->setTimeout(30);
+            $proc->run();
+
+            $out = trim($proc->getOutput());
+            if ($proc->isSuccessful() && is_numeric($out)) {
+                return (float) $out;
+            }
+        } catch (\Throwable) {
+            // ignore — caller treats 0.0 as "not playable"
+        }
+
+        return 0.0;
+    }
+
+    /**
+     * Extract a human-readable title from a URL.
+     */
+    private function titleFromUrl(string $url): string
+    {
+        $noQuery = strtok($url, '?');
+        $base    = basename((string) $noQuery);
+
+        return $base !== '' ? urldecode($base) : $url;
     }
 
     public function update(Request $request, Channel $channel): RedirectResponse

@@ -20,6 +20,14 @@
                             <div class="flex gap-2"><input type="file" accept="video/*,.mkv,.ts" @change="vodForm.file=$event.target.files[0]" class="form-input flex-1" required /><button class="btn">Upload VOD</button></div>
                             <p v-if="vodForm.errors.file" class="text-xs text-red-400">{{ vodForm.errors.file }}</p>
                         </form>
+                        <form @submit.prevent="downloadMediaUrl" class="space-y-2">
+                            <label class="text-xs text-slate-400">Download from URL (HLS .m3u8, MP4, MKV → MP4)</label>
+                            <div class="flex gap-2">
+                                <input v-model="urlInput" type="url" placeholder="https://example.com/video.m3u8" class="form-input flex-1 text-xs font-mono" required maxlength="8000" />
+                                <button :disabled="!urlInput || urlDownloading" class="btn">Download → MP4</button>
+                            </div>
+                            <p v-if="downloadMessage" class="text-xs break-words" :class="downloadMessage.startsWith('Downloading') ? 'text-green-400' : 'text-red-400'">{{ downloadMessage }}</p>
+                        </form>
                         <form @submit.prevent="uploadLogo" class="space-y-2">
                             <label class="text-xs text-slate-400">Add transparent logo</label>
                             <div class="flex gap-2"><input type="file" accept="image/png,image/webp,image/jpeg" @change="logoForm.file=$event.target.files[0]" class="form-input flex-1" required /><button class="btn">Upload Logo</button></div>
@@ -31,14 +39,22 @@
             <Section title="Fallback Playlist">
                 <p class="text-xs text-slate-500 mb-4">Enabled VODs play from top to bottom and loop while the live publisher is offline.</p>
                 <div class="space-y-2">
-                    <div v-for="(item,i) in form.playlist" :key="item.id" class="flex items-center gap-3 bg-slate-800/60 rounded-lg px-3 py-2">
-                        <input v-model="item.is_active" type="checkbox" class="rounded border-slate-600 bg-slate-900" />
-                        <span class="flex-1 text-sm text-slate-200 truncate">{{ item.name }}</span>
-                        <span class="text-xs text-slate-500">{{ formatBytes(item.filesize) }}</span>
-                        <button @click="move(i,-1)" :disabled="i===0" class="text-slate-400 disabled:opacity-30">↑</button>
-                        <button @click="move(i,1)" :disabled="i===form.playlist.length-1" class="text-slate-400 disabled:opacity-30">↓</button>
-                        <Link :href="route('channels.content.destroy',[channel.id,item.id])" method="delete" as="button" class="text-xs text-red-400">Remove</Link>
-                    </div>
+                    <template v-for="(item,i) in form.playlist" :key="item.id">
+                        <div v-if="isDownloading(item)" class="flex items-center gap-3 bg-slate-800/60 rounded-lg px-3 py-2">
+                            <svg class="animate-spin h-4 w-4 text-amber-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                            <span class="flex-1 text-sm text-slate-200 truncate">{{ item.name }}</span>
+                            <span class="text-xs text-amber-400">Downloading…</span>
+                            <Link :href="route('channels.content.destroy',[channel.id,item.id])" method="delete" as="button" class="text-xs text-red-400">Cancel</Link>
+                        </div>
+                        <div v-else class="flex items-center gap-3 bg-slate-800/60 rounded-lg px-3 py-2">
+                            <input v-model="item.is_active" type="checkbox" class="rounded border-slate-600 bg-slate-900" />
+                            <span class="flex-1 text-sm text-slate-200 truncate">{{ item.name }}</span>
+                            <span class="text-xs text-slate-500">{{ formatBytes(item.filesize) }}</span>
+                            <button @click="move(i,-1)" :disabled="i===0" class="text-slate-400 disabled:opacity-30">↑</button>
+                            <button @click="move(i,1)" :disabled="i===form.playlist.length-1" class="text-slate-400 disabled:opacity-30">↓</button>
+                            <Link :href="route('channels.content.destroy',[channel.id,item.id])" method="delete" as="button" class="text-xs text-red-400">Remove</Link>
+                        </div>
+                    </template>
                     <p v-if="!form.playlist.length" class="text-sm text-slate-500 py-5 text-center">Upload VODs to create the fallback playlist.</p>
                 </div>
             </Section>
@@ -86,14 +102,84 @@ watch(() => props.channel, (ch) => {
 }, { immediate: true })
 const vodForm = useForm({ type:'vod', file:null })
 const logoForm = useForm({ type:'logo', file:null })
+
+const urlInput = ref('')
+const urlDownloading = ref(false)
+const downloadMessage = ref('')
+
 const player = ref(null); let hls = null
+
+function isDownloading(item) {
+    return !!(item.filepath && (item.filepath.startsWith('http://') || item.filepath.startsWith('https://')))
+}
+
+async function downloadMediaUrl() {
+    if (!urlInput.value) return
+    if (!urlInput.value.startsWith('http://') && !urlInput.value.startsWith('https://')) {
+        downloadMessage.value = 'URL must start with http:// or https://'
+        return
+    }
+    urlDownloading.value = true
+    downloadMessage.value = ''
+    try {
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('XSRF-TOKEN='))?.split('=')[1]
+        const res = await fetch(route('channels.content.download', props.channel.id), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-XSRF-TOKEN': csrfToken ? decodeURIComponent(csrfToken) : '',
+            },
+            body: JSON.stringify({ url: urlInput.value }),
+        })
+        const data = await res.json()
+        if (data.success) {
+            urlInput.value = ''
+            downloadMessage.value = data.message
+            // Reload page to pick up the new "downloading" playlist item
+            setTimeout(() => location.reload(), 800)
+        } else {
+            downloadMessage.value = data.error || 'Download failed'
+        }
+    } catch (e) {
+        downloadMessage.value = e.message
+    } finally {
+        urlDownloading.value = false
+    }
+}
+
+// ── Download status polling ──────────────────────────────────────
+// When the page has items whose filepath is still a URL (download in
+// progress / queued) we poll the server every 5 s and reload once all
+// downloads have settled.
+let statusPoll = null
+function startDownloadStatusPoll() {
+    if (statusPoll) return
+    const hasDownloading = form.playlist.some(isDownloading)
+    if (!hasDownloading) return
+    statusPoll = setInterval(async () => {
+        try {
+            const res = await fetch(route('channels.content.download-status', props.channel.id))
+            const data = await res.json()
+            const statuses = data.statuses || {}
+            const active = Object.values(statuses).some(s => s === 'downloading' || s === 'queued')
+            if (!active) {
+                clearInterval(statusPoll)
+                statusPoll = null
+                location.reload()
+            }
+        } catch (e) {
+            // ignore network errors — keep polling
+        }
+    }, 5000)
+}
 function uploadVod(){ vodForm.post(route('channels.content.upload',props.channel.id),{forceFormData:true}) }
 function uploadLogo(){ logoForm.post(route('channels.content.upload',props.channel.id),{forceFormData:true}) }
 function move(i,d){ const n=i+d; if(n<0||n>=form.playlist.length)return; [form.playlist[i],form.playlist[n]]=[form.playlist[n],form.playlist[i]] }
 function save(){ form.put(route('channels.content.update',props.channel.id)) }
 function formatBytes(n){ if(!n)return '0 B'; const u=['B','KB','MB','GB']; const i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),3); return `${(n/1024**i).toFixed(1)} ${u[i]}` }
-onMounted(async()=>{ if(player.value.canPlayType('application/vnd.apple.mpegurl')) player.value.src=props.previewUrl; else { const {default:Hls}=await import('hls.js'); if(Hls.isSupported()){hls=new Hls({liveSyncDurationCount:2,maxBufferLength:4,enableWorker:true});hls.loadSource(props.previewUrl);hls.attachMedia(player.value)} } })
-onUnmounted(()=>hls?.destroy())
+onMounted(async()=>{ if(player.value.canPlayType('application/vnd.apple.mpegurl')) player.value.src=props.previewUrl; else { const {default:Hls}=await import('hls.js'); if(Hls.isSupported()){hls=new Hls({liveSyncDurationCount:2,maxBufferLength:4,enableWorker:true});hls.loadSource(props.previewUrl);hls.attachMedia(player.value)} } startDownloadStatusPoll() })
+onUnmounted(()=>{ hls?.destroy(); if(statusPoll) clearInterval(statusPoll) })
 </script>
 
 <style scoped>.btn{@apply px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-lg disabled:opacity-50}</style>
