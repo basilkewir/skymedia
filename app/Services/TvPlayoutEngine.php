@@ -1830,17 +1830,10 @@ class TvPlayoutEngine
             '-err_detect', 'ignore_err',
         ];
 
-        // Looping is handled INSIDE the concat file itself — the whole playlist
-        // (file1 → file2 → … → fileN) is repeated $repeat times below.
-        //
-        // -stream_loop is deliberately NOT used: with the concat demuxer it loops
-        // at the stream level after the list ends, which re-reads only the LAST
-        // file — making playback appear stuck on a single media item. Repeating
-        // the full list guarantees the loop always restarts at media 1.
-        $cmd[] = '-re';
-
         // HLS input from playout ffmpeg (raw.m3u8)
-        $cmd[] = '-re';
+        // NOTE: Do NOT use -re with HLS input — HLS is already a timed stream
+        // and -re causes ffmpeg to read at native frame rate, which conflicts
+        // with the HLS playlist timing and can cause ffmpeg to crash.
         $cmd[] = '-safe';
         $cmd[] = '0';
         $cmd[] = '-protocol_whitelist';
