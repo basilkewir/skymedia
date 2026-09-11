@@ -1810,7 +1810,8 @@ class TvPlayoutEngine
         $inputIndex = 1; // 0 is concat input
 
         // Output resolution scaling (applied first so overlays render at target size)
-        $resolution = $channel->output_resolution ?? '1920x1080';
+        // Default to 854x480 for smooth playback on limited CPU
+        $resolution = $channel->output_resolution ?? '854x480';
         if ($resolution !== 'auto' && preg_match('/^(\d+)[x:](\d+)$/', $resolution, $rm)) {
             $filterParts[] = "[{$lastLabel}]scale={$rm[1]}:{$rm[2]}:flags=lanczos,setsar=1[resolved]";
             $lastLabel = 'resolved';
@@ -1967,27 +1968,22 @@ class TvPlayoutEngine
 
         // Video encoding
         $fps = max(1, (int) ($channel->push_framerate ?? 25));
-        $bitrate = (int) ($channel->push_video_bitrate ?? 3000);
+        $bitrate = (int) ($channel->push_video_bitrate ?? 1500);
 
         $videoEncode = [
             '-c:v', 'libx264',
-            '-preset', 'veryfast',
+            '-preset', 'ultrafast',
             '-tune', 'zerolatency',
             '-b:v', "{$bitrate}k",
-            // Roomier rate control: 1.6× maxrate + 4× buffer lets the encoder
-            // ride out bitrate spikes (action scenes, VBR URL sources) without
-            // starving frames and causing visible stutter.
-            '-maxrate', (int) round($bitrate * 1.6) . 'k',
-            '-bufsize', (int) ($bitrate * 4) . 'k',
+            '-maxrate', (int) round($bitrate * 1.5) . 'k',
+            '-bufsize', (int) ($bitrate * 3) . 'k',
             '-pix_fmt', 'yuv420p',
             '-g', (string) ($fps * 2),
             '-keyint_min', (string) ($fps * 2),
             '-sc_threshold', '0',
             '-force_key_frames', 'expr:gte(t,n_forced*2)',
             '-bf', '0',
-            // Auto-threading: the overlay filter chain (logo + ticker + clock +
-            // lower-third) is expensive; pinning to 2 threads starves it on the VPS.
-            '-threads', '0',
+            '-threads', '2',
         ];
 
         // Audio encoding
