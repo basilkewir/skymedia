@@ -508,8 +508,8 @@ class TvPlayoutEngine
         }
 
         // branded.m3u8 must exist before push can read it.
-        $dvrDir = $channel->dvr_directory;
-        $m3u8 = $dvrDir . '/branded.m3u8';
+        $brandedDir = $this->brandedHlsDir($channel);
+        $m3u8 = "{$brandedDir}/branded.m3u8";
         $waited = 0;
         while (! file_exists($m3u8) && $waited < 10) {
             sleep(1);
@@ -1713,26 +1713,20 @@ class TvPlayoutEngine
 
     /**
      * Playout output directory — raw HLS (no overlays, stream copy).
+     * Flat at DVR root so relative paths resolve correctly.
      */
     private function rawHlsDir(Channel $channel): string
     {
-        $dir = $channel->dvr_directory . '/raw';
-        if (! is_dir($dir)) {
-            mkdir($dir, 0755, true);
-        }
-        return $dir;
+        return $channel->dvr_directory;
     }
 
     /**
      * CG output directory — branded HLS (with overlays).
+     * Flat at DVR root so relative paths resolve correctly.
      */
     private function brandedHlsDir(Channel $channel): string
     {
-        $dir = $channel->dvr_directory . '/branded';
-        if (! is_dir($dir)) {
-            mkdir($dir, 0755, true);
-        }
-        return $dir;
+        return $channel->dvr_directory;
     }
 
     /**
@@ -1745,12 +1739,10 @@ class TvPlayoutEngine
     {
         $rawDir     = $this->rawHlsDir($channel);
         $segPattern = "{$rawDir}/raw_%010d.ts";
-        // PLAYLIST IS FLAT at the DVR root so nginx alias
-        //   /hls/{slug}/{file} → {dvr}/{file}
-        // and the HlsController resolve it. Segments stay in {dvr}/raw/ and are
-        // referenced relative to the playlist (raw/raw_....ts), which the alias
-        // also resolves correctly.
-        $m3u8Out    = $channel->dvr_directory . '/raw.m3u8';
+        // Playlist is INSIDE the raw/ directory so that segment paths in the
+        // playlist resolve correctly when the CG ffmpeg reads this playlist.
+        // (ffmpeg writes segment entries as basenames relative to the playlist.)
+        $m3u8Out    = "{$rawDir}/raw.m3u8";
         $segDur     = 2;
 
         $cmd = [
@@ -1808,13 +1800,13 @@ class TvPlayoutEngine
     {
         $rawDir     = $this->rawHlsDir($channel);
         $brandedDir = $this->brandedHlsDir($channel);
-        // Both playlists live FLAT at the DVR root (nginx alias + HlsController
-        // resolve /hls/{slug}/{file} → {dvr}/{file}); segments live in
-        // {dvr}/raw/ and {dvr}/branded/ and are referenced relative to their
-        // playlists, which the alias resolves too.
-        $rawM3u8    = $channel->dvr_directory . '/raw.m3u8';
+        // Playlists are INSIDE their respective directories so that segment
+        // paths resolve correctly. ffmpeg writes segment entries as basenames
+        // relative to the playlist, so the playlist must be in the same dir
+        // as the segments it references.
+        $rawM3u8    = "{$rawDir}/raw.m3u8";
         $segPattern = "{$brandedDir}/branded_%010d.ts";
-        $m3u8Out    = $channel->dvr_directory . '/branded.m3u8';
+        $m3u8Out    = "{$brandedDir}/branded.m3u8";
         $segDur     = 2;
 
         // Scale factor for all overlay pixel values relative to 1080p baseline
