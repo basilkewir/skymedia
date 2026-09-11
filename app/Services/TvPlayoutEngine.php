@@ -636,6 +636,16 @@ class TvPlayoutEngine
         if (file_exists($branded) && time() - filemtime($branded) < 10) {
             return;
         }
+        // Copy raw.m3u8 to branded.m3u8 as-is (flat paths: both at DVR root,
+        // so segment names like raw_....ts resolve correctly from either playlist)
+        try {
+            copy($rawFn, $branded);
+            @chmod($branded, 0666);
+        } catch (\Throwable $e) {
+            Log::error("[TvPlayout] {$channel->name}: branded fallback write failed: {$e->getMessage()}");
+            return;
+        }
+        Log::warning("[TvPlayout] {$channel->name}: branded.m3u8 fell back to RAW stream (CG unavailable)");
 
         // Rewrite raw.m3u8 → branded.m3u8: bare segment names become
         // raw/raw_....ts so they resolve relative to {dvr}/ via nginx alias
