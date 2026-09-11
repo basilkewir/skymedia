@@ -65,6 +65,28 @@ class TvPlayoutEngine
             return false;
         }
 
+        // ── Start() concurrency lock ────────────────────────────────────────
+        // The supervised monitor (root) and the web app (www-data) can BOTH
+        // call start() for the same channel. Two concurrent start() calls would
+        // spawn duplicate playout writers on the same DVR dir → corrupted
+        // playlists → frozen output. A short-lived lock makes start() a no-op
+        // while another start() is still in progress.
+        $startLock = $channel->dvr_directory . '/starting.lock';
+        $lockPid   = (int) @file_get_contents($startLock);
+        if ($lockPid > 0 && $lockPid !== getmypid()) {
+            $lockAlive = false;
+            $probe     = [];
+            exec("ps -p {$lockPid} -o pid= 2>/dev/null", $probe);
+            $lockAlive = trim(implode('', $probe)) !== '';
+            if ($lockAlive && file_exists($startLock) && time() - filemtime($startLock) < 120) {
+                Log::info("[TvPlayout] {$channel->name}: start already in progress (PID {$lockPid}) — skipping");
+                return true;
+            }
+            @unlink($startLock); // stale lock
+        }
+        @file_put_contents($startLock, (string) getmypid());
+        @chmod($startLock, 0666);
+
         $dvrDir = $channel->dvr_directory;
         if (! is_dir($dvrDir)) {
             mkdir($dvrDir, 0755, true);
@@ -158,6 +180,15 @@ class TvPlayoutEngine
             $this->startPush($channel);
         }
 
+        // Make playlists world-writable so BOTH the root monitor and the
+        // www-data web app can restart/overwrite them (ffmpeg rewrites them
+        // every segment).
+        @chmod($channel->dvr_directory . '/raw.m3u8', 0666);
+        @chmod($channel->dvr_directory . '/branded.m3u8', 0666);
+
+        // Release the start() concurrency lock
+        @unlink($channel->dvr_directory . '/starting.lock');
+
         return true;
     }
 
@@ -177,6 +208,9 @@ class TvPlayoutEngine
             $this->ffmpeg->stopProcess($pid);
         }
         $this->ffmpeg->clearPid($pidFile);
+
+        // Release the start() concurrency lock
+        @unlink($channel->dvr_directory . '/starting.lock');
 
         $channel->update([
             'is_active' => false,
@@ -614,7 +648,17 @@ class TvPlayoutEngine
             }
         }
 
-        file_put_contents($branded, implode("\n", $lines));
+        // Never let a failed fallback write crash the caller (e.g. start()).
+        // The DVR files may be owned by root or www-data depending on which
+        // process started the channel; make them world-writable so either
+        // user can always overwrite the playlists.
+        try {
+            file_put_contents($branded, implode("\n", $lines));
+            @chmod($branded, 0666);
+        } catch (\Throwable $e) {
+            Log::error("[TvPlayout] {$channel->name}: branded fallback write failed: {$e->getMessage()}");
+            return;
+        }
         Log::warning("[TvPlayout] {$channel->name}: branded.m3u8 fell back to RAW stream (CG unavailable)");
     }
 
