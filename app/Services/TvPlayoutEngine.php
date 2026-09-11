@@ -13,14 +13,22 @@ use Illuminate\Support\Facades\Log;
 /**
  * TvPlayoutEngine — manages TV playout channels that run entirely on the VPS.
  *
- * FFmpeg reads a concat playlist file, applies CG overlays (logo, ticker, clock),
- * and outputs HLS segments that MediaMTX serves as the distribution edge.
- * When push_url is configured, a second ffmpeg process reads live.m3u8 and
- * pushes to the external RTMP/SRT server continuously.
+ * FFmpeg reads a concat playlist file and outputs HLS segments.
+ * A separate CG (Character Generator) ffmpeg process applies overlays
+ * (logo, ticker, clock, lowerthird) reading from the raw HLS output.
+ * A third push ffmpeg reads the branded HLS and pushes to RTMP/SRT.
  *
- * Architecture:
- *   playlist_items (DB) → concat.txt → FFmpeg (filter_complex) → HLS → MediaMTX
- *                                                                    └──→ Push ffmpeg → RTMP/SRT
+ * Architecture (4 independent parts):
+ *   playlist_items (DB) → concat.txt
+ *       → [1. Playout FFmpeg] stream-copy → raw.m3u8  (NEVER restarts except admin stop)
+ *           → [2. CG FFmpeg] drawtext+logo → branded.m3u8  (restarts only on overlay change)
+ *               → [3. Push FFmpeg] → RTMP/SRT  (restarts only if push dies)
+ *                   → [4. nginx HLS] → viewers
+ *
+ * Media Manager (VOD library) is completely separate — adding/removing media
+ * never touches any playout process.
+ *
+ * MediaMTX is NOT used. nginx serves HLS directly from the channel's dvr_directory.
  */
 class TvPlayoutEngine
 {
@@ -40,6 +48,16 @@ class TvPlayoutEngine
 
     /**
      * Start the TV playout engine for a channel.
+     *
+     * 4 independent parts:
+     *   1. Playout FFmpeg  — concat.txt → stream-copy → raw.m3u8  (PID: tv_playout)
+     *      NEVER restarts except when admin explicitly stops the channel.
+     *   2. CG FFmpeg       — raw.m3u8 → drawtext+logo+clock+lowerthird → branded.m3u8 (PID: cg_playout)
+     *      Restarts ONLY when an overlay setting changes. Fast ~1s restart.
+     *   3. Push FFmpeg     — branded.m3u8 → RTMP/SRT (PID: push)
+     *      Restarts ONLY if push dies. Reads branded HLS.
+     *   4. nginx HLS       — serves branded.m3u8 from dvr_directory to viewers.
+     *      MediaMTX is NOT used.
      */
     public function start(Channel $channel): bool
     {
@@ -70,50 +88,34 @@ class TvPlayoutEngine
             return false;
         }
 
-        // Build and start the FFmpeg command
-        // If an explicit resume offset was saved (e.g. from restartWithResume), use it.
-        // Otherwise, if last_live_at is set and in the past, compute where we should
-        // be in the playlist right now so playback starts at the correct position
-        // (e.g. a video scheduled at 12:11 that is started at 12:50 seeks to 12:50-12:11=39min in).
-        $resumeOffset = (int) ($channel->playout_resume_offset ?? 0);
-        if ($resumeOffset === 0 && $channel->last_live_at && $channel->last_live_at->isPast()) {
-            $totalDuration = (float) PlaylistItem::where('channel_id', $channel->id)
-                ->where('is_active', true)
-                ->sum('duration');
-            if ($totalDuration > 0) {
-                $elapsed = (float) $channel->last_live_at->diffInSeconds(now(), true);
-                $resumeOffset = (int) fmod($elapsed, $totalDuration);
-            }
-        }
-        $cmd = $this->buildCommand($channel, $concatFile, $resumeOffset);
-        $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
-        $logFile = $this->ffmpeg->logFile($channel, 'tv_playout');
+        // ── Part 1: Playout FFmpeg (raw HLS, NO overlays, stream copy) ──
+        $resumeOffset = $this->computeResumeOffset($channel);
+        $playoutCmd   = $this->buildPlayoutCommand($channel, $concatFile, $resumeOffset);
+        $playoutPidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
+        $playoutLogFile = $this->ffmpeg->logFile($channel, 'tv_playout');
 
         try {
-            $pid = $this->ffmpeg->startProcess($cmd, $pidFile, $logFile, 2);
+            $playoutPid = $this->ffmpeg->startProcess($playoutCmd, $playoutPidFile, $playoutLogFile, 2);
         } catch (\Throwable $e) {
-            // For URL-based playlists (HLS VOD), ffmpeg may briefly exit while
-            // buffering the first segment then restart — check if it recovered.
-            $pid = $this->ffmpeg->readPid($pidFile);
-            if ($pid <= 0 || ! $this->ffmpeg->isRunning($pid)) {
-                Log::error("[TvPlayout] {$channel->name} failed to start: {$e->getMessage()}");
+            $playoutPid = $this->ffmpeg->readPid($playoutPidFile);
+            if ($playoutPid <= 0 || ! $this->ffmpeg->isRunning($playoutPid)) {
+                Log::error("[TvPlayout] {$channel->name} playout failed to start: {$e->getMessage()}");
                 $channel->update(['stream_status' => 'error', 'last_error' => substr($e->getMessage(), 0, 500)]);
                 return false;
             }
-            Log::info("[TvPlayout] {$channel->name} started after brief init delay — PID {$pid}");
+            Log::info("[TvPlayout] {$channel->name} playout started after brief init delay — PID {$playoutPid}");
         }
+
+        // ── Part 2: CG FFmpeg (overlays → branded HLS) ──
+        $cgPid = $this->startCg($channel);
 
         $channel->update([
             'is_active'              => true,
             'stream_status'          => 'live',
             'playout_status'         => 'live',
-            'playout_pid'            => $pid,
+            'playout_pid'            => $playoutPid,
+            'cg_pid'                 => $cgPid,
             'source_live'            => true,
-            // Anchor: set last_live_at so the schedule stays correct.
-            // When resuming, subtract the offset so item scheduled_start
-            // times remain aligned with wall-clock time.
-            // When starting fresh, only set last_live_at if it isn't already
-            // set (preserves the original start anchor across restarts).
             'last_live_at'           => $resumeOffset > 0
                 ? now()->subSeconds($resumeOffset)
                 : ($channel->last_live_at ?? now()),
@@ -121,17 +123,15 @@ class TvPlayoutEngine
         ]);
 
         if ($resumeOffset > 0) {
-            Log::info("[TvPlayout] {$channel->name} started — PID {$pid} (resumed at {$resumeOffset}s)");
+            Log::info("[TvPlayout] {$channel->name} started — playout PID {$playoutPid} (resumed at {$resumeOffset}s), CG PID {$cgPid}");
         } else {
-            Log::info("[TvPlayout] {$channel->name} started — PID {$pid}");
+            Log::info("[TvPlayout] {$channel->name} started — playout PID {$playoutPid}, CG PID {$cgPid}");
         }
 
-        // Launch the Now Playing writer — reads ffmpeg's -progress output and
-        // keeps the on-screen overlay title EXACTLY in sync with actual playback
-        // (not wall-clock), so it never shows a different title than the picture.
+        // Launch the Now Playing writer
         $this->startNowPlayingWriter($channel);
 
-        // Start external push if configured
+        // Start external push if configured (reads branded HLS)
         if (! empty($channel->push_url)) {
             $this->startPush($channel);
         }
@@ -140,10 +140,11 @@ class TvPlayoutEngine
     }
 
     /**
-     * Stop the TV playout engine.
+     * Stop the TV playout engine — stops ALL 3 processes.
      */
     public function stop(Channel $channel): void
     {
+        $this->stopCg($channel);
         $this->stopClockWriter($channel);
         $this->stopNowPlayingWriter($channel);
         $this->stopPush($channel);
@@ -160,13 +161,140 @@ class TvPlayoutEngine
             'stream_status' => 'stopped',
             'playout_status' => 'stopped',
             'playout_pid' => null,
+            'cg_pid' => null,
             'push_pid' => null,
             'push_status' => 'stopped',
             'source_live' => false,
             'playout_resume_offset' => null,
         ]);
 
-        Log::info("[TvPlayout] {$channel->name} stopped");
+        Log::info("[TvPlayout] {$channel->name} stopped (playout + CG + push)");
+    }
+
+    /**
+     * Start the CG (Character Generator) overlay ffmpeg process.
+     * Reads raw.m3u8 → applies logo/ticker/clock/lowerthird → writes branded.m3u8.
+     * This process is INDEPENDENT of the playout ffmpeg — it can restart without
+     * interrupting the raw stream.
+     *
+     * Returns the CG process PID, or 0 if CG is not configured.
+     */
+    public function startCg(Channel $channel): int
+    {
+        if (! $this->cgIsConfigured($channel)) {
+            return 0;
+        }
+
+        $dvrDir = $channel->dvr_directory;
+        $cgDir  = $this->cgDirectory($channel);
+        if (! is_dir($cgDir)) {
+            mkdir($cgDir, 0755, true);
+        }
+
+        // Wait for raw.m3u8 to exist
+        $rawM3u8 = $dvrDir . '/raw.m3u8';
+        $waited  = 0;
+        while (! file_exists($rawM3u8) && $waited < 15) {
+            sleep(1);
+            $waited++;
+        }
+        if (! file_exists($rawM3u8)) {
+            Log::warning("[TvPlayout] {$channel->name}: raw.m3u8 not ready, CG deferred");
+            return 0;
+        }
+
+        $this->stopCg($channel, silent: true);
+        $this->writeTickerFile($channel);
+        $this->writeMetaFile($channel);
+        $this->updateLogoSymlink($channel);
+
+        $cgCmd     = $this->buildCgCommand($channel);
+        $cgPidFile = $this->ffmpeg->pidFile($channel, 'cg_playout');
+        $cgLogFile = $this->ffmpeg->logFile($channel, 'cg_playout');
+
+        try {
+            $pid = $this->ffmpeg->startProcess($cgCmd, $cgPidFile, $cgLogFile, 2);
+        } catch (\Throwable $e) {
+            Log::error("[TvPlayout] {$channel->name} CG failed to start: {$e->getMessage()}");
+            return 0;
+        }
+
+        $channel->update(['cg_pid' => $pid]);
+        Log::info("[TvPlayout] {$channel->name} CG overlay started — PID {$pid} (raw.m3u8 → branded.m3u8)");
+        $this->startClockWriter($channel);
+
+        return $pid;
+    }
+
+    /**
+     * Stop ONLY the CG overlay process. The playout ffmpeg keeps running.
+     */
+    public function stopCg(Channel $channel, bool $silent = false): void
+    {
+        $pidFile = $this->ffmpeg->pidFile($channel, 'cg_playout');
+        $pid = $this->ffmpeg->readPid($pidFile);
+        if ($pid > 0) {
+            $this->ffmpeg->stopProcess($pid);
+        }
+        $this->ffmpeg->clearPid($pidFile);
+        $this->stopClockWriter($channel);
+        if (! $silent) {
+            Log::info("[TvPlayout] {$channel->name} CG overlay stopped");
+        }
+    }
+
+    /**
+     * Restart ONLY the CG overlay process. The playout ffmpeg is NEVER touched.
+     * Called when any overlay setting changes.
+     */
+    public function restartCg(Channel $channel): void
+    {
+        if (! $this->cgIsConfigured($channel)) {
+            $this->stopCg($channel, silent: true);
+            return;
+        }
+
+        $this->writeTickerFile($channel);
+        $this->writeMetaFile($channel);
+        $this->updateLogoSymlink($channel);
+        $this->stopCg($channel, silent: true);
+        $this->startCg($channel);
+    }
+
+    /**
+     * Check if CG overlay is configured for this channel.
+     */
+    private function cgIsConfigured(Channel $channel): bool
+    {
+        $hasLogo       = ($channel->logo_enabled ?? true)
+            && $channel->logoMedia
+            && file_exists($channel->logoMedia->filepath);
+        $hasTicker     = $channel->ticker_enabled
+            && trim((string) ($channel->ticker_text ?? '')) !== ''
+            && trim((string) ($channel->ticker_text ?? '')) !== ' ';
+        $hasClock      = $channel->clock_enabled ?? true;
+        $hasLowerthird = $channel->lowerthird_enabled ?? true;
+
+        return $hasLogo || $hasTicker || $hasClock || $hasLowerthird;
+    }
+
+    /**
+     * Compute the resume offset for a channel.
+     */
+    private function computeResumeOffset(Channel $channel): int
+    {
+        $resumeOffset = (int) ($channel->playout_resume_offset ?? 0);
+        if ($resumeOffset === 0 && $channel->last_live_at && $channel->last_live_at->isPast()) {
+            $totalDuration = (float) PlaylistItem::where('channel_id', $channel->id)
+                ->where('is_active', true)
+                ->sum('duration');
+            if ($totalDuration > 0) {
+                $elapsed = (float) $channel->last_live_at->diffInSeconds(now(), true);
+                $resumeOffset = (int) fmod($elapsed, $totalDuration);
+            }
+        }
+
+        return $resumeOffset;
     }
 
     /**
@@ -198,7 +326,8 @@ class TvPlayoutEngine
 
     /**
      * Stop → capture offset → restart at the same position in the playlist.
-     * Used by all overlay-settings updates so the playlist time is preserved.
+     * Used by admin-initiated schedule changes (recalculate, anchor updates, loop changes).
+     * Restarts ONLY the playout ffmpeg — CG is restarted by start() automatically.
      * The push process is also restarted so it picks up the new HLS output.
      */
     public function restartWithResume(Channel $channel, bool $fromAnchor = false): void
@@ -213,7 +342,10 @@ class TvPlayoutEngine
             $this->captureOffset($channel);
         }
 
-        // 2. Stop only the playout ffmpeg (not the push — push will be restarted by startPush)
+        // Stop CG first (it will be restarted by start())
+        $this->stopCg($channel, silent: true);
+
+        // Stop only the playout ffmpeg (not the push — push will be restarted by start())
         $pidFile = $this->ffmpeg->pidFile($channel, 'tv_playout');
         $pid = $this->ffmpeg->readPid($pidFile);
         if ($pid > 0) {
@@ -221,7 +353,8 @@ class TvPlayoutEngine
         }
         $this->ffmpeg->clearPid($pidFile);
 
-        // 3. Restart — start() will read playout_resume_offset and pass -ss to ffmpeg
+        // Restart — start() will read playout_resume_offset and pass -ss to ffmpeg,
+        // then start a new CG process reading from the new raw.m3u8.
         $this->start($channel->fresh());
     }
 
@@ -236,9 +369,12 @@ class TvPlayoutEngine
     }
 
     /**
-     * Start the external RTMP/SRT push process reading live.m3u8.
+     * Start the external RTMP/SRT push process reading branded.m3u8.
      * Called automatically by start() when push_url is set.
      * Safe to call again if already running (no-op).
+     *
+     * Push reads branded.m3u8 from the dvr_directory (nginx serves HLS directly,
+     * MediaMTX is NOT used).
      */
     public function startPush(Channel $channel): bool
     {
@@ -250,9 +386,9 @@ class TvPlayoutEngine
             return true;
         }
 
-        // live.m3u8 must exist before push can read it.
-        // Wait up to 10s for the HLS engine to write the first segment.
-        $m3u8 = $channel->dvr_directory . '/live.m3u8';
+        // branded.m3u8 must exist before push can read it.
+        $dvrDir = $channel->dvr_directory;
+        $m3u8 = $dvrDir . '/branded.m3u8';
         $waited = 0;
         while (! file_exists($m3u8) && $waited < 10) {
             sleep(1);
@@ -260,7 +396,7 @@ class TvPlayoutEngine
         }
 
         if (! file_exists($m3u8)) {
-            Log::warning("[TvPlayout] {$channel->name}: live.m3u8 not ready, push deferred");
+            Log::warning("[TvPlayout] {$channel->name}: branded.m3u8 not ready, push deferred");
             return false;
         }
 
@@ -277,7 +413,7 @@ class TvPlayoutEngine
         }
 
         $channel->update(['push_pid' => $pid, 'push_status' => 'live']);
-        Log::info("[TvPlayout] {$channel->name} push started — PID {$pid} → {$channel->push_url}");
+        Log::info("[TvPlayout] {$channel->name} push started — PID {$pid} → {$channel->push_url} (from branded.m3u8)");
 
         return true;
     }
@@ -322,6 +458,28 @@ class TvPlayoutEngine
 
         Log::warning("[TvPlayout] {$channel->name}: push died — restarting");
         $this->startPush($channel);
+    }
+
+    /**
+     * Ensure the CG overlay process is running.
+     * Called by the monitor to auto-restart CG if it dies.
+     * The playout ffmpeg is NEVER touched by this.
+     */
+    public function ensureCgRunning(Channel $channel): void
+    {
+        if (! $this->isRunning($channel)) {
+            return;
+        }
+
+        $cgPidFile = $this->ffmpeg->pidFile($channel, 'cg_playout');
+        $cgPid = $this->ffmpeg->readPid($cgPidFile);
+
+        if ($cgPid > 0 && $this->ffmpeg->isRunning($cgPid)) {
+            return;
+        }
+
+        Log::warning("[TvPlayout] {$channel->name}: CG overlay died — restarting");
+        $this->restartCg($channel);
     }
 
     /**
@@ -392,13 +550,13 @@ class TvPlayoutEngine
     }
 
     /**
-     * Update logo position (x:y pixels) — requires restart (baked into filter_complex).
+     * Update logo position (x:y pixels) — triggers CG restart (playout unaffected).
      */
     public function updateLogoPosition(Channel $channel, string $position): void
     {
         $channel->update(['logo_position' => $position]);
-        if ($this->isRunning($channel)) {
-            $this->restartWithResume($channel);
+        if ($this->cgIsConfigured($channel)) {
+            $this->restartCg($channel);
         }
     }
 
@@ -445,29 +603,30 @@ class TvPlayoutEngine
     }
 
     /**
-     * Update logo scale (% of video width, 1–50) — requires restart (baked into filter_complex).
+     * Update logo scale (% of video width, 1–50) — triggers CG restart (playout unaffected).
      */
     public function updateLogoScale(Channel $channel, int $scale): void
     {
         $channel->update(['logo_scale' => max(1, min(50, $scale))]);
-        if ($this->isRunning($channel)) {
-            $this->restartWithResume($channel);
+        if ($this->cgIsConfigured($channel)) {
+            $this->restartCg($channel);
         }
     }
 
     /**
-     * Toggle logo overlay on/off — requires restart (logo input conditionally included in filter chain).
+     * Toggle logo overlay on/off — triggers CG restart (playout unaffected).
      */
     public function toggleLogoEnabled(Channel $channel): void
     {
         $channel->update(['logo_enabled' => ! ($channel->logo_enabled ?? true)]);
-        if ($this->isRunning($channel)) {
-            $this->restartWithResume($channel);
+        $this->updateLogoSymlink($channel->fresh());
+        if ($this->cgIsConfigured($channel)) {
+            $this->restartCg($channel);
         }
     }
 
     /**
-     * Update clock settings (position, size, color, timezone) — requires restart.
+     * Update clock settings (position, size, color, timezone) — triggers CG restart (playout unaffected).
      */
     public function updateClockSettings(Channel $channel, array $settings): void
     {
@@ -490,13 +649,13 @@ class TvPlayoutEngine
 
         $channel->update($update);
 
-        if ($this->isRunning($channel)) {
-            $this->restartWithResume($channel);
+        if ($this->cgIsConfigured($channel)) {
+            $this->restartCg($channel);
         }
     }
 
     /**
-     * Update ticker settings — requires restart (baked into filter_complex).
+     * Update ticker settings — triggers CG restart (playout unaffected).
      */
     public function updateTickerSettings(Channel $channel, array $settings): void
     {
@@ -509,24 +668,24 @@ class TvPlayoutEngine
             'ticker_position' => $settings['position'] ?? null,
         ], fn ($v) => $v !== null));
 
-        if ($this->isRunning($channel)) {
-            $this->restartWithResume($channel);
+        if ($this->cgIsConfigured($channel)) {
+            $this->restartCg($channel);
         }
     }
 
     /**
-     * Update output resolution — requires restart.
+     * Update output resolution — triggers CG restart (playout unaffected).
      */
     public function updateResolution(Channel $channel, string $resolution): void
     {
         $channel->update(['output_resolution' => $resolution]);
-        if ($this->isRunning($channel)) {
-            $this->restartWithResume($channel);
+        if ($this->cgIsConfigured($channel)) {
+            $this->restartCg($channel);
         }
     }
 
     /**
-     * Update NOW PLAYING / lowerthird overlay settings — requires restart.
+     * Update NOW PLAYING / lowerthird overlay settings — triggers CG restart (playout unaffected).
      */
     public function updateLowerthirdSettings(Channel $channel, array $settings): void
     {
@@ -549,8 +708,8 @@ class TvPlayoutEngine
 
         $channel->update($update);
 
-        if ($this->isRunning($channel)) {
-            $this->restartWithResume($channel);
+        if ($this->cgIsConfigured($channel)) {
+            $this->restartCg($channel);
         }
     }
 
@@ -659,6 +818,7 @@ class TvPlayoutEngine
                 $hasDuration = (float) $item->duration > 0;
                 if (! ($isDirectFileUrl && $hasDuration)) {
                     if (! $this->urlIsAlive($resolved, $channel->name, $item->display_title)) {
+                        $item->delete();
                         continue;
                     }
                 }
@@ -799,7 +959,7 @@ class TvPlayoutEngine
         self::$urlHealth[$url] = ['at' => $now, 'alive' => $alive];
 
         if (! $alive) {
-            Log::warning("[TvPlayout] {$channelName}: URL check failed for '{$itemTitle}' (HTTP {$code}) — skipping for this build cycle");
+            Log::warning("[TvPlayout] {$channelName}: URL dead for '{$itemTitle}' (HTTP {$code}) — removing from playlist");
         }
 
         return $alive;
@@ -1337,19 +1497,6 @@ class TvPlayoutEngine
         return false;
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //  FFMPEG COMMAND BUILDER
-    // ═══════════════════════════════════════════════════════════════════
-
-    /**
-     * Build the FFmpeg command for TV playout with CG overlays.
-     *
-     * Architecture:
-     *   Input 0: concat playlist (video + audio)
-     *   Input 1: logo image (optional, -loop 1)
-     *   Filter chain: [logo overlay] → [ticker drawtext] → [clock drawtext]
-     *   Output: HLS segments → MediaMTX serves them
-     */
     /**
      * Derive a scale factor relative to 1080p so all overlay pixel values
      * (font sizes, margins, border widths, speeds) shrink/grow proportionally
@@ -1371,14 +1518,115 @@ class TvPlayoutEngine
         return max(1, (int) round($value * $scale));
     }
 
-    private function buildCommand(Channel $channel, string $concatFile, int $resumeOffset = 0): array
+    /**
+     * Return the RAM-based HLS output directory for a playout channel.
+     * Uses /dev/shm (tmpfs) so segment writes never touch disk.
+     */
+    private function playoutHlsDir(Channel $channel): string
     {
-        $dvrDir = $channel->dvr_directory;
-        $segPattern = "{$dvrDir}/tv_seg_%010d.ts";
-        $m3u8Out = "{$dvrDir}/live.m3u8";
-        // Default to 4s segments (was 2s). Longer segments = smoother manifests,
-        // far less disk I/O and fewer keyframe churn events on VBR URL sources.
-        $segDur = max(2, (int) ($channel->segment_duration ?? 4));
+        $dir = '/dev/shm/skymedia/' . $channel->id;
+        if (! is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+        return $dir;
+    }
+
+    /**
+     * Playout output directory — raw HLS (no overlays, stream copy).
+     */
+    private function rawHlsDir(Channel $channel): string
+    {
+        $dir = $channel->dvr_directory . '/raw';
+        if (! is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+        return $dir;
+    }
+
+    /**
+     * CG output directory — branded HLS (with overlays).
+     */
+    private function brandedHlsDir(Channel $channel): string
+    {
+        $dir = $channel->dvr_directory . '/branded';
+        if (! is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+        return $dir;
+    }
+
+    /**
+     * Build the FFmpeg command for Part 1: Playout (raw HLS, stream copy, no overlays).
+     *
+     * NEVER restarts except when admin explicitly stops the channel.
+     * Writes to dvr_directory/raw/ so nginx can serve it.
+     */
+    private function buildPlayoutCommand(Channel $channel, string $concatFile, int $resumeOffset = 0): array
+    {
+        $rawDir     = $this->rawHlsDir($channel);
+        $segPattern = "{$rawDir}/raw_%010d.ts";
+        $m3u8Out    = "{$rawDir}/raw.m3u8";
+        $segDur     = 2;
+
+        $cmd = [
+            $this->ffmpeg->getBin(),
+            '-y', '-loglevel', 'warning', '-stats',
+            '-progress', $this->nowPlayingProgressFile($channel),
+            '-fflags', '+genpts+igndts+discardcorrupt+flush_packets',
+            '-err_detect', 'ignore_err',
+            '-re',
+            '-safe', '0',
+            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+            '-f', 'concat',
+        ];
+
+        if ($resumeOffset > 0) {
+            $cmd[] = '-ss';
+            $cmd[] = (string) $resumeOffset;
+        }
+
+        $cmd[] = '-i';
+        $cmd[] = $concatFile;
+
+        // Stream copy — no re-encode, no overlays. Fast and stable.
+        $cmd = array_merge($cmd, [
+            '-c:v', 'copy',
+            '-c:a', 'copy',
+            '-f', 'hls',
+            '-hls_time', (string) $segDur,
+            '-hls_list_size', '3',
+            '-hls_flags', 'delete_segments+omit_endlist+append_list',
+            '-hls_delete_threshold', '1',
+            '-hls_segment_type', 'mpegts',
+            '-hls_segment_filename', $segPattern,
+            '-hls_allow_cache', '0',
+            '-hls_start_number_source', 'epoch',
+            '-max_muxing_queue_size', '4096',
+            $m3u8Out,
+        ]);
+
+        return $cmd;
+    }
+
+    /**
+     * Build the FFmpeg command for Part 2: CG overlay (raw → branded HLS with overlays).
+     *
+     * Input 0: raw.m3u8 (from playout ffmpeg)
+     * Filter chain: [logo overlay] → [ticker drawtext] → [clock drawtext] → [lowerthird]
+     * Output:  branded.m3u8 HLS segments (H.264 re-encode with overlays)
+     *
+     * This process restarts ONLY when an overlay setting changes.
+     * Reads from dvr_directory/raw/ and writes to dvr_directory/branded/.
+     * nginx serves branded.m3u8 to viewers. MediaMTX is NOT used.
+     */
+    private function buildCgCommand(Channel $channel): array
+    {
+        $rawDir     = $this->rawHlsDir($channel);
+        $brandedDir = $this->brandedHlsDir($channel);
+        $rawM3u8    = "{$rawDir}/raw.m3u8";
+        $segPattern = "{$brandedDir}/branded_%010d.ts";
+        $m3u8Out    = "{$brandedDir}/branded.m3u8";
+        $segDur     = 2;
 
         // Scale factor for all overlay pixel values relative to 1080p baseline
         $s = $this->overlayScale($channel);
@@ -1402,22 +1650,22 @@ class TvPlayoutEngine
         // the full list guarantees the loop always restarts at media 1.
         $cmd[] = '-re';
 
-        // Concat demuxer — works for both local files and URLs
+        // HLS input from playout ffmpeg (raw.m3u8)
+        $cmd[] = '-re';
         $cmd[] = '-safe';
         $cmd[] = '0';
         $cmd[] = '-protocol_whitelist';
         $cmd[] = 'file,http,https,tcp,tls,crypto';
-
         $cmd[] = '-f';
-        $cmd[] = 'concat';
-
-        if ($resumeOffset > 0) {
-            $cmd[] = '-ss';
-            $cmd[] = (string) $resumeOffset;
-        }
-
+        $cmd[] = 'hls';
+        $cmd[] = '-hls_time';
+        $cmd[] = '2';
+        $cmd[] = '-hls_list_size';
+        $cmd[] = '3';
+        $cmd[] = '-hls_start_number_source';
+        $cmd[] = 'epoch';
         $cmd[] = '-i';
-        $cmd[] = $concatFile;
+        $cmd[] = $rawM3u8;
 
         // Logo overlay — only include when logo_enabled is true.
         $this->ensureLogoBlank($channel);
@@ -1647,9 +1895,9 @@ class TvPlayoutEngine
         ], $videoEncode, $audioEncode, [
             '-f', 'hls',
             '-hls_time', (string) $segDur,
-            '-hls_list_size', '6',
+            '-hls_list_size', '3',
             '-hls_flags', 'delete_segments+omit_endlist+append_list',
-            '-hls_delete_threshold', '3',
+            '-hls_delete_threshold', '1',
             '-hls_segment_type', 'mpegts',
             '-hls_segment_filename', $segPattern,
             '-hls_allow_cache', '0',

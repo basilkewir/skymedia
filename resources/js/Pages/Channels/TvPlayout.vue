@@ -982,7 +982,7 @@
                             </div>
                             <div>
                                 <div class="text-xs text-slate-500">HLS Output</div>
-                                <div class="text-xs font-mono text-cyan-400 break-all">live.m3u8 → MediaMTX</div>
+                                <div class="text-xs font-mono text-cyan-400 break-all">branded.m3u8 → nginx → viewers</div>
                             </div>
                         </div>
                     </div>

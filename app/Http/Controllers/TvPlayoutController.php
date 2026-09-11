@@ -65,7 +65,7 @@ class TvPlayoutController extends Controller
         if ($host === 'localhost') {
             $host = parse_url((string) config('app.url'), PHP_URL_HOST) ?: 'localhost';
         }
-        $previewUrl = "http://{$host}:8080/hls/{$channel->slug}/live.m3u8";
+        $previewUrl = "http://{$host}:8080/hls/{$channel->slug}/branded.m3u8";
 
         return Inertia::render('Channels/TvPlayout', [
             'channel'         => $channel,
@@ -176,7 +176,8 @@ class TvPlayoutController extends Controller
             mkdir($directory, 0755, true);
         }
 
-        $filename = time() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '_', $file->getClientOriginalName());
+        $origName = $file->getClientOriginalName();
+        $filename = time() . '_' . preg_replace('/[^a-zA-Z0-9._-]/', '_', $origName);
         $filepath = $directory . '/' . $filename;
         $file->move($directory, $filename);
 
@@ -188,26 +189,32 @@ class TvPlayoutController extends Controller
         }
 
         $maxOrder = PlaylistItem::where('channel_id', $channel->id)->max('sort_order') ?? 0;
-
-        PlaylistItem::create([
+        $item = PlaylistItem::create([
             'channel_id' => $channel->id,
-            'title' => $file->getClientOriginalName(),
-            'filepath' => $filepath,
-            'duration' => $duration,
+            'title'      => $origName,
+            'filepath'   => $filepath,
+            'duration'   => $duration,
             'sort_order' => $maxOrder + 1,
+            'media_type' => 'local',
+            'is_active'  => true,
         ]);
 
-        // Recalculate schedule
         $this->engine->recalculateSchedule($channel);
 
-        // If playout is running, rebuild the concat file
+        // Auto-transcode non-H264 files to MP4 in background
+        if ($this->needsTranscode($filepath)) {
+            $mp4Path = preg_replace('/\.[^.]+$/', '.mp4', $filepath);
+            \App\Jobs\TranscodeToMp4::dispatch($item->id, $filepath, $mp4Path);
+            return response()->json(['success' => true, 'message' => "Added: {$origName} — transcoding to MP4 in background"]);
+        }
+
         if ($this->engine->isRunning($channel)) {
             $this->engine->rebuild($channel);
         }
 
         return response()->json([
             'success' => true,
-            'message' => "Added: {$file->getClientOriginalName()} ({$this->formatDuration($duration)})",
+            'message' => "Added: {$origName} ({$this->formatDuration($duration)})",
         ]);
     }
 
@@ -379,7 +386,9 @@ class TvPlayoutController extends Controller
     }
 
     /**
-     * Add a URL-based video (HLS .m3u8, direct .mp4, googlevideo stream, etc.) to the playlist.
+     * Add a URL-based video to the playlist.
+     * Always downloads and transcodes to MP4 in the background for reliable playback.
+     * HLS streams (.m3u8) and YouTube URLs are handled separately.
      */
     public function addUrl(Request $request, Channel $channel): JsonResponse
     {
@@ -387,25 +396,17 @@ class TvPlayoutController extends Controller
         $this->ensureAccess($channel);
 
         $request->validate([
-            'url'      => 'required|string|max:8000',
-            'title'    => 'nullable|string|max:500',
-            'download' => 'nullable|boolean',
+            'url'   => 'required|string|max:8000',
+            'title' => 'nullable|string|max:500',
         ]);
 
         $url = trim($request->input('url'));
-        $forceDownload = $request->boolean('download', false);
 
         if (! str_starts_with($url, 'http://') && ! str_starts_with($url, 'https://')) {
             return response()->json(['success' => false, 'error' => 'URL must start with http:// or https://'], 422);
         }
 
-        // Route googlevideo direct stream URLs through the stream-URL path
-        // (they carry an expire= param so we extract duration from it)
-        if (preg_match('#googlevideo\.com/videoplayback#i', $url)) {
-            return $this->addStreamUrl($channel, $url);
-        }
-
-        // Also handle YouTube watch URLs pasted into the URL field
+        // Route YouTube URLs
         $videoId = YouTubeMetadataService::extractVideoId($url);
         if ($videoId !== null) {
             return $this->addYouTubeById($channel, $videoId);
@@ -413,72 +414,31 @@ class TvPlayoutController extends Controller
 
         $title = $request->input('title') ?: $this->titleFromUrl($url);
 
-        // Prepare download directory
         $directory = $channel->dvr_directory . '/tv_media';
         if (! is_dir($directory)) {
             mkdir($directory, 0755, true);
         }
 
-        $filepath = null;
-        $mediaType = 'url';
-        $duration = 0.0;
-
-        // Detect URL type
-        $isDirectFile = preg_match('/\.(mkv|mp4|avi|mov|webm|ts|flv|m4v|wmv|mpg|mpeg)(\?|$)/i', $url);
-        $isStreamingUrl = preg_match('/\.(m3u8|m3u|mpd)(\?|$)/i', $url);
-
-        if ($forceDownload || ($isDirectFile && ! $isStreamingUrl)) {
-            // For direct file downloads or explicit download request — try downloading first
-            $duration = $this->downloadFile($url, $directory, $title, $filepath);
-            if ($duration > 0) {
-                $mediaType = 'local';
-            }
-        }
-
-        if ($duration <= 0 && ! $forceDownload && ! $isStreamingUrl) {
-            // Try probing the URL directly (works for HLS, direct streams, etc.)
-            // Skip for streaming URLs as they often have no fixed duration
-            $duration = $this->probeDuration($url);
-        }
-
-        if ($duration <= 0 && ($isStreamingUrl || ! $isDirectFile)) {
-            // For HLS/live streams and non-file URLs, use a default duration
-            // FFmpeg will handle the actual playback and duration detection
-            // Live streams will loop until the next playlist item
-            $duration = $isStreamingUrl ? 7200.0 : 7200.0; // 2 hours default
-        }
-
-        if ($duration <= 0) {
-            // Direct file download failed and we can't probe it — still add it with a
-            // default duration so ffmpeg can try to play it. The concat builder will
-            // probe it again during build and skip if still inaccessible.
-            $duration = 7200.0; // 2 hours default — ffmpeg will detect actual duration during playback
-        }
+        $safeName  = preg_replace('/[^a-zA-Z0-9._-]/', '_', $title);
+        $outputPath = $directory . '/' . time() . '_' . rtrim($safeName, '._') . '.mp4';
 
         $maxOrder = PlaylistItem::where('channel_id', $channel->id)->max('sort_order') ?? 0;
-
         $item = PlaylistItem::create([
             'channel_id' => $channel->id,
             'title'      => $title,
-            'filepath'   => $filepath ?? $url,
-            'duration'   => $duration,
+            'filepath'   => $url,          // temporary — job will update to local path
+            'duration'   => 7200.0,        // placeholder — job will update
             'sort_order' => $maxOrder + 1,
-            'media_type' => $mediaType,
+            'media_type' => 'downloading',
             'is_active'  => true,
         ]);
 
-        $this->engine->recalculateSchedule($channel);
+        \App\Jobs\DownloadAndTranscode::dispatch($item->id, $url, $outputPath);
 
-        if ($this->engine->isRunning($channel)) {
-            $this->engine->rebuild($channel);
-        }
-
-        $locationLabel = $mediaType === 'local' ? 'Downloaded' : 'Linked';
         return response()->json([
-            'success'    => true,
-            'message'    => "{$locationLabel} and added: {$title} ({$this->formatDuration($duration)})",
-            'item_id'    => $item->id,
-            'media_type' => $mediaType,
+            'success' => true,
+            'message' => "Downloading and converting to MP4: {$title}",
+            'item_id' => $item->id,
         ]);
     }
 
@@ -1007,6 +967,27 @@ class TvPlayoutController extends Controller
         $found = trim((string) shell_exec('which yt-dlp 2>/dev/null'));
 
         return $found !== '' ? $found : null;
+    }
+
+    /**
+     * Returns true if the file needs transcoding to H.264 MP4.
+     * Checks codec via ffprobe — only skips transcode if already H.264 in MP4.
+     */
+    private function needsTranscode(string $filepath): bool
+    {
+        $ext = strtolower(pathinfo($filepath, PATHINFO_EXTENSION));
+        // Non-mp4 containers always need transcode
+        if (! in_array($ext, ['mp4', 'm4v'])) {
+            return true;
+        }
+        // MP4 container — check if video codec is already H.264
+        $ffprobe = config('skymedia.ffprobe_binary', 'ffprobe');
+        $codec = trim((string) shell_exec(
+            escapeshellarg($ffprobe) . ' -v error -select_streams v:0'
+            . ' -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 '
+            . escapeshellarg($filepath) . ' 2>/dev/null'
+        ));
+        return $codec !== 'h264';
     }
 
     private function probeDuration(string $filepath): float
@@ -1769,7 +1750,7 @@ class TvPlayoutController extends Controller
         }
 
         $maxOrder = PlaylistItem::where('channel_id', $channel->id)->max('sort_order') ?? 0;
-        PlaylistItem::create([
+        $item = PlaylistItem::create([
             'channel_id' => $channel->id,
             'title'      => $filename,
             'filepath'   => $filepath,
@@ -1780,11 +1761,20 @@ class TvPlayoutController extends Controller
         ]);
 
         $this->engine->recalculateSchedule($channel);
+
+        // Auto-transcode non-H264 files to MP4 in background
+        if ($this->needsTranscode($filepath)) {
+            $mp4Path = preg_replace('/\.[^.]+$/', '.mp4', $filepath);
+            \App\Jobs\TranscodeToMp4::dispatch($item->id, $filepath, $mp4Path);
+            return response()->json(['success' => true, 'message' => "Added: {$filename} — transcoding to MP4 in background"]);
+        }
+
         if ($this->engine->isRunning($channel)) {
             $this->engine->rebuild($channel);
         }
 
         return response()->json(['success' => true, 'message' => "Added: {$filename}"]);
+
     }
 
     /**

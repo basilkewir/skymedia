@@ -619,6 +619,8 @@ class StreamManager
                 // and must not be refreshed, otherwise the title drifts.
                 // Push watchdog: restart push if it died
                 $engine->ensurePushRunning($channel->fresh());
+                // CG watchdog: restart CG overlay if it died (playout is unaffected)
+                $engine->ensureCgRunning($channel->fresh());
             }
             $channel->update(['last_check_at' => now()]);
             return;

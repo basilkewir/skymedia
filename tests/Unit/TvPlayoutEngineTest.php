@@ -437,22 +437,34 @@ class TvPlayoutEngineTest extends TestCase
         $buildConcat->setAccessible(true);
         $concatFile = $buildConcat->invoke($engine, $channel);
 
-        $buildCmd = $reflection->getMethod('buildCommand');
-        $buildCmd->setAccessible(true);
-        $cmd = $buildCmd->invoke($engine, $channel, $concatFile);
+        // Test Part 1: Playout command (stream copy, no overlays)
+        $buildPlayoutCmd = $reflection->getMethod('buildPlayoutCommand');
+        $buildPlayoutCmd->setAccessible(true);
+        $playoutCmd = $buildPlayoutCmd->invoke($engine, $channel, $concatFile);
 
-        $cmdString = implode(' ', $cmd);
+        $playoutCmdString = implode(' ', $playoutCmd);
+        $this->assertStringContainsString('-f concat', $playoutCmdString);
+        $this->assertStringContainsString('-c:v copy', $playoutCmdString);
+        $this->assertStringContainsString('-c:a copy', $playoutCmdString);
+        $this->assertStringContainsString('-hls_segment_filename', $playoutCmdString);
+        $this->assertStringContainsString('raw_%010d.ts', $playoutCmdString);
+        $this->assertStringNotContainsString('-filter_complex', $playoutCmdString);
+        $this->assertStringNotContainsString('drawtext', $playoutCmdString);
 
-        $this->assertStringContainsString('-f concat', $cmdString);
-        $this->assertStringContainsString('-filter_complex', $cmdString);
-        $this->assertStringContainsString('drawtext', $cmdString);
-        $this->assertStringContainsString('-f hls', $cmdString);
-        $this->assertStringContainsString('-c:v libx264', $cmdString);
-        $this->assertStringContainsString('-c:a aac', $cmdString);
-        // Looping must come from the concat file repeats, NOT -stream_loop —
-        // with the concat demuxer -stream_loop re-loops only the last file and
-        // the playlist appears stuck on one media item.
-        $this->assertStringNotContainsString('-stream_loop', $cmdString);
+        // Test Part 2: CG command (overlays applied)
+        $buildCgCmd = $reflection->getMethod('buildCgCommand');
+        $buildCgCmd->setAccessible(true);
+        $cgCmd = $buildCgCmd->invoke($engine, $channel);
+
+        $cgCmdString = implode(' ', $cgCmd);
+        $this->assertStringContainsString('-filter_complex', $cgCmdString);
+        $this->assertStringContainsString('drawtext', $cgCmdString);
+        $this->assertStringContainsString('-f hls', $cgCmdString);
+        $this->assertStringContainsString('-c:v libx264', $cgCmdString);
+        $this->assertStringContainsString('-c:a aac', $cgCmdString);
+        $this->assertStringContainsString('branded_%010d.ts', $cgCmdString);
+        // Looping must come from the concat file repeats, NOT -stream_loop
+        $this->assertStringNotContainsString('-stream_loop', $cgCmdString);
     }
 
     /** @test */
