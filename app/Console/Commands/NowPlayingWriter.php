@@ -25,13 +25,15 @@ class NowPlayingWriter extends Command
 
         $progressFile = $engine->nowPlayingProgressFile($channel);
 
-        $lastOffset = -1.0;
-        $lastWrite  = 0;
+        $lastOffset    = -1.0;
+        $lastWrite     = 0;
+        $lastAnchorSync = 0;
 
         while (true) {
             // Exit as soon as the playout ffmpeg is no longer running — the
             // engine (re)spawns us on start().
-            if (! $engine->isRunning($channel->fresh())) {
+            $fresh = $channel->fresh();
+            if (! $engine->isRunning($fresh)) {
                 break;
             }
 
@@ -41,12 +43,22 @@ class NowPlayingWriter extends Command
             // ~1s (or once per 10s as a heartbeat for robustness).
             if ($offset !== null && (abs($offset - $lastOffset) >= 1.0 || (time() - $lastWrite) >= 10)) {
                 try {
-                    $engine->writeMetaFile($channel->fresh(), $offset);
+                    $engine->writeMetaFile($fresh, $offset);
                     $lastOffset = $offset;
                     $lastWrite  = time();
                 } catch (\Throwable $e) {
                     Log::warning("[NowPlaying] {$channel->name}: {$e->getMessage()}");
                 }
+            }
+
+            // Keep last_live_at anchored to actual playback every 30s.
+            // This ensures computeResumeOffset() always gets the real position
+            // on restart, preventing the playlist from repeating from the start.
+            if ($offset !== null && (time() - $lastAnchorSync) >= 30) {
+                try {
+                    $fresh->update(['last_live_at' => now()->subSeconds((int) $offset)]);
+                    $lastAnchorSync = time();
+                } catch (\Throwable) {}
             }
 
             usleep(1_000_000); // 1s
