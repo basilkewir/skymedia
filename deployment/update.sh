@@ -194,9 +194,11 @@ ok "Nginx reloaded"
 
 # Copy updated nginx HLS config if it exists in deployment/
 if [ -f "${APP_DIR}/deployment/nginx-skymedia.conf" ]; then
-    cp "${APP_DIR}/deployment/nginx-skymedia.conf" /etc/nginx/sites-enabled/skymedia
+    # Patch the FPM socket to match the actual PHP version on this server
+    sed "s|php[0-9]\+\.[0-9]\+-fpm.sock|php${PHP_VER}-fpm.sock|g" \
+        "${APP_DIR}/deployment/nginx-skymedia.conf" > /etc/nginx/sites-enabled/skymedia
     nginx -t && systemctl reload nginx
-    ok "Nginx HLS config updated from deployment/nginx-skymedia.conf"
+    ok "Nginx HLS config updated (PHP ${PHP_VER}-fpm)"
 fi
 
 info "Re-activating streams..."
