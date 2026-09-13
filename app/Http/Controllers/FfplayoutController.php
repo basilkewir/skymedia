@@ -140,6 +140,8 @@ class FfplayoutController extends Controller
             'logo_file'         => 'nullable|file|mimes:png,jpg,jpeg,gif,svg|max:2048',
             'relay_push_url'    => 'nullable|string|max:500',
             'ticker_lines'      => 'nullable|string', // JSON-encoded array
+            'api_username'      => 'nullable|string|max:100',
+            'api_password'      => 'nullable|string|max:200',
         ]);
 
         $mediaDir  = $this->mediaDir($channelId);
@@ -175,6 +177,8 @@ class FfplayoutController extends Controller
         $titleBgOpacity  = (float)($data['title_bg_opacity']  ?? $current['title_bg_opacity']);
         $titleFontSize   = (int)($data['title_font_size']     ?? $current['title_font_size']);
         $relayPushUrl    = $data['relay_push_url']      ?? $current['relay_push_url'];
+        $apiUsername     = $data['api_username']        ?? $current['api_username'];
+        $apiPassword     = $data['api_password']        ?? $current['api_password'];
 
         // Write title/ticker legacy files
         $titleFile  = $assetsDir . '/title.txt';
@@ -252,6 +256,8 @@ class FfplayoutController extends Controller
             'title_font_size'   => $titleFontSize,
             'relay_push_url'    => $relayPushUrl,
             'ticker_lines'      => $tickerLines,
+            'api_username'      => $apiUsername,
+            'api_password'      => $apiPassword,
         ];
         file_put_contents($assetsDir . '/overlay.json', json_encode($sidecar));
 
@@ -442,7 +448,8 @@ class FfplayoutController extends Controller
                 $sc = json_decode(file_get_contents($sidecarPath), true) ?? [];
                 foreach (['ticker_enabled', 'ticker_bg_color', 'ticker_bg_opacity', 'ticker_text_color',
                           'ticker_font_size', 'title_enabled', 'title_text', 'title_text_color',
-                          'title_bg_color', 'title_bg_opacity', 'title_font_size', 'relay_push_url'] as $key) {
+                          'title_bg_color', 'title_bg_opacity', 'title_font_size', 'relay_push_url',
+                          'api_username', 'api_password'] as $key) {
                     if (array_key_exists($key, $sc)) $result[$key] = $sc[$key];
                 }
                 $result['ticker_lines'] = $sc['ticker_lines'] ?? [];

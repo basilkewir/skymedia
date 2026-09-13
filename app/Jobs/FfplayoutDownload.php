@@ -101,8 +101,10 @@ class FfplayoutDownload implements ShouldQueue
                 $cmd = implode(' ', [
                     escapeshellarg($ytdlp),
                     '--no-warnings', '--no-playlist',
-                    '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                    '--merge-output-format', 'mp4',
+                    // Best quality regardless of container — mp4-only formats are
+                    // frequently lower resolution than the webm/mkv variants.
+                    '-f', 'bestvideo+bestaudio/best',
+                    '--merge-output-format', 'mkv',
                     '-o', escapeshellarg($rawPath),
                     escapeshellarg($this->url),
                     '>> ' . escapeshellarg($logFile) . ' 2>&1',
@@ -133,16 +135,35 @@ class FfplayoutDownload implements ShouldQueue
             return;
         }
 
-        // Step 2: transcode if needed (skip for HLS — ffmpeg already wrote h264 MP4)
-        $ext   = strtolower(pathinfo($rawPath, PATHINFO_EXTENSION));
+        // Step 2: normalize the container. ffplayout supports mp4/mkv/webm and
+        // decodes with ffmpeg, so KEEP the native container when the codec is
+        // already playable — re-encoding mkv→mp4 was what degraded quality.
+        $container = trim((string) shell_exec(
+            escapeshellarg($ffprobe) . ' -v error -show_entries format=format_name' .
+            ' -of default=noprint_wrappers=1:nokey=1 ' .
+            escapeshellarg($rawPath) . ' 2>/dev/null'
+        ));
         $codec = trim((string) shell_exec(
             escapeshellarg($ffprobe) . ' -v error -select_streams v:0' .
             ' -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 ' .
             escapeshellarg($rawPath) . ' 2>/dev/null'
         ));
 
-        if ($isHls || ($ext === 'mp4' && $codec === 'h264')) {
-            rename($rawPath, $outputPath);
+        $extMap = [
+            'mp4' => 'mp4', 'mov' => 'mp4', 'ipod' => 'mp4',
+            'matroska' => 'mkv', 'webm' => 'webm',
+        ];
+        $playableCodecs = ['h264', 'hevc', 'h265', 'av1', 'vp9', 'mpeg4'];
+        $containerName = strtok($container, ',');
+
+        if ($isHls || (isset($extMap[$containerName]) && in_array($codec, $playableCodecs, true))) {
+            $finalExt = $extMap[$containerName] ?? 'mp4';
+            $finalPath = preg_replace('/\.mp4$/', '.' . $finalExt, $outputPath);
+            if (file_exists($finalPath) && $finalPath !== $rawPath) {
+                @unlink($finalPath);
+            }
+            rename($rawPath, $finalPath);
+            $outputPath = $finalPath;
         } else {
             $cmd = implode(' ', [
                 escapeshellarg($ffmpeg), '-y', '-loglevel', 'warning',
@@ -185,9 +206,6 @@ class FfplayoutDownload implements ShouldQueue
             'file'     => basename($outputPath),
             'duration' => $duration,
         ]));
-
-        // Auto-update the movie title overlay with the downloaded title
-        $this->writeTitleOverlay($this->title);
 
         Log::info("[FfplayoutDownload] {$this->downloadId}: done — {$duration}s → {$outputPath}");
     }
@@ -233,25 +251,7 @@ class FfplayoutDownload implements ShouldQueue
         @chmod($jsonFile, 0664);
     }
 
-    private function writeTitleOverlay(string $title): void
-    {
-        $assetsDir = $this->mediaDir . '/00-assets';
-        if (!is_dir($assetsDir)) return;
-
-        $titleFile = $assetsDir . '/title.txt';
-        file_put_contents($titleFile, 'Now Playing: ' . $title);
-        @chmod($titleFile, 0664);
-
-        // Update sidecar JSON so the UI reflects the current title
-        $sidecarPath = $assetsDir . '/overlay.json';
-        $sidecar = file_exists($sidecarPath)
-            ? (json_decode(file_get_contents($sidecarPath), true) ?? [])
-            : [];
-        $sidecar['title_text'] = 'Now Playing: ' . $title;
-        file_put_contents($sidecarPath, json_encode($sidecar));
-    }
-
-public function statusFile(): string
+    public function statusFile(): string
     {
         return $this->mediaDir . '/' . $this->downloadId . '.status.json';
     }
