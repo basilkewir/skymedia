@@ -507,7 +507,7 @@ class TvPlayoutController extends Controller
 
         $data = $request->validate([
             'custom_title' => 'nullable|string|max:500',
-            'media_group'  => 'nullable|string|in:default,clean',
+            'media_group'  => 'nullable|string|in:default,clean,jingle,ads',
         ]);
 
         $update = ['custom_title' => $data['custom_title'] ?: null];
@@ -1285,9 +1285,15 @@ class TvPlayoutController extends Controller
         foreach ($items as $item) {
             if ($item->isYouTube()) {
                 $statuses[$item->id] = [
-                    'status' => $this->engine->getYouTubeDownloadStatus($item),
+                    'status'   => $this->engine->getYouTubeDownloadStatus($item),
                     'video_id' => $item->youtube_id,
                 ];
+            } elseif ($item->media_type === 'downloading') {
+                $statuses[$item->id] = ['status' => 'downloading'];
+            } elseif ($item->media_type === 'url_failed') {
+                $statuses[$item->id] = ['status' => 'failed'];
+            } elseif ($item->media_type === 'local' && str_starts_with($item->filepath, '/')) {
+                $statuses[$item->id] = ['status' => 'ready'];
             }
         }
 

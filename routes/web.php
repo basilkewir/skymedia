@@ -11,6 +11,7 @@ use App\Http\Controllers\IngestController;
 use App\Http\Controllers\LogController;
 use App\Http\Controllers\PushController;
 use App\Http\Controllers\SettingsController;
+use App\Http\Controllers\FfplayoutController;
 use App\Http\Controllers\TvPlayoutController;
 use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
@@ -108,6 +109,23 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('channels/{channel}/playout/media/add-to-playlist', [TvPlayoutController::class, 'addMediaToPlaylist'])->name('channels.playout.media.add-to-playlist');
     Route::delete('channels/{channel}/playout/media', [TvPlayoutController::class, 'deleteMedia'])->name('channels.playout.media.delete');
 
+
+    // ── ffplayout (external 24/7 playout engine) ───────────────────────────────
+    Route::get('ffplayout', [FfplayoutController::class, 'index'])->name('ffplayout.index');
+    Route::get('ffplayout/{channelId}/media', [FfplayoutController::class, 'media'])->name('ffplayout.media');
+    Route::post('ffplayout/{channelId}/download', [FfplayoutController::class, 'download'])->name('ffplayout.download');
+    Route::get('ffplayout/{channelId}/download-status', [FfplayoutController::class, 'downloadStatus'])->name('ffplayout.download-status');
+    Route::get('ffplayout/{channelId}/playlist', [FfplayoutController::class, 'playlist'])->name('ffplayout.playlist');
+    Route::get('ffplayout/{channelId}/overlay', [FfplayoutController::class, 'overlayGet'])->name('ffplayout.overlay.get');
+    Route::post('ffplayout/{channelId}/overlay', [FfplayoutController::class, 'overlaySet'])->name('ffplayout.overlay.set');
+    Route::post('ffplayout/{channelId}/overlay-text', [FfplayoutController::class, 'overlayTextUpdate'])->name('ffplayout.overlay.text');
+    Route::post('ffplayout/{channelId}/rss-fetch',     [FfplayoutController::class, 'rssFetch'])->name('ffplayout.rss.fetch');
+    Route::post('ffplayout/{channelId}/restart', [FfplayoutController::class, 'restart'])->name('ffplayout.restart');
+    Route::get('ffplayout/{channelId}/relay/status',  [FfplayoutController::class, 'relayStatus'])->name('ffplayout.relay.status');
+    Route::post('ffplayout/{channelId}/relay/start',  [FfplayoutController::class, 'relayStart'])->name('ffplayout.relay.start');
+    Route::post('ffplayout/{channelId}/relay/stop',   [FfplayoutController::class, 'relayStop'])->name('ffplayout.relay.stop');
+    Route::post('ffplayout/{channelId}/ticker-lines/text', [FfplayoutController::class, 'tickerLineTextUpdate'])->name('ffplayout.ticker-lines.text');
+    Route::post('ffplayout/{channelId}/ticker-lines/image', [FfplayoutController::class, 'tickerLabelImageUpload'])->name('ffplayout.ticker-lines.image');
 
     // ── Channels CRUD resource ────────────────────────────────────────────────
     Route::resource('channels', ChannelController::class);

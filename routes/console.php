@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Schedule;
 
 Schedule::command('dvr:cleanup')->everyFiveMinutes()->withoutOverlapping();
+Schedule::command('ffplayout:rss-ticker')->everyFifteenMinutes()->withoutOverlapping();
 Schedule::command('youtube:cleanup-cache')->everyThirtyMinutes()->withoutOverlapping();
 
 // Refresh working proxy from proxifly repo every 30 minutes

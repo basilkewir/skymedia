@@ -336,10 +336,16 @@
                                                   }">
                                                 {{ downloadStatuses[item.id] === 'ready' ? 'YT ✓' : downloadStatuses[item.id] === 'downloading' ? 'YT ⬇' : downloadStatuses[item.id] === 'queued' ? 'YT …' : downloadStatuses[item.id] === 'failed' ? 'YT ✕' : 'YT' }}
                                             </span>
-                                            <span v-if="item.media_type === 'jingle'"
-                                                  class="inline-block px-1.5 py-0.5 bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[10px] rounded flex-shrink-0" title="Jingle — no overlays">♪ JINGLE</span>
+                                            <!-- Group badge -->
+                                            <span v-if="item.media_group === 'jingle' || item.media_type === 'jingle'"
+                                                  class="inline-block px-1.5 py-0.5 bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[10px] rounded flex-shrink-0"
+                                                  title="Jingle — all overlays suppressed">♪ JINGLE</span>
+                                            <span v-else-if="item.media_group === 'ads'"
+                                                  class="inline-block px-1.5 py-0.5 bg-blue-500/20 text-blue-400 border border-blue-500/30 text-[10px] rounded flex-shrink-0"
+                                                  title="Ad/Promo — title hidden, ticker+clock shown">📢 AD</span>
                                             <span v-else-if="item.media_group === 'clean'"
-                                                  class="inline-block px-1.5 py-0.5 bg-slate-600/60 text-slate-400 text-[10px] rounded flex-shrink-0" title="No overlays">CLEAN</span>
+                                                  class="inline-block px-1.5 py-0.5 bg-slate-600/60 text-slate-400 text-[10px] rounded flex-shrink-0"
+                                                  title="Clean — all overlays suppressed">✦ CLEAN</span>
                                             <span class="truncate">{{ item.display_title || item.custom_title || item.title }}</span>
                                         </div>
                                         <div v-if="item.custom_title && item.custom_title !== item.title" class="text-[10px] text-slate-600 truncate mt-0.5">
@@ -419,12 +425,21 @@
                                                              : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700']">
                                             {{ g.label }}
                                         </button>
-                                        <span class="text-[10px] text-slate-600 ml-1">{{ mediaGroups.find(g => g.value === editGroup)?.hint }}</span>
                                         <button @click="saveItemEdit" :disabled="editSaving"
                                                 class="ml-auto px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50 transition-colors">
                                             {{ editSaving ? 'Saving…' : '✓ Save' }}
                                         </button>
                                     </div>
+                                    <!-- Group hint -->
+                                    <p class="text-[10px] mt-1.5 px-0.5"
+                                       :class="{
+                                           'text-slate-500': editGroup === 'default',
+                                           'text-blue-400':  editGroup === 'ads',
+                                           'text-amber-400': editGroup === 'jingle',
+                                           'text-slate-400': editGroup === 'clean',
+                                       }">
+                                        {{ mediaGroups.find(g => g.value === editGroup)?.hint }}
+                                    </p>
                                 </div>
                                 <!-- Insert Jingle bar between items -->
                                 <div class="relative h-0 -my-px group">
@@ -1375,8 +1390,10 @@ async function setLoop(val) {
 }
 
 const mediaGroups = [
-    { value: 'default', label: 'Default', hint: 'All overlays shown' },
-    { value: 'clean',   label: 'Clean',   hint: 'No overlays (logo, ticker, clock, lower-third hidden)' },
+    { value: 'default', label: '🎬 Movie / Content', hint: 'All overlays shown — logo, ticker, clock, NOW PLAYING title' },
+    { value: 'ads',     label: '📢 Ad / Promo',      hint: 'Logo + ticker + clock shown, NOW PLAYING title hidden' },
+    { value: 'jingle',  label: '♪ Jingle',           hint: 'ALL overlays suppressed — clean air break' },
+    { value: 'clean',   label: '✦ Clean',            hint: 'ALL overlays suppressed (same as Jingle)' },
 ]
 
 // Inline item editor

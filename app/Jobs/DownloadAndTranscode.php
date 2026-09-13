@@ -40,34 +40,98 @@ class DownloadAndTranscode implements ShouldQueue
 
         Log::info("[DownloadTranscode] Item {$this->itemId}: {$this->url} → {$this->outputPath}");
 
-        $ffmpeg = config('skymedia.ffmpeg_binary', 'ffmpeg');
+        $ffmpeg  = config('skymedia.ffmpeg_binary', 'ffmpeg');
+        $ffprobe = config('skymedia.ffprobe_binary', 'ffprobe');
+        $logFile = $this->outputPath . '.log';
 
-        // Use ffmpeg to download + transcode in one pass.
-        // This handles HLS, direct MP4, MKV, TS, AVI — anything ffmpeg can read.
-        $cmd = implode(' ', [
-            escapeshellarg($ffmpeg),
-            '-y',
-            '-loglevel', 'warning',
-            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
-            '-i', escapeshellarg($this->url),
-            '-c:v', 'libx264',
-            '-preset', 'veryfast',
-            '-crf', '23',
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-ar', '48000',
-            '-ac', '2',
-            '-movflags', '+faststart',
-            escapeshellarg($this->outputPath),
-            '>> ' . escapeshellarg($this->outputPath . '.log') . ' 2>&1',
-        ]);
+        // ── Step 1: Download raw file via yt-dlp (handles CDN tokens, brackets,
+        //   redirects, MKV, MP4, TS — anything curl/yt-dlp can fetch) ──────────
+        $rawPath  = $this->outputPath . '.raw';
+        $ytdlp    = $this->findBinary(['yt-dlp', '/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp']);
+        $downloaded = false;
 
-        exec($cmd, $out, $code);
+        if ($ytdlp !== null) {
+            // yt-dlp works for any HTTP URL, not just YouTube
+            $dlCmd = implode(' ', [
+                escapeshellarg($ytdlp),
+                '--no-warnings',
+                '--no-playlist',
+                '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                '--merge-output-format', 'mp4',
+                '-o', escapeshellarg($rawPath),
+                escapeshellarg($this->url),
+                '>> ' . escapeshellarg($logFile) . ' 2>&1',
+            ]);
+            exec($dlCmd, $out, $dlCode);
+
+            // yt-dlp may append .mp4 to the output path
+            if (! file_exists($rawPath) && file_exists($rawPath . '.mp4')) {
+                rename($rawPath . '.mp4', $rawPath);
+            }
+
+            $downloaded = $dlCode === 0 && file_exists($rawPath) && filesize($rawPath) >= 1024;
+        }
+
+        // Fallback: direct curl download (for plain CDN links yt-dlp can't handle)
+        if (! $downloaded) {
+            $encodedUrl = str_replace(['[', ']'], ['%5B', '%5D'], $this->url);
+            $curlCmd = implode(' ', [
+                'curl -L --max-time 14400 --retry 3',
+                '-A', escapeshellarg('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'),
+                '-o', escapeshellarg($rawPath),
+                escapeshellarg($encodedUrl),
+                '>> ' . escapeshellarg($logFile) . ' 2>&1',
+            ]);
+            exec($curlCmd, $out, $dlCode);
+            $downloaded = $dlCode === 0 && file_exists($rawPath) && filesize($rawPath) >= 1024;
+        }
+
+        if (! $downloaded) {
+            Log::error("[DownloadTranscode] Item {$this->itemId}: download failed");
+            @unlink($rawPath);
+            $item->update(['media_type' => 'url_failed']);
+            return;
+        }
+
+        // ── Step 2: Check if transcode is needed (skip if already H.264 MP4) ──
+        $ext   = strtolower(pathinfo($rawPath, PATHINFO_EXTENSION));
+        $codec = trim((string) shell_exec(
+            escapeshellarg($ffprobe) . ' -v error -select_streams v:0'
+            . ' -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 '
+            . escapeshellarg($rawPath) . ' 2>/dev/null'
+        ));
+
+        $needsTranscode = ! ($ext === 'mp4' && $codec === 'h264');
+
+        if (! $needsTranscode) {
+            // Already H.264 MP4 — just move it
+            rename($rawPath, $this->outputPath);
+            $code = 0;
+        } else {
+            // ── Step 3: Transcode to H.264/AAC MP4 ──────────────────────────────
+            $cmd = implode(' ', [
+                escapeshellarg($ffmpeg),
+                '-y',
+                '-loglevel', 'warning',
+                '-i', escapeshellarg($rawPath),
+                '-c:v', 'libx264',
+                '-preset', 'veryfast',
+                '-crf', '23',
+                '-c:a', 'aac',
+                '-b:a', '128k',
+                '-ar', '48000',
+                '-ac', '2',
+                '-movflags', '+faststart',
+                escapeshellarg($this->outputPath),
+                '>> ' . escapeshellarg($logFile) . ' 2>&1',
+            ]);
+            exec($cmd, $out, $code);
+            @unlink($rawPath);
+        }
 
         if ($code !== 0 || ! file_exists($this->outputPath) || filesize($this->outputPath) < 1024) {
             Log::error("[DownloadTranscode] Item {$this->itemId} failed (exit {$code})");
             @unlink($this->outputPath);
-            // Mark item as failed but keep URL so user can retry
             $item->update(['media_type' => 'url_failed']);
             return;
         }
@@ -102,5 +166,16 @@ class DownloadAndTranscode implements ShouldQueue
                 $engine->rebuild($channel);
             }
         }
+    }
+
+    private function findBinary(array $candidates): ?string
+    {
+        foreach ($candidates as $path) {
+            if (is_executable($path)) {
+                return $path;
+            }
+        }
+        $found = trim((string) shell_exec('which ' . escapeshellarg($candidates[0]) . ' 2>/dev/null'));
+        return $found !== '' ? $found : null;
     }
 }

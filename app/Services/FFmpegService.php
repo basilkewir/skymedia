@@ -779,6 +779,91 @@ class FFmpegService
     }
 
     /**
+     * Kill every ffmpeg process whose command line matches the given patterns.
+     *
+     * This is the race-proof way to guarantee "one process per role per channel":
+     * two concurrent callers (the root monitor + the www-data web app, or two
+     * overlapping monitor ticks) can both read a stale PID file and both spawn
+     * a fresh encoder. By killing by *command-line signature* immediately before
+     * every spawn, the LAST caller to start always removes the earlier spawn
+     * first, so there can never be two writers on the same HLS output.
+     *
+     * $patterns are substrings matched against `ps -eo pid,args`. Use the
+     * channel's dvr_directory + the role's unique output signature
+     * (e.g. "…/{channel}/raw_%010d", "…/{channel}/branded_%010d").
+     *
+     * When $requireAll is true every pattern must match (used for push: it
+     * must match both the channel's branded.m3u8 AND -f flv/rtmp so other
+     * channels' pushes are never touched).
+     *
+     * Returns the number of processes killed.
+     */
+    public function killFFmpegByPattern(array $patterns, bool $requireAll = false, int $graceMs = 3000): int
+    {
+        $patterns = array_values(array_filter(array_map('trim', $patterns), fn ($p) => $p !== ''));
+        if ($patterns === []) {
+            return 0;
+        }
+
+        $matches = [];
+        $lines   = [];
+        exec('ps -eo pid,args 2>/dev/null', $lines);
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (! str_contains($line, 'ffmpeg')) {
+                continue;
+            }
+            $matched = $requireAll;
+            foreach ($patterns as $pat) {
+                $hit = str_contains($line, $pat);
+                if ($requireAll && ! $hit) {
+                    $matched = false;
+                    break;
+                }
+                if (! $requireAll && $hit) {
+                    $matched = true;
+                    break;
+                }
+            }
+            if (! $matched) {
+                continue;
+            }
+            $pid = (int) preg_replace('/^(\d+)\s.*$/', '$1', $line);
+            if ($pid > 0) {
+                $matches[$pid] = true;
+            }
+        }
+
+        $pids = array_keys($matches);
+        if ($pids === []) {
+            return 0;
+        }
+
+        Log::warning('[FFmpeg] killFFmpegByPattern (' . implode(' | ', $patterns) . ') → PIDs ' . implode(',', $pids));
+        foreach ($pids as $pid) {
+            exec("kill -TERM {$pid} 2>/dev/null");
+            exec("pkill -TERM -P {$pid} 2>/dev/null");
+        }
+
+        $waited = 0;
+        foreach ($pids as $pid) {
+            while ($this->isRunning($pid) && $waited < $graceMs) {
+                usleep(100_000);
+                $waited += 100;
+            }
+        }
+        foreach ($pids as $pid) {
+            if ($this->isRunning($pid)) {
+                exec("kill -KILL {$pid} 2>/dev/null");
+                exec("pkill -KILL -P {$pid} 2>/dev/null");
+            }
+        }
+        usleep(200_000);
+
+        return count($pids);
+    }
+
+    /**
      * Launch an ffmpeg process in the background.
      * For push-ingest RTMP listeners, wraps ffmpeg in a shell loop so the
      * listener restarts immediately after the encoder disconnects — the port
@@ -810,6 +895,11 @@ class FFmpegService
         $sessionMarker = '=== SKYMEDIA FFmpeg session started at '
             . gmdate('Y-m-d H:i:s') . " UTC ===\n";
         file_put_contents($logFile, $sessionMarker, FILE_APPEND | LOCK_EX);
+        // Log files must be writable by BOTH contexts that spawn ffmpeg: the
+        // root supervisord monitor and the www-data web app. Without this, a
+        // monitor-started ffmpeg leaves a root-owned log that the web app can
+        // no longer append to → "Failed to open stream: Permission denied".
+        @chmod($logFile, 0666);
 
         $escaped = implode(' ', array_map('escapeshellarg', $command));
         $path = '/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin';
@@ -824,7 +914,7 @@ class FFmpegService
         if ($isRtmpListener) {
             $stopFile = $pidFile . '.stop';
             @unlink($stopFile);
-            $shell = "export PATH={$path}:\$PATH; setsid sh -c "
+            $shell = "export PATH={$path}:\$PATH; umask 000; setsid sh -c "
                 . escapeshellarg(
                     'while [ ! -f ' . escapeshellarg($stopFile) . ' ]; do '
                     . $escaped . ' >> ' . escapeshellarg($logFile) . ' 2>&1; '
@@ -833,7 +923,7 @@ class FFmpegService
                 )
                 . ' </dev/null >/dev/null 2>&1 & echo $! > ' . escapeshellarg($pidTmp);
         } else {
-            $shell = "export PATH={$path}:\$PATH; setsid nohup {$escaped} >> "
+            $shell = "export PATH={$path}:\$PATH; umask 000; setsid nohup {$escaped} >> "
                 . escapeshellarg($logFile)
                 . ' 2>&1 </dev/null & echo $! > ' . escapeshellarg($pidTmp);
         }

@@ -127,6 +127,7 @@ class TvPlayoutEngine
         //     live.m3u8/tv_seg_*.ts). Those leak CPU and make the stream freeze.
         //     We keep only our own tracked playout/CG/push PIDs.
         $this->killOrphanedPlayouts($channel);
+        $this->killFfmpegForRole($channel, 'tv_playout');
         $this->cleanStaleHls($channel);
 
         $resumeOffset = $this->computeResumeOffset($channel);
@@ -260,6 +261,7 @@ class TvPlayoutEngine
         }
 
         $this->stopCg($channel, silent: true);
+        $this->killFfmpegForRole($channel, 'cg_playout');
         $this->writeTickerFile($channel);
         $this->writeMetaFile($channel);
         $this->updateLogoSymlink($channel);
@@ -395,6 +397,38 @@ class TvPlayoutEngine
     }
 
     /**
+     * Guarantee a SINGLE ffmpeg process per role per channel by killing any
+     * process whose command line matches that role's unique output signature.
+     *
+     * The PID-file check alone is not race-proof: two concurrent callers (the
+     * root monitor + the www-data web app, or two overlapping monitor ticks)
+     * can both read a stale PID file and both spawn a fresh encoder. Two writers
+     * on the same raw.m3u8/branded.m3u8 then fight over the same segments and
+     * freeze the viewer's picture. Killing by command-line signature immediately
+     * before every spawn makes the LAST spawner win — so duplicates are impossible.
+     */
+    public function killFfmpegForRole(Channel $channel, string $role): int
+    {
+        $dvr = $channel->dvr_directory;
+
+        $patterns = match ($role) {
+            'tv_playout' => ["{$dvr}/raw_%010d.ts"],
+            'cg_playout' => ["{$dvr}/branded_%010d.ts"],
+            // Push is the ONLY process reading branded.m3u8 as an INPUT and the
+            // only one passing -live_start_index (CG writes branded.m3u8 as its
+            // HLS output, so require BOTH signals to match this channel's push).
+            'push'       => ["{$dvr}/branded.m3u8", '-live_start_index'],
+            default      => [],
+        };
+
+        if ($patterns === []) {
+            return 0;
+        }
+
+        return $this->ffmpeg->killFFmpegByPattern($patterns, requireAll: $role === 'push');
+    }
+
+    /**
      * Remove stale HLS playlists/segments left over from previous deployments
      * (live.m3u8, output.m3u8, tv_seg_*.ts, index.m3u8) so viewers can never
      * latch onto a frozen/stale stream while the new pipeline starts up.
@@ -506,6 +540,10 @@ class TvPlayoutEngine
         if ($this->isPushRunning($channel)) {
             return true;
         }
+
+        // Race-proof: remove any duplicate push reading this channel's branded
+        // HLS even if the stale PID file already pointed somewhere else.
+        $this->killFfmpegForRole($channel, 'push');
 
         // branded.m3u8 must exist before push can read it.
         $brandedDir = $this->brandedHlsDir($channel);
@@ -641,7 +679,54 @@ class TvPlayoutEngine
     }
 
     /**
-     * Rebuild the concat file seamlesslyt (which could take hours).
+     * Update logo position (x:y pixels) — triggers CG restart (playout unaffected).
+     */
+    public function updateLogoPosition(Channel $channel, string $position): void
+    {
+        $channel->update(['logo_position' => $position]);
+        if ($this->cgIsConfigured($channel)) {
+            $this->restartCg($channel);
+        }
+    }
+
+    /**
+     * Update playlist loop count — 0 = auto-fill 24h, N = repeat N times.
+     */
+    public function updatePlaylistLoop(Channel $channel, int $count): void
+    {
+        $channel->update(['playlist_loop' => max(0, $count)]);
+        if ($this->isRunning($channel)) {
+            $this->rebuild($channel);
+        }
+    }
+
+    /**
+     * Rebuild the concat file seamlessly — send SIGUSR1 to the running ffmpeg
+     * process so it reloads the concat demuxer without any output gap.
+     * Falls back to a full restart only if the process is not running.
+     */
+    public function rebuild(Channel $channel): bool
+    {
+        $this->recalculateSchedule($channel);
+        $this->writeMetaFile($channel);
+
+        $concatPath = $this->concatFilePath($channel);
+
+        // Snapshot whether the current concat is slate-only before rewriting it
+        $wasSlateOnly = false;
+        if (file_exists($concatPath)) {
+            $existing = file_get_contents($concatPath);
+            $wasSlateOnly = str_contains($existing, 'slate.mp4') &&
+                            ! preg_match('/^file\s+[^\n]*(?<!slate\.mp4)[^\n]*$/m', $existing);
+        }
+
+        // Rewrite the concat file on disk
+        $concatFile = $this->buildConcatFile($channel);
+
+        if ($this->isRunning($channel)) {
+            // If we were playing slate and now have real content, restart so the
+            // new content starts immediately rather than waiting for the slate loop
+            // to exhaust (which could take hours).
             $newContent = $concatFile ? file_get_contents($concatFile) : '';
             $nowHasReal = $concatFile !== null &&
                           ! (str_contains($newContent, 'slate.mp4') &&
@@ -672,28 +757,6 @@ class TvPlayoutEngine
         }
 
         return true;
-    }
-
-    /**
-     * Update logo position (x:y pixels) — triggers CG restart (playout unaffected).
-     */
-    public function updateLogoPosition(Channel $channel, string $position): void
-    {
-        $channel->update(['logo_position' => $position]);
-        if ($this->cgIsConfigured($channel)) {
-            $this->restartCg($channel);
-        }
-    }
-
-    /**
-     * Update playlist loop count — 0 = auto-fill 24h, N = repeat N times.
-     */
-    public function updatePlaylistLoop(Channel $channel, int $count): void
-    {
-        $channel->update(['playlist_loop' => max(0, $count)]);
-        if ($this->isRunning($channel)) {
-            $this->rebuild($channel);
-        }
     }
 
     /**
@@ -1716,9 +1779,9 @@ class TvPlayoutEngine
             '-c:a', 'copy',
             '-f', 'hls',
             '-hls_time', (string) $segDur,
-            '-hls_list_size', '5',
+            '-hls_list_size', '15',
             '-hls_flags', 'delete_segments+omit_endlist+append_list',
-            '-hls_delete_threshold', '2',
+            '-hls_delete_threshold', '6',
             '-hls_segment_type', 'mpegts',
             '-hls_segment_filename', $segPattern,
             '-hls_allow_cache', '0',
@@ -1773,8 +1836,18 @@ class TvPlayoutEngine
         // with the HLS playlist timing and can cause ffmpeg to crash.
         // NOTE: Do NOT use -safe with HLS input — -safe is a concat demuxer option
         // and will cause "Option safe not found" errors with the HLS demuxer.
+        // Enter the playlist a few segments behind the live edge so slow decoder
+        // start-up cannot starve CG of input while the playout rewrites raw.m3u8.
         $cmd[] = '-protocol_whitelist';
-        $cmd[] = 'file,http,https,tcp,tls,crypto';
+        $cmd[] = 'file,http,https,tcp,tls,crypto,data';
+        $cmd[] = '-allowed_extensions';
+        $cmd[] = 'ALL';
+        $cmd[] = '-live_start_index';
+        $cmd[] = '-3';
+        $cmd[] = '-max_reload';
+        $cmd[] = '10';
+        $cmd[] = '-m3u8_hold_counters';
+        $cmd[] = '10';
         $cmd[] = '-f';
         $cmd[] = 'hls';
         $cmd[] = '-i';
@@ -1963,7 +2036,13 @@ class TvPlayoutEngine
                 };
             }
 
-            $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedMetaFile}':reload=1:{$ltPosExpr}:fontcolor={$ltFontColor}:fontsize={$ltFontsize}:box=1:boxcolor={$ffLtBgColor}@{$ltBgOpacityFp}:boxborderw={$ltBorderW}[final_video]";
+            // Use DejaVu Sans Bold — always present on Ubuntu, handles all Latin chars.
+            // Without fontfile, ffmpeg falls back to a tiny built-in bitmap font that
+            // may silently fail to render text on some builds.
+            $fontFile = $this->findFont();
+            $fontAttr = $fontFile ? ":fontfile='{$fontFile}'" : '';
+
+            $filterParts[] = "[{$lastLabel}]drawtext=textfile='{$escapedMetaFile}':reload=1:{$ltPosExpr}:fontcolor={$ltFontColor}:fontsize={$ltFontsize}{$fontAttr}:box=1:boxcolor={$ffLtBgColor}@{$ltBgOpacityFp}:boxborderw={$ltBorderW}[final_video]";
             $lastLabel = 'final_video';
         }
 
@@ -2013,9 +2092,9 @@ class TvPlayoutEngine
         ], $videoEncode, $audioEncode, [
             '-f', 'hls',
             '-hls_time', (string) $segDur,
-            '-hls_list_size', '5',
+            '-hls_list_size', '15',
             '-hls_flags', 'delete_segments+omit_endlist+append_list',
-            '-hls_delete_threshold', '2',
+            '-hls_delete_threshold', '6',
             '-hls_segment_type', 'mpegts',
             '-hls_segment_filename', $segPattern,
             '-hls_allow_cache', '0',
@@ -2182,9 +2261,8 @@ class TvPlayoutEngine
 
         $artisan = base_path('artisan');
         $phpExe  = trim((string) shell_exec('command -v php 2>/dev/null')) ?: 'php';
-        $shell = "setsid sh -c "
-            . escapeshellarg($phpExe . ' ' . escapeshellarg($artisan) . ' tv:now-playing-writer ' . $channel->id)
-            . ' </dev/null >/dev/null 2>&1 & echo $!';
+        $cmd     = $phpExe . ' ' . escapeshellarg($artisan) . ' tv:now-playing-writer ' . (int) $channel->id;
+        $shell   = 'setsid sh -c ' . escapeshellarg($cmd . ' </dev/null >/dev/null 2>&1') . ' & echo $!';
 
         $pid = (int) trim((string) shell_exec($shell));
         if ($pid > 0) {
@@ -2304,8 +2382,23 @@ class TvPlayoutEngine
         }
 
         $isClean = $item && ! $item->hasOverlays();
+        $hasTitle = $item && $item->hasTitle();
 
-        file_put_contents($this->metaFilePath($channel), $isClean ? ' ' : ($item ? 'NOW PLAYING: ' . $item->display_title : 'NO PLAYLIST ITEMS'));
+        // NOW PLAYING title: ASCII-only so ffmpeg's built-in font renders it reliably
+        if ($hasTitle) {
+            $tz      = new \DateTimeZone($channel->timezone ?? config('app.timezone', 'UTC'));
+            $title   = strtoupper($item->display_title);
+            $endTime = $item->scheduled_end
+                ? $item->scheduled_end->setTimezone($tz)->format('H:i')
+                : null;
+            $titleText = $endTime
+                ? "NOW PLAYING  |  {$title}  |  Ends {$endTime}"
+                : "NOW PLAYING  |  {$title}";
+        } else {
+            $titleText = ' ';
+        }
+
+        file_put_contents($this->metaFilePath($channel), $isClean ? ' ' : ($item ? $titleText : ' '));
 
         if ($isClean) {
             file_put_contents($this->tickerFilePath($channel), ' ');
@@ -2406,6 +2499,28 @@ class TvPlayoutEngine
     private function nowPlayingWriterPidFile(Channel $channel): string
     {
         return storage_path('app/pids/nowplaying_writer_' . $channel->id . '.pid');
+    }
+
+    /**
+     * Find a usable TTF font on the system for ffmpeg drawtext.
+     * Returns the escaped path for use inside a filter_complex string, or null.
+     */
+    private function findFont(): ?string
+    {
+        $candidates = [
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            '/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf',
+            '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+            '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+            '/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf',
+        ];
+        foreach ($candidates as $path) {
+            if (file_exists($path)) {
+                return str_replace("'", "'\\''", $path);
+            }
+        }
+        return null;
     }
 
     private function formatDuration(float $seconds): string

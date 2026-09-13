@@ -26,21 +26,31 @@ class PlaylistItem extends Model
         'is_active',
     ];
 
-    /** Groups that suppress all CG overlays (logo, ticker, clock, lowerthird). */
-    public const CLEAN_GROUPS = ['clean'];
+    /**
+     * Groups and their overlay suppression rules:
+     *   default  — all overlays shown (logo, ticker, clock, lowerthird/title)
+     *   jingle   — ALL overlays suppressed (clean air break)
+     *   ads      — logo + ticker + clock shown, but NOW PLAYING title hidden
+     *   clean    — ALL overlays suppressed (alias for jingle, legacy)
+     */
+    public const CLEAN_GROUPS = ['clean', 'jingle'];
+    public const NO_TITLE_GROUPS = ['clean', 'jingle', 'ads'];
 
+    /** Returns false when ALL overlays should be suppressed for this item. */
     public function hasOverlays(): bool
     {
-        if ($this->media_type === 'jingle') {
-            return false;
-        }
-
         return ! in_array($this->media_group ?? 'default', self::CLEAN_GROUPS, true);
+    }
+
+    /** Returns false when the NOW PLAYING / movie title should be hidden. */
+    public function hasTitle(): bool
+    {
+        return ! in_array($this->media_group ?? 'default', self::NO_TITLE_GROUPS, true);
     }
 
     public function isJingle(): bool
     {
-        return $this->media_type === 'jingle';
+        return in_array($this->media_group ?? 'default', self::CLEAN_GROUPS, true);
     }
 
     protected $casts = [

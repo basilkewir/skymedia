@@ -90,6 +90,7 @@ elif [[ -d "${APP_DIR}/.git" ]]; then
     git fetch origin --quiet
     git checkout "${BRANCH}" --quiet
     git pull origin "${BRANCH}" --quiet
+    git stash pop 2>/dev/null || warn "Stashed changes kept (conflict) — see 'git stash list'"
     ok "Code updated to latest ${BRANCH}"
 else
     warn "Not a git repo — deploy files manually"
