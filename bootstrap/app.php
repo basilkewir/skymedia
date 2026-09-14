@@ -39,6 +39,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('dvr:cleanup')->everyFiveMinutes()->withoutOverlapping();
         $schedule->command('disk:cleanup --target=95')->everyTwoMinutes()->withoutOverlapping();
         $schedule->command('streams:schedule')->everyMinute()->withoutOverlapping();
+        $schedule->command('ffplayout:guard-playlist')->everyMinute()->withoutOverlapping();
     })
     ->withCommands([
         __DIR__ . '/../app/Console/Commands',

@@ -185,6 +185,36 @@ class FfplayoutDownload implements ShouldQueue
             }
         }
 
+        // Step 2b: ffplayout's encode chain pads with `pad=ih*16/9:ih` for
+        // non-16:9 input, which aborts ("Padded dimensions cannot be smaller
+        // than input dimensions") on files wider than 16:9, killing the whole
+        // channel with an unrecoverable decoder error. Normalize ultra-wide
+        // sources to safe letterboxed 720p so a download can never take the
+        // channel down.
+        $aspect = $this->probeAspect($outputPath);
+        if ($aspect !== null && $aspect > 2.0) {
+            $safePath = $outputPath . '.safe.mp4';
+            $cmd = implode(' ', [
+                escapeshellarg($ffmpeg), '-y', '-loglevel', 'warning',
+                '-i', escapeshellarg($outputPath),
+                '-map', '0:v:0', '-map', '0:a:0?',
+                '-vf', 'scale=1280:-2:flags=lanczos,setsar=1,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1',
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+                '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2',
+                '-movflags', '+faststart',
+                escapeshellarg($safePath),
+                '>> ' . escapeshellarg($logFile) . ' 2>&1',
+            ]);
+            exec($cmd, $out, $code);
+            if ($code === 0 && file_exists($safePath) && filesize($safePath) >= 1024) {
+                unlink($outputPath);
+                rename($safePath, $outputPath);
+                Log::info("[FfplayoutDownload] {$this->downloadId}: normalized ultra-wide source to safe 720p");
+            } else {
+                @unlink($safePath);
+            }
+        }
+
         // Step 3: probe duration
         $duration = (float) trim((string) shell_exec(
             escapeshellarg($ffprobe) . ' -v error -show_entries format=duration' .
@@ -254,6 +284,20 @@ class FfplayoutDownload implements ShouldQueue
     public function statusFile(): string
     {
         return $this->mediaDir . '/' . $this->downloadId . '.status.json';
+    }
+
+    private function probeAspect(string $path): ?float
+    {
+        $ffprobe = $this->findBinary(['/usr/local/bin/ffprobe', 'ffprobe', '/usr/bin/ffprobe']);
+        $out = trim((string) shell_exec(
+            escapeshellarg($ffprobe) . ' -v error -select_streams v:0 -show_entries stream=width,height' .
+            ' -of csv=p=0 ' . escapeshellarg($path) . ' 2>/dev/null'
+        ));
+        if (! preg_match('/^(\d+),(\d+)$/', $out, $m) || (int) $m[2] <= 0) {
+            return null;
+        }
+
+        return (float) $m[1] / (float) $m[2];
     }
 
     private function findTlsFfmpeg(): string
