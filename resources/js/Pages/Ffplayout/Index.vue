@@ -135,6 +135,10 @@
               <!-- Line header -->
               <div class="flex items-center gap-2 px-3 py-2 bg-slate-700/60">
                 <span class="text-slate-400 text-xs font-mono w-5">{{ idx + 1 }}</span>
+                <span v-if="line.source === 'rss'"
+                      class="text-[10px] px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-400 font-mono">RSS</span>
+                <span v-else
+                      class="text-[10px] px-1.5 py-0.5 rounded bg-slate-500/20 text-slate-400 font-mono">MANUAL</span>
                 <div @click="line.enabled = !line.enabled"
                      :class="line.enabled ? 'bg-indigo-600' : 'bg-slate-600'"
                      class="relative w-8 h-4 rounded-full transition cursor-pointer flex-shrink-0">
@@ -176,7 +180,10 @@
                   <div class="flex items-center justify-between">
                     <label class="text-xs text-slate-400">Scrolling text</label>
                     <div class="flex items-center gap-2">
-                      <span v-if="line.id === 'rss'" class="text-xs text-sky-400">Auto-updated by RSS</span>
+                      <span v-if="line.source === 'rss'" class="text-xs text-sky-400">
+                        <template v-if="line.edited">Edited — kept on air</template>
+                        <template v-else>Fetched headline</template>
+                      </span>
                       <button @click="pushLineTextLive(line)" :disabled="lineUpdating === line.id"
                               class="px-2 py-0.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-xs rounded transition">
                         {{ lineUpdating === line.id ? '…' : '⚡ Push live' }}
@@ -184,8 +191,8 @@
                       <span v-if="lineUpdated === line.id" class="text-green-400 text-xs">✓</span>
                     </div>
                   </div>
-                  <textarea v-model="line.text" rows="2"
-                            :placeholder="line.id === 'rss' ? 'Auto-filled by RSS fetch' : 'Enter scrolling text…'"
+                  <textarea v-model="line.text" rows="2" @input="markLineEdited(line)"
+                          :placeholder="line.source === 'rss' ? 'Fetched headline — push live to send' : 'Enter scrolling text…'"
                             class="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-xs text-white placeholder-slate-500 resize-none focus:outline-none focus:border-indigo-500"></textarea>
                 </div>
 
@@ -252,24 +259,30 @@
                           class="text-rose-400 hover:text-rose-300 text-xs">✕ Remove</button>
                 </div>
 
-                <!-- RSS controls for rss line -->
-                <div v-if="line.id === 'rss'" class="flex items-center gap-3 pt-1 border-t border-slate-700">
-                  <button @click="fetchRssNow" :disabled="rssFetching"
-                          class="px-3 py-1 bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white text-xs rounded-lg transition">
-                    {{ rssFetching ? 'Fetching…' : '🔄 Fetch RSS now' }}
-                  </button>
-                  <span v-if="rssFetched" class="text-green-400 text-xs">✓ Headlines refreshed</span>
+                <!-- Fetched line info (no manual fetch here — global controls below) -->
+                <div v-if="line.source === 'rss'" class="flex items-center gap-3 pt-1 border-t border-slate-700">
+                  <span class="text-xs text-slate-500">
+                    Fetched from news feeds{{ line.edited ? ' · edits are kept across refreshes' : '' }} — delete below to keep it from returning.
+                  </span>
                 </div>
               </div>
             </div>
           </div>
 
-          <!-- Add RSS line shortcut -->
-          <div class="flex items-center gap-3">
-            <button @click="addRssLine"
-                    class="px-3 py-1.5 bg-sky-800 hover:bg-sky-700 text-white text-xs rounded-lg transition">+ Add RSS news line</button>
-            <span class="text-xs text-slate-500">Auto-populated from Cameroon &amp; African news feeds</span>
+          <!-- Fetched news management -->
+          <div class="flex flex-wrap items-center gap-3 pt-3 border-t border-slate-700">
+            <label class="text-xs text-slate-400">Max headlines on air</label>
+            <input type="number" min="1" max="20" v-model.number="ov.rss_max_lines"
+                   class="w-20 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-indigo-500" />
+            <button @click="fetchRssNow" :disabled="rssFetching"
+                    class="px-3 py-1 bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white text-xs rounded-lg transition">
+              {{ rssFetching ? 'Fetching…' : '🔄 Fetch news now' }}
+            </button>
+            <button @click="clearFetchedLines"
+                    class="px-3 py-1 bg-rose-800 hover:bg-rose-700 text-white text-xs rounded-lg transition">🗑 Clear fetched lines</button>
+            <span v-if="rssFetched" class="text-green-400 text-xs">✓ Headlines refreshed</span>
           </div>
+          <p class="text-xs text-slate-500">Each fetched headline becomes its own editable RSS line. New headlines beyond the cap are added disabled. Deleted fetched lines stay deleted.</p>
         </div>
 
         <!-- Overlay Relay -->
@@ -429,6 +442,8 @@ const ovDefaults = {
   title_font_size:   26,
   relay_push_url:    '',
   ticker_lines:      [],
+  rss_removed:       [],
+  rss_max_lines:     4,
 }
 const ov = ref({ ...ovDefaults })
 const logoFile       = ref(null)
@@ -558,6 +573,8 @@ async function saveOverlay() {
       title_font_size:   ov.value.title_font_size   || 26,
       relay_push_url:    ov.value.relay_push_url    || '',
       ticker_lines:      JSON.stringify(ov.value.ticker_lines || []),
+      rss_removed:       JSON.stringify(ov.value.rss_removed || []),
+      rss_max_lines:     ov.value.rss_max_lines     || 4,
     }
     let response
     if (logoFile.value) {
@@ -596,6 +613,8 @@ async function refreshTickerText() {
 function newLineDefaults(id) {
   return {
     id,
+    source:         'manual',
+    origin_id:      '',
     enabled:        true,
     text:           '',
     text_color:     '#fcd116',
@@ -614,22 +633,31 @@ function addTickerLine() {
   ov.value.ticker_lines.push(newLineDefaults(id))
 }
 
-function addRssLine() {
-  // Only one RSS line allowed
-  if (ov.value.ticker_lines.some(l => l.id === 'rss')) return
-  ov.value.ticker_lines.unshift({
-    ...newLineDefaults('rss'),
-    text:       ov.value.ticker_text || '',
-    text_color: '#fcd116',
-    bg_color:   '#000000',
-    label_text: 'NEWS',
-    label_color: '#ffffff',
-    label_bg_color: '#c0392b',
-  })
+function removeTickerLine(idx) {
+  const line = ov.value.ticker_lines[idx]
+  // Remember deleted fetched headlines so a future fetch doesn't re-add them
+  if (line && line.source === 'rss' && line.origin_id) {
+    if (!ov.value.rss_removed.includes(line.origin_id)) {
+      ov.value.rss_removed.push(line.origin_id)
+    }
+  }
+  ov.value.ticker_lines.splice(idx, 1)
 }
 
-function removeTickerLine(idx) {
-  ov.value.ticker_lines.splice(idx, 1)
+function clearFetchedLines() {
+  const removed = []
+  ov.value.ticker_lines = ov.value.ticker_lines.filter((l) => {
+    if (l.source === 'rss') {
+      if (l.origin_id) removed.push(l.origin_id)
+      return false
+    }
+    return true
+  })
+  ov.value.rss_removed = [...new Set([...ov.value.rss_removed, ...removed])]
+}
+
+function markLineEdited(line) {
+  if (line && line.source === 'rss') line.edited = true
 }
 
 function moveLineUp(idx) {

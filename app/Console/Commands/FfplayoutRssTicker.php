@@ -46,49 +46,128 @@ class FfplayoutRssTicker extends Command
             return self::SUCCESS;
         }
 
-        $ticker = implode('   •   ', $headlines);
+        // Map stable origin_id => headline text
+        $headlineIds = [];
+        foreach ($headlines as $title) {
+            $headlineIds[$this->originId($title)] = $title;
+        }
 
         $channelIds = array_map('intval', explode(',', $this->option('channels')));
 
+        $added = 0;
         foreach ($channelIds as $id) {
-            $dir  = $this->assetDirs[$id] ?? null;
-            if (!$dir) continue;
-
-            $file = $dir . '/ticker.txt';
-            if (!is_dir($dir)) continue;
-
-            file_put_contents($file, $ticker);
-            @chmod($file, 0664);
-
-            // Update sidecar JSON — ticker_text + ticker_lines[0] (RSS line)
-            $sidecarPath = $dir . '/overlay.json';
-            $sidecar = file_exists($sidecarPath)
-                ? (json_decode(file_get_contents($sidecarPath), true) ?? [])
-                : [];
-            $sidecar['ticker_text'] = $ticker;
-
-            // Keep ticker_lines[0] (id='rss') in sync
-            if (!isset($sidecar['ticker_lines'])) $sidecar['ticker_lines'] = [];
-            $rssIdx = null;
-            foreach ($sidecar['ticker_lines'] as $i => $line) {
-                if (($line['id'] ?? '') === 'rss') { $rssIdx = $i; break; }
-            }
-            if ($rssIdx !== null) {
-                $sidecar['ticker_lines'][$rssIdx]['text'] = $ticker;
-                // Also update the per-line text file for live reload
-                $lineFile = $dir . '/ticker_line_rss.txt';
-                file_put_contents($lineFile, $ticker);
-                @chmod($lineFile, 0664);
-            }
-
-            file_put_contents($sidecarPath, json_encode($sidecar));
+            $dir = $this->assetDirs[$id] ?? null;
+            if (!$dir || !is_dir($dir)) continue;
+            $added += $this->applyHeadlines($dir, $headlineIds);
         }
 
         $count = count($headlines);
-        $this->info("Ticker updated — {$count} headlines.");
-        Log::info("[FfplayoutRssTicker] Updated ticker with {$count} headlines.");
+        $this->info("Ticker updated — {$count} headlines fetched, {$added} new lines.");
+        Log::info("[FfplayoutRssTicker] Updated ticker with {$count} headlines, {$added} new lines.");
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Merge fetched headlines into a channel's overlay ticker_lines.
+     *
+     * Each headline becomes its own ticker line (source='rss', stable
+     * origin_id) so the user can edit, disable, reorder or delete each one.
+     * Manual lines (source='manual') are never touched. Deleted fetched lines
+     * are remembered in rss_removed and won't come back. User-edited lines
+     * (edited=true) keep their text even when the headline drops out of the feeds.
+     */
+    private function applyHeadlines(string $dir, array $headlineIds): int
+    {
+        $sidecarPath = $dir . '/overlay.json';
+        $sidecar = file_exists($sidecarPath)
+            ? (json_decode(file_get_contents($sidecarPath), true) ?? [])
+            : [];
+
+        $lines     = is_array($sidecar['ticker_lines'] ?? null) ? $sidecar['ticker_lines'] : [];
+        $removed   = is_array($sidecar['rss_removed'] ?? null) ? $sidecar['rss_removed'] : [];
+        $maxEnabled = max(1, min(20, (int) ($sidecar['rss_max_lines'] ?? 4)));
+
+        $isRss = fn (array $l): bool => ($l['source'] ?? 'manual') === 'rss';
+        $originOf = fn (array $l): string => strval($l['origin_id'] ?? '');
+
+        // Drop the legacy blob line (id='rss') — replaced by individual lines.
+        $lines = array_values(array_filter($lines, fn (array $l) => ($l['id'] ?? '') !== 'rss'));
+
+        // Prune fetched lines that are no longer in the feeds and were not
+        // user-edited. Keeps the list fresh without losing manual curation.
+        $lines = array_values(array_filter($lines, function (array $l) use ($headlineIds) {
+            if (($l['source'] ?? 'manual') !== 'rss') return true;
+            if (! empty($l['edited'])) return true;
+            return isset($headlineIds[$l['origin_id'] ?? '']);
+        }));
+
+        $byset  = [];
+        $enabledRss = 0;
+        foreach ($lines as $i => $line) {
+            if ($isRss($line)) {
+                $byset[$originOf($line)] = $i;
+                if (! empty($line['enabled'])) $enabledRss++;
+            }
+        }
+
+        $now   = date('c');
+        $added = 0;
+
+        foreach ($headlineIds as $originId => $title) {
+            if (in_array($originId, $removed, true)) continue;
+            if (isset($byset[$originId])) continue;
+
+            $enabled = $enabledRss < $maxEnabled;
+            $lines[] = [
+                'id'             => 'rss_' . $originId,
+                'enabled'        => $enabled,
+                'source'         => 'rss',
+                'origin_id'      => $originId,
+                'fetched_at'     => $now,
+                'text'           => $title,
+                'text_color'     => '#fcd116',
+                'bg_color'       => '#000000',
+                'bg_opacity'     => 0.85,
+                'font_size'      => 22,
+                'label_text'     => '',
+                'label_color'    => '#ffffff',
+                'label_bg_color' => '#c0392b',
+                'label_image'    => '',
+            ];
+            if ($enabled) $enabledRss++;
+            $added++;
+        }
+
+        // Legacy flat ticker text (falls back to this only when no lines render).
+        $tickerText = implode('   •   ', array_map(
+            fn (array $l) => trim(strval($l['text'] ?? '')),
+            array_filter($lines, fn (array $l) => trim(strval($l['text'] ?? '')) !== '')
+        ));
+
+        $sidecar['ticker_lines'] = $lines;
+        $sidecar['ticker_text']  = $tickerText;
+        $sidecar['rss_removed']  = array_values(array_unique(array_map('strval', $removed)));
+
+        file_put_contents($sidecarPath, json_encode($sidecar));
+
+        // Write legacy ticker.txt + per-line reload files.
+        file_put_contents($dir . '/ticker.txt', $tickerText);
+        @chmod($dir . '/ticker.txt', 0664);
+        foreach ($lines as $line) {
+            if (empty($line['id'])) continue;
+            $lineFile = $dir . '/ticker_line_' . $line['id'] . '.txt';
+            file_put_contents($lineFile, strval($line['text'] ?? ' '));
+            @chmod($lineFile, 0664);
+        }
+
+        return $added;
+    }
+
+    private function originId(string $title): string
+    {
+        $normalized = mb_strtolower(trim(preg_replace('/\s+/', ' ', $title) ?? ''));
+        return substr(sha1($normalized), 0, 12);
     }
 
     private function fetchHeadlines(): array

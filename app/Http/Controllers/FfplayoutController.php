@@ -140,6 +140,8 @@ class FfplayoutController extends Controller
             'logo_file'         => 'nullable|file|mimes:png,jpg,jpeg,gif,svg|max:2048',
             'relay_push_url'    => 'nullable|string|max:500',
             'ticker_lines'      => 'nullable|string', // JSON-encoded array
+            'rss_removed'       => 'nullable',        // array or JSON string
+            'rss_max_lines'     => 'nullable|integer|min:1|max:20',
             'api_username'      => 'nullable|string|max:100',
             'api_password'      => 'nullable|string|max:200',
         ]);
@@ -231,6 +233,10 @@ class FfplayoutController extends Controller
                         'label_color'    => $this->sanitizeColor($l['label_color'] ?? '#ffffff'),
                         'label_bg_color' => $this->sanitizeColor($l['label_bg_color'] ?? '#c0392b'),
                         'label_image'    => basename((string) ($l['label_image'] ?? '')),
+                        'source'         => ($l['source'] ?? '') === 'rss' ? 'rss' : 'manual',
+                        'origin_id'      => substr(preg_replace('/[^a-z0-9]/', '', (string) ($l['origin_id'] ?? '')), 0, 16),
+                        'fetched_at'     => substr((string) ($l['fetched_at'] ?? ''), 0, 40),
+                        'edited'         => (bool) ($l['edited'] ?? false),
                     ];
                     // Write per-line text file for live reload
                     $lineFile = $assetsDir . '/ticker_line_' . $id . '.txt';
@@ -240,6 +246,22 @@ class FfplayoutController extends Controller
                 }, $decoded);
             }
         }
+
+        // Persist fetched-headline state (deleted origin_ids + on-air cap)
+        $rssRemoved = is_array($current['rss_removed'] ?? null) ? $current['rss_removed'] : [];
+        if ($request->has('rss_removed')) {
+            $raw = $request->input('rss_removed');
+            if (is_string($raw) && $raw !== '') {
+                $decoded = json_decode($raw, true);
+                if (is_array($decoded)) $rssRemoved = $decoded;
+            } elseif (is_array($raw)) {
+                $rssRemoved = $raw;
+            }
+        }
+        $rssRemoved  = array_values(array_unique(array_map('strval', $rssRemoved)));
+        $rssMaxLines = is_int($data['rss_max_lines'] ?? null)
+            ? max(1, min(20, $data['rss_max_lines']))
+            : max(1, min(20, (int) ($current['rss_max_lines'] ?? 4)));
 
         $sidecar = [
             'ticker_text'       => $tickerText,
@@ -256,6 +278,8 @@ class FfplayoutController extends Controller
             'title_font_size'   => $titleFontSize,
             'relay_push_url'    => $relayPushUrl,
             'ticker_lines'      => $tickerLines,
+            'rss_removed'       => $rssRemoved,
+            'rss_max_lines'     => $rssMaxLines,
             'api_username'      => $apiUsername,
             'api_password'      => $apiPassword,
         ];
@@ -311,6 +335,7 @@ class FfplayoutController extends Controller
             foreach ($sidecar['ticker_lines'] as &$line) {
                 if ($line['id'] === $data['line_id']) {
                     $line['text'] = $data['text'];
+                    if (($line['source'] ?? '') === 'rss') $line['edited'] = true;
                     break;
                 }
             }
@@ -422,6 +447,8 @@ class FfplayoutController extends Controller
             'title_font_size'   => 26,
             'relay_push_url'    => '',
             'ticker_lines'      => [],
+            'rss_removed'       => [],
+            'rss_max_lines'     => 4,
         ];
 
         if (!file_exists($this->dbPath)) return $defaults;
